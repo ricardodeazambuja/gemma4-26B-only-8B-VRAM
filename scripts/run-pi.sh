@@ -13,6 +13,11 @@
 #
 set -euo pipefail
 
+# -h / --help: print this script's header comment block and exit.
+for _arg in "$@"; do case "$_arg" in
+  -h|--help) sed -n '2,/^[^#]/{/^#/s/^# \?//p}' "${BASH_SOURCE[0]}"; exit 0 ;;
+esac; done
+
 PROVIDER="${PROVIDER:-llamacpp}"
 MODEL_ID="${MODEL_ID:-gemma-4-26b-a4b-qat}"
 HOST="${HOST:-127.0.0.1}"

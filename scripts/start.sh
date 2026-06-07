@@ -18,6 +18,12 @@
 #                 unset = ask (only when interactive); 1 = always stop; 0 = never
 #
 set -euo pipefail
+
+# -h / --help: print this script's header comment block and exit.
+for _arg in "$@"; do case "$_arg" in
+  -h|--help) sed -n '2,/^[^#]/{/^#/s/^# \?//p}' "${BASH_SOURCE[0]}"; exit 0 ;;
+esac; done
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 HOST="${HOST:-127.0.0.1}"

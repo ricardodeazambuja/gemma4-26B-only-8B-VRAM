@@ -26,6 +26,12 @@
 #   JOBS       parallel build jobs                      (default: nproc)
 #
 set -euo pipefail
+
+# -h / --help: print this script's header comment block and exit.
+for _arg in "$@"; do case "$_arg" in
+  -h|--help) sed -n '2,/^[^#]/{/^#/s/^# \?//p}' "${BASH_SOURCE[0]}"; exit 0 ;;
+esac; done
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 command -v mamba       >/dev/null 2>&1 || { echo "ERROR: mamba required (install Miniforge)."; exit 1; }

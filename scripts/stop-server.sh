@@ -5,6 +5,12 @@
 #   PORT   port the server binds (default: 8080)
 #
 set -euo pipefail
+
+# -h / --help: print this script's header comment block and exit.
+for _arg in "$@"; do case "$_arg" in
+  -h|--help) sed -n '2,/^[^#]/{/^#/s/^# \?//p}' "${BASH_SOURCE[0]}"; exit 0 ;;
+esac; done
+
 PORT="${PORT:-8080}"
 
 # find the PID listening on $PORT (ss first, lsof fallback)
