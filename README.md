@@ -186,7 +186,7 @@ All scripts accept env-var overrides — see the header comment in each.
 ### Useful overrides
 
 ```bash
-NCMOE=22    bash scripts/run-server.sh    # FASTEST on 8 GB: 8 expert layers on GPU (this is the default)
+NCMOE=22    bash scripts/run-server.sh    # FASTEST on 8 GB: 8 expert layers on GPU (default is all-CPU experts)
 CTX=65536   bash scripts/run-server.sh    # bigger context (see the ceiling table below)
 BACKEND=cuda bash scripts/run-server.sh   # force native CUDA backend (auto-selected once built)
 BACKEND=cpu bash scripts/run-server.sh    # no GPU offload — slow, benchmark baseline only
@@ -203,9 +203,9 @@ experts on the GPU, which means slower** — context trades directly against spe
 
 | Goal | Setting | Max context on 8 GB | Speed |
 |---|---|---|---|
-| **Full speed (default)** | `NCMOE=22` | **~32K** | ~23 tok/s |
+| **Full speed** (recommended on 8 GB) | `NCMOE=22` | **~32K** | ~23 tok/s |
 | Balance | `NCMOE=27`, etc. | ~64K | medium |
-| **Max context** | `--cpu-moe` (omit `NCMOE`) | **~128K** (≈160K ceiling) | slower (all experts on CPU) |
+| **Max context** (script default) | `--cpu-moe` (omit `NCMOE`) | **~128K** (≈160K ceiling) | slower (all experts on CPU) |
 
 (The KV cache itself is tiny — ~0.6 GB at 16K — thanks to flash attention and Gemma's
 sliding-window layers, and its size is **independent of the quant**. 256K, the model's trained max,
