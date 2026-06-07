@@ -521,9 +521,9 @@ Each comes in QAT and non-QAT GGUF repos.
 ### Path A — higher-precision quant of the *same* 26B-A4B MoE  ✅ recommended
 
 The QAT repo has only the 4-bit `UD-Q4_K_XL` (~14 GB). The
-[non-QAT repo](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF) has the full range. Since
-it's the same MoE (4B active), **the speed stays ~the same (~23 tok/s on CUDA)** — you're only
-spending RAM for quality:
+[non-QAT repo](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF) has the full range. It's the
+same MoE (4B active), so the **attention + KV "important stuff" still fits in 8 GB VRAM and runs on
+the GPU** at every quant — but it is **not free**, and not the same speed (see the caveat).
 
 | Quant | Size | Fits in 32 GB RAM? |
 |---|---|---|
@@ -535,12 +535,23 @@ spending RAM for quality:
 ```bash
 MODEL_REPO=unsloth/gemma-4-26B-A4B-it-GGUF \
 MODEL_FILE=gemma-4-26B-A4B-it-UD-Q6_K_XL.gguf bash scripts/setup.sh
-BACKEND=cuda NCMOE=22 bash scripts/start.sh
+BACKEND=cuda NCMOE=24 bash scripts/start.sh    # raise NCMOE: bigger experts -> fewer fit on the GPU
 ```
 
+> **A higher quant runs SLOWER, not the same speed.** A bigger quant scales up *everything*,
+> including the GPU-resident tensors, so two things change:
+> 1. **Fewer expert layers fit in VRAM.** At Q4 each layer's experts are ~0.41 GB and 8 fit
+>    (`NCMOE=22`). At Q6 they're ~0.6 GB, so only ~4–6 fit (`NCMOE≈24–26`) — more experts fall back
+>    to the slower CPU path. (The attention backbone + KV — a few GB — still fits regardless.)
+> 2. **The RAM-resident experts stream ~1.5× more bytes/token** (Q6 vs Q4), and at ~23 tok/s the
+>    RAM reads were already ~15 GB/s — pushing toward the DDR4 ceiling.
+>
+> Net: expect generation to fall from ~23 tok/s into roughly the **mid-teens for Q6**, lower for Q8.
+> The clean ~23 tok/s figure is specifically a Q4 result. (Estimate — not yet measured here.)
+
 > **Caveat — diminishing returns.** You're already on the **QAT** 4-bit, which is *trained* to be
-> high-quality at 4-bit and is roughly competitive with non-QAT Q5/Q6. Moving to Q6 costs ~9 GB of
-> RAM for what may be a small quality gain. Worth trying, not guaranteed to feel different.
+> high-quality at 4-bit and is roughly competitive with non-QAT Q5/Q6. So you may be trading a
+> noticeable speed drop and ~9 GB more RAM for a *small* quality gain. Worth trying, not a clear win.
 
 ### Path B — a bigger *model* (31B)  ⚠️ not worth it here
 
@@ -553,4 +564,5 @@ on the CPU. Expect **~1–3 tok/s** (recall CPU-only on the MoE — which comput
 
 **26B-A4B is the sweet spot for this hardware** — it's the largest model that stays fast, precisely
 because only 4B params are active per token. With 32 GB RAM the realistic upgrade is a **Q5/Q6 quant
-of the same MoE** (same speed, marginally better quality), *not* a bigger model.
+of the same MoE** (marginally better quality, but slower — into the mid-teens tok/s), *not* a bigger
+model. The clean ~23 tok/s belongs to the Q4 QAT file you're already running.

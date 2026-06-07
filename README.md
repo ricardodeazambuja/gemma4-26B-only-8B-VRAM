@@ -100,13 +100,17 @@ which has the full Q2–Q8 range (Q5 ≈ 21 GB, Q6 ≈ 23 GB, Q8 ≈ 27 GB).
 **Use a different quant or your own file:**
 
 ```bash
-# a higher-precision quant of the SAME model (more RAM, same ~speed; needs the non-QAT repo)
+# a higher-precision quant of the SAME model (better quality, more RAM, SLOWER; non-QAT repo)
 MODEL_REPO=unsloth/gemma-4-26B-A4B-it-GGUF \
 MODEL_FILE=gemma-4-26B-A4B-it-UD-Q6_K_XL.gguf bash scripts/setup.sh
 
 # already have a GGUF somewhere? skip the download and point the server at it
 MODEL=/path/to/model.gguf bash scripts/run-server.sh
 ```
+
+(A bigger quant scales up the GPU-resident tensors too, so fewer expert layers fit in VRAM and the
+RAM-resident ones are heavier — expect *slower* generation, not the same ~23 tok/s. Details in
+[TECHNICAL.md §13](docs/TECHNICAL.md#13-running-bigger-models).)
 
 See [docs/TECHNICAL.md](docs/TECHNICAL.md#13-running-bigger-models) for what fits in your RAM and
 whether a bigger Gemma 4 is worth it.
