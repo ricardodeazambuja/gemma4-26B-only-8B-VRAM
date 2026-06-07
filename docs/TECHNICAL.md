@@ -258,7 +258,8 @@ model.
 ### Two conclusions
 
 **(a) The GPU is not slower than the CPU — Vulkan was just slow.** Pure CPU is ~1.9 tok/s; Vulkan
-roughly doubles it; CUDA is **~5–6× the Vulkan number** at the *same* CPU/GPU split. Since the
+roughly doubles it; CUDA is **~5× the Vulkan number** (4.8× server-to-server, 5.8× bench-to-bench)
+at the *same* CPU/GPU split. Since the
 split is identical, the only thing that changed is GPU-side efficiency — so the Vulkan MoE path
 (Turing has no tensor cores, and the hybrid CPU↔GPU dispatch is poorly pipelined there) was the
 real bottleneck.
@@ -348,8 +349,11 @@ A consolidated list of the non-obvious things that bit us — useful if you adap
   (`scripts/stop-server.sh` uses `ss`/`lsof`) or by PID instead.
 - The server runs as bare `llama-server` (launched via `mamba run`), not `.../bin/llama-server`,
   so `pgrep -f "bin/llama-server"` silently matches nothing.
-- `mamba run` **sanitizes the environment**, so `CUDA_VISIBLE_DEVICES=...` set before it does not
-  reach the child — you can't hide a GPU that way.
+- Hiding the GPU via `CUDA_VISIBLE_DEVICES=""` to force a CPU-only *server* is unreliable (it does
+  not affect the Vulkan device, and an empty value is interpreted inconsistently). The dependable
+  CPU-only path is `llama-bench --device none -ngl 0` (above). (For the record, `mamba run` does
+  **not** scrub the environment — env vars set before it do reach the child; verified with a
+  sentinel var.)
 - `mamba activate` needs `mamba init` in the shell first; in scripts, call binaries by full path
   or via `mamba run -n <env>`.
 
@@ -380,7 +384,7 @@ bash scripts/setup.sh
 bash scripts/configure-pi.sh
 bash scripts/start.sh
 
-# CUDA (~5–6× faster, +~20 min build):
+# CUDA (~5× faster, +~20 min build):
 BACKEND=cuda bash scripts/setup.sh        # also runs build-llama-cuda.sh
 bash scripts/configure-pi.sh
 BACKEND=cuda bash scripts/start.sh
