@@ -174,7 +174,7 @@ kernels** from 12.9 are too new for the 12.2 driver to load. **Two fixes:**
 |---|---|
 | `scripts/setup.sh` | **(once)** Creates the `llamacpp` conda env (llama.cpp + huggingface_hub) and downloads the GGUF into `models/`. `BACKEND=cuda` also builds the native CUDA backend. Idempotent. |
 | `scripts/configure-pi.sh` | **(once)** Adds the `llamacpp` provider to `~/.pi/agent/models.json` from `config/pi-provider.json`. |
-| `scripts/start.sh` | **All-in-one:** starts the server (if not already up), waits for it to load, then launches pi. Passes `BACKEND`/`NCMOE`/`CTX`/`--image` through; other args go to pi. When pi exits, if it started the server it offers to stop it (interactive prompt; force with `STOP_ON_EXIT=1`/`0`). A server that was already running is left alone. |
+| `scripts/start.sh` | **All-in-one:** starts the server (if not already up) — showing the CUDA/Vulkan/CPU banner — waits for it to load, then launches pi. Passes `BACKEND`/`NCMOE`/`CTX`/`--image` through; other args go to pi. When pi exits, if it started the server it offers to stop it (interactive prompt; force with `STOP_ON_EXIT=1`/`0`). A server that was already running is left alone. |
 | `scripts/run-server.sh` | Launches `llama-server` with `--cpu-moe`, `--no-mmap`, `-c 32768`, `--jinja`, on `127.0.0.1:8080`. Auto-selects CUDA if built, else Vulkan; prints a color-coded backend banner at launch. Override with `BACKEND=cuda\|vulkan\|cpu`. Pass `--image` to enable vision (loads the `mmproj`). |
 | `scripts/run-pi.sh` | Launches pi against the local server (`--provider llamacpp --model gemma-4-26b-a4b-qat`). Extra args pass through to pi. |
 | `scripts/stop-server.sh` | Stops the server by the port it listens on (default 8080). |
