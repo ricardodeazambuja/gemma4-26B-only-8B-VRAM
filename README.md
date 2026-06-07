@@ -22,14 +22,15 @@ are active per token.
 ## TL;DR
 
 ```bash
-# 1. install llama.cpp (+ model download, ~14 GB) into a conda/mamba env
-bash scripts/setup.sh
+# 1. set up env + model (~14 GB). Pick a backend:
+bash scripts/setup.sh                 #   Vulkan  — works on any driver, no build (~4-5 tok/s)
+# BACKEND=cuda bash scripts/setup.sh  #   CUDA    — builds against your driver's CUDA (~5-6x faster, +20 min)
 
 # 2. register the server as a provider in pi (once)
 bash scripts/configure-pi.sh
 
 # 3. bring up the server AND launch pi in one command
-bash scripts/start.sh
+bash scripts/start.sh                 #   (add BACKEND=cuda if you set up CUDA above)
 ```
 
 Or run the two halves yourself:
@@ -102,7 +103,7 @@ kernels** from 12.9 are too new for the 12.2 driver to load. **Two fixes:**
 
 | Script | What it does |
 |---|---|
-| `scripts/setup.sh` | **(once)** Creates the `llamacpp` conda env (llama.cpp + huggingface_hub) and downloads the GGUF into `models/`. Idempotent. |
+| `scripts/setup.sh` | **(once)** Creates the `llamacpp` conda env (llama.cpp + huggingface_hub) and downloads the GGUF into `models/`. `BACKEND=cuda` also builds the native CUDA backend. Idempotent. |
 | `scripts/configure-pi.sh` | **(once)** Adds the `llamacpp` provider to `~/.pi/agent/models.json` from `config/pi-provider.json`. |
 | `scripts/start.sh` | **All-in-one:** starts the server (if not already up), waits for it to load, then launches pi. Passes `BACKEND`/`NCMOE`/`CTX` through; extra args go to pi. |
 | `scripts/run-server.sh` | Launches `llama-server` with `--cpu-moe`, `--no-mmap`, `-c 16384`, `--jinja`, on `127.0.0.1:8080`. Vulkan by default; `BACKEND=cuda` uses the source build. |

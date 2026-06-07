@@ -1,18 +1,24 @@
 #!/usr/bin/env bash
 #
-# setup.sh — one-time setup: create the llama.cpp env and download the model.
+# setup.sh — one-time setup: create the llama.cpp env, download the model, and
+# (optionally) build the native CUDA backend.
 #
-# Creates a conda/mamba env containing llama.cpp (with both CUDA and Vulkan
-# backends compiled in) plus huggingface_hub, then downloads the Gemma 4
-# 26B-A4B QAT GGUF (~14 GB) into ./models/.
+# Pick your backend with BACKEND:
+#   bash scripts/setup.sh                 # BACKEND=vulkan (default): env + model.
+#                                         #   Works on any GPU/driver, no build. ~4-5 tok/s.
+#   BACKEND=cuda bash scripts/setup.sh    # env + model + build llama.cpp against your
+#                                         #   driver's CUDA (scripts/build-llama-cuda.sh).
+#                                         #   ~5-6x faster (~25 tok/s here). Adds ~20 min.
 #
-# Override defaults via env vars, e.g.:
-#   ENV_NAME=mygemma CUDA_BUILD=cuda130 bash scripts/setup.sh
+# The conda env + model download are needed either way; CUDA just adds the source build.
+#
+# Other overrides: ENV_NAME, CUDA_BUILD (conda variant), MODEL_REPO, MODEL_FILE.
 #
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+BACKEND="${BACKEND:-vulkan}"
 ENV_NAME="${ENV_NAME:-llamacpp}"
 # conda-forge llama.cpp build variant. cuda129 = CUDA 12.9, cuda130 = CUDA 13.0.
 # Both include the Vulkan backend, which is what we actually run (see README:
@@ -49,11 +55,21 @@ fi
 echo ">> devices visible to llama.cpp:"
 mamba run -n "$ENV_NAME" llama-server --list-devices 2>/dev/null | sed 's/^/   /'
 
+# --- 4. optional: build the native CUDA backend -----------------------------
+if [ "$BACKEND" = "cuda" ]; then
+  echo
+  echo ">> BACKEND=cuda — building llama.cpp against your driver's CUDA (~20 min) ..."
+  bash "$REPO_ROOT/scripts/build-llama-cuda.sh"
+  RUN_HINT="BACKEND=cuda bash scripts/start.sh        # native CUDA backend (~5-6x faster)"
+else
+  RUN_HINT="bash scripts/start.sh                     # Vulkan backend (default)
+     (for ~5-6x more speed later: BACKEND=cuda bash scripts/setup.sh)"
+fi
+
 cat <<EOF
 
->> Setup complete.
+>> Setup complete (backend: $BACKEND).
    Next:
-     1) Start the server:   bash scripts/run-server.sh
-     2) Point pi at it:     bash scripts/configure-pi.sh   (once)
-                            pi --provider llamacpp --model gemma-4-26b-a4b-qat
+     1) Register pi provider (once):  bash scripts/configure-pi.sh
+     2) Start server + pi:            $RUN_HINT
 EOF
