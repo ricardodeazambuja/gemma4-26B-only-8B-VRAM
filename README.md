@@ -25,6 +25,9 @@ are active per token.
             └─────────────────────────────────────────────────────────────────┘
 ```
 
+> 📖 For the full engineering story — architecture, the CUDA-version wall, the build, the
+> performance analysis, and every caveat — see **[docs/TECHNICAL.md](docs/TECHNICAL.md)**.
+
 ---
 
 ## TL;DR
