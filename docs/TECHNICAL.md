@@ -2,7 +2,7 @@
 
 This document explains **how** the setup in this repo works, **why** each decision was made,
 and the **caveats** discovered along the way. It is the engineering companion to the
-[README](../README.md) (quickstart) and [MEMORY.md](../MEMORY.md) (terse notes).
+[README](../README.md) (quickstart).
 
 - [1. Goal & constraints](#1-goal--constraints)
 - [2. The model](#2-the-model)
@@ -507,10 +507,11 @@ A consolidated list of the non-obvious things that bit us — useful if you adap
   image is invalid`). Use Vulkan or build from source against the driver's CUDA. (§6)
 - `--list-devices` is **not** a validity test — the broken build passes it; only a real decode
   loads a kernel. Smoke-test with `llama-bench -n 8`, not device enumeration.
-- In `llama-server`, `-ngl 0` / `--device none` does **not** force CPU-only: the CUDA backend
-  still registers and grabs warmup compute, re-triggering the crash. To benchmark true CPU-only,
-  use `llama-bench --device none -ngl 0` (its scheduler honors it). A pure-CPU *server* would need
-  the conda `cpu_mkl` build instead.
+- A CPU-only *server* **does** work: `BACKEND=cpu bash scripts/run-server.sh` runs the conda
+  binary with `--device none -ngl 0` and loads/serves cleanly (verified — model loads, no crash).
+  The **source-built** `llamacpp-cuda` binary is the exception: its CUDA backend can still grab
+  warmup compute at `-ngl 0` and re-trigger the kernel-image crash, so for CPU-only *benchmarking*
+  use `llama-bench --device none -ngl 0` (its scheduler honors it).
 - `llama-bench` accepts `--n-cpu-moe` but **not** `--cpu-moe` (it errors). The server accepts both.
 
 **Process management**
@@ -539,8 +540,9 @@ A consolidated list of the non-obvious things that bit us — useful if you adap
 - Gemma 4 prints harmless load warnings overriding control-token types
   (`<|tool_response>`, `</s>`); ignore them.
 - `-c 248000` does not fit in 8 GB VRAM. Start at 16K.
-- There was no `gguf` Python module in the env; GGUF metadata was read by parsing the binary
-  header directly (little-endian: magic, u32 version, u64 tensor_count, u64 kv_count, typed KVs).
+- To inspect a GGUF (architecture, modality, tensor inventory) use `utils/inspect-gguf.sh <file>`.
+  It uses the `gguf` Python module, auto-resolved from the vendored `llama.cpp/gguf-py` if it isn't
+  pip-installed — so no extra setup when the llama.cpp source is checked out.
 
 ---
 

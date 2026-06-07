@@ -12,3 +12,6 @@ vendor/
 # Python
 __pycache__/
 *.pyc
+
+# Local working notes (kept out of the repo)
+MEMORY.md

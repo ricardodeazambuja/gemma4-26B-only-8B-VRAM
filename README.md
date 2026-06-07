@@ -331,7 +331,6 @@ There's also a built-in web UI at <http://127.0.0.1:8080>.
 ```
 .
 ├── README.md                 # this file
-├── MEMORY.md                 # working notes / decisions log
 ├── environment.yml           # conda/mamba runtime deps (Vulkan path)
 ├── environment-build.yml     # conda/mamba build toolchain (native CUDA build)
 ├── scripts/
