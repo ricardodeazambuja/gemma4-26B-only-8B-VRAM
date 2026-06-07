@@ -69,15 +69,15 @@ CUDA error: device kernel image is invalid
 ```
 
 CUDA *minor-version compatibility* covers the runtime **API**, but the compiled **SASS
-kernels** from 12.9 are too new for the 12.2 driver to load. **Fix:** run the **Vulkan**
-backend (`--device VulkanN`), which uses the driver's own ICD and has no CUDA-version wall.
-`--cpu-moe` is backend-agnostic, so the RAM/VRAM split is identical. `scripts/run-server.sh`
-defaults to Vulkan and auto-detects the NVIDIA Vulkan device.
+kernels** from 12.9 are too new for the 12.2 driver to load. **Two fixes:**
 
-> If your driver is new enough for the build's CUDA version (driver ≥ ~575 for CUDA 12.9),
-> you can run `BACKEND=cuda bash scripts/run-server.sh` for more speed. Or build llama.cpp
-> from source against CUDA 12.2 (`mamba install -c conda-forge cuda-toolkit=12.2`, then
-> `-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75`).
+1. **Zero-build:** run the **Vulkan** backend (`--device VulkanN`), which uses the driver's own
+   ICD and has no CUDA-version wall. `--cpu-moe` is backend-agnostic. This is the default in
+   `scripts/run-server.sh`. Works immediately, but slower (~4–5 tok/s here).
+2. **~5–6× faster:** build llama.cpp from source against *your driver's own* CUDA version with
+   `scripts/build-llama-cuda.sh`, then `BACKEND=cuda bash scripts/run-server.sh`. On this RTX
+   2070 this took generation from ~4.9 → ~23.5 tok/s — the Vulkan MoE path, not RAM bandwidth,
+   was the bottleneck. See [Performance & tuning](#performance--tuning).
 
 ---
 
@@ -98,7 +98,8 @@ defaults to Vulkan and auto-detects the NVIDIA Vulkan device.
 | Script | What it does |
 |---|---|
 | `scripts/setup.sh` | Creates the `llamacpp` conda env (llama.cpp + huggingface_hub) and downloads the GGUF into `models/`. Idempotent. |
-| `scripts/run-server.sh` | Launches `llama-server` with `--cpu-moe`, Vulkan, `--no-mmap`, `-c 16384`, `--jinja`, on `127.0.0.1:8080`. |
+| `scripts/run-server.sh` | Launches `llama-server` with `--cpu-moe`, `--no-mmap`, `-c 16384`, `--jinja`, on `127.0.0.1:8080`. Vulkan by default; `BACKEND=cuda` uses the source build. |
+| `scripts/build-llama-cuda.sh` | **(optional, ~5–6× faster)** Builds llama.cpp from source against your driver's CUDA version into a `llamacpp-cuda` env. Auto-detects CUDA + GPU arch, smoke-tests the result. |
 | `scripts/configure-pi.sh` | Adds the `llamacpp` provider to `~/.pi/agent/models.json` from `config/pi-provider.json`. |
 | `config/pi-provider.json` | The pi provider definition (copy into `models.json` manually if you prefer). |
 
@@ -110,7 +111,7 @@ All scripts accept env-var overrides — see the header comment in each.
 NCMOE=22   bash scripts/run-server.sh     # FASTEST on 8 GB: keep first 22 layers' experts
                                           # on CPU, put the last 8 layers' experts on the GPU
 CTX=32768  bash scripts/run-server.sh     # larger context (more VRAM for KV cache)
-BACKEND=cuda bash scripts/run-server.sh   # use CUDA (only if driver matches the build)
+BACKEND=cuda bash scripts/run-server.sh   # native CUDA backend (after build-llama-cuda.sh) — ~5–6× faster
 PORT=9000  bash scripts/run-server.sh     # different port
 ```
 
@@ -120,34 +121,35 @@ The model is **30 layers, 128 experts/layer, top-8 routing**; in this quant each
 experts are ~0.45 GB. `--n-cpu-moe N` (env `NCMOE=N`) keeps the **first N** layers' experts
 on CPU and puts the rest on the GPU — fewer on CPU = faster but more VRAM.
 
-Measured on the RTX 2070 (8 GB) at `CTX=16384`:
+Measured on the RTX 2070 (8 GB) at `CTX=16384`, `NCMOE=22` (8 layers' experts on GPU),
+same model, same llama-bench:
 
-| Setting | Experts on GPU | VRAM used | Gen speed |
-|---|---|---|---|
-| CPU only (no GPU) | — | — | ~1.9 tok/s |
-| `--cpu-moe` (default) | 0 layers | ~3.5 GB | ~3.7 tok/s |
-| `NCMOE=22` | 8 layers | ~6.8 GB | **~4.9 tok/s** |
+| Backend | Prompt (pp) | **Generation (tg)** |
+|---|---|---|
+| CPU only (no GPU) | 3.1 t/s | ~1.9 t/s |
+| Vulkan (stock conda build) | 47 t/s | ~4.4 t/s |
+| **CUDA (built from source)** | 63 t/s | **~25 t/s** |
 
-`NCMOE=22` leaves ~1.2 GB VRAM headroom — about the limit on an 8 GB card once the desktop
-is using some VRAM. If you hit out-of-memory, raise `NCMOE` (e.g. 24) or lower `CTX`.
+Real server-side (what pi sees): **Vulkan ~4.9 tok/s → CUDA ~23.5 tok/s.**
 
-**Why "only" ~5 tok/s — and why the GPU still helps.** This is an MoE: most of the FLOPs are
-in the expert FFNs, and with `--cpu-moe` those run on the **CPU**, bottlenecked by **system-RAM
-bandwidth** (each token streams the active experts' weights from RAM). The GPU only handles
-attention + whatever experts you fit in VRAM. So:
+**The CUDA backend is ~5–6× faster — build it if your driver allows.** The default Vulkan
+backend exists only because the *prebuilt* conda CUDA package targets a newer CUDA than older
+drivers can load. Once you build llama.cpp against your own driver's CUDA (one command,
+`scripts/build-llama-cuda.sh`), the CUDA backend runs and is dramatically faster — on this
+Turing GPU the Vulkan MoE path, not RAM bandwidth, was the real bottleneck.
 
-- The GPU is **not** slow vs CPU — it's ~2× faster (1.9 → 3.7 tok/s) and ~2.6× with `NCMOE=22`.
-- But it can't go much faster while 22 of 30 layers' experts live in RAM. The ceiling is RAM
-  bandwidth, not the GPU.
-- The only ways to break that ceiling: fit **more** experts in VRAM (you don't have the VRAM),
-  use **faster RAM**, or pick a **smaller quant**.
+```bash
+bash scripts/build-llama-cuda.sh        # auto-detects your CUDA + GPU arch, ~20 min
+NCMOE=22 BACKEND=cuda bash scripts/run-server.sh
+```
 
-**Would a CUDA build (matched to your driver) be faster?** Somewhat. CUDA kernels usually beat
-Vulkan on NVIDIA by ~15–40 % for the GPU-resident work, plus more efficient host↔device
-transfer — so expect a moderate bump (roughly into the 6 tok/s range), **not** a transformation,
-because the CPU-resident experts remain the bottleneck. To try it: `mamba install -c conda-forge
-cuda-toolkit=12.2`, build llama.cpp from source with `-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75`,
-then `BACKEND=cuda bash scripts/run-server.sh`.
+**Why MoE makes this feasible at all:** only **8 of 128 experts fire per token**, so each token
+streams only a few tens of MB of expert weights from RAM — light enough that RAM bandwidth is
+*not* the limiting factor here. With CUDA doing attention + the GPU-resident experts efficiently,
+~25 tok/s is reached even with 22 of 30 layers' experts still in RAM.
+
+`NCMOE=22` leaves ~1.2 GB VRAM headroom — about the limit on an 8 GB card once the desktop is
+using some VRAM. If you hit out-of-memory, raise `NCMOE` (e.g. 24) or lower `CTX`.
 
 ---
 
@@ -192,9 +194,11 @@ There's also a built-in web UI at <http://127.0.0.1:8080>.
 ├── MEMORY.md                 # working notes / decisions log
 ├── scripts/
 │   ├── setup.sh              # env + model download
-│   ├── run-server.sh         # launch llama-server (Vulkan + --cpu-moe)
+│   ├── run-server.sh         # launch llama-server (Vulkan default, BACKEND=cuda for the build)
+│   ├── build-llama-cuda.sh   # build llama.cpp against the local CUDA (optional, ~5-6x faster)
 │   └── configure-pi.sh       # register provider in pi
 ├── config/
 │   └── pi-provider.json      # pi provider definition
-└── models/                   # downloaded GGUF lives here (gitignored)
+├── models/                   # downloaded GGUF lives here (gitignored)
+└── vendor/                   # llama.cpp source + CUDA build (gitignored)
 ```

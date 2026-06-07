@@ -41,20 +41,28 @@ NCMOE="${NCMOE:-}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8080}"
 
+CUDA_ENV="${CUDA_ENV:-llamacpp-cuda}"
+CUDA_BIN="${CUDA_BIN:-$REPO_ROOT/vendor/llama.cpp/build/bin/llama-server}"
+
 command -v mamba >/dev/null 2>&1 || { echo "ERROR: 'mamba' not found on PATH."; exit 1; }
 [ -f "$MODEL" ] || { echo "ERROR: model not found: $MODEL"; echo "Run scripts/setup.sh first."; exit 1; }
 
-RUN=(mamba run --no-capture-output -n "$ENV_NAME")
-
-# --- pick GPU backend / device ---------------------------------------------
+# --- pick GPU backend / device / binary ------------------------------------
 DEVICE_ARGS=()
-if [ "$BACKEND" = "vulkan" ]; then
+if [ "$BACKEND" = "cuda" ]; then
+  # Use the locally built CUDA binary (scripts/build-llama-cuda.sh) + its env.
+  [ -x "$CUDA_BIN" ] || { echo "ERROR: CUDA build not found at $CUDA_BIN"; echo "Run scripts/build-llama-cuda.sh first (or set CUDA_BIN)."; exit 1; }
+  RUN=(mamba run --no-capture-output -n "$CUDA_ENV")
+  SERVER_BIN="$CUDA_BIN"
+  # default CUDA device (CUDA0); -ngl 99 offloads to it
+  echo ">> backend: CUDA  binary: $CUDA_BIN"
+else
+  RUN=(mamba run --no-capture-output -n "$ENV_NAME")
+  SERVER_BIN="llama-server"
   DEV="$("${RUN[@]}" llama-server --list-devices 2>/dev/null | grep -iE 'Vulkan[0-9]+: NVIDIA' | head -1 | sed -E 's/^ *([A-Za-z0-9]+):.*/\1/')"
   DEV="${DEV:-Vulkan0}"
   DEVICE_ARGS=(--device "$DEV")
   echo ">> backend: Vulkan  device: $DEV"
-else
-  echo ">> backend: CUDA (ensure your driver supports the build's CUDA version)"
 fi
 
 # --- MoE offload mode -------------------------------------------------------
@@ -69,7 +77,7 @@ fi
 echo ">> context: $CTX   listening: http://$HOST:$PORT/v1"
 echo
 
-exec "${RUN[@]}" llama-server \
+exec "${RUN[@]}" "$SERVER_BIN" \
   -m "$MODEL" \
   --alias gemma-4-26b-a4b-qat \
   "${DEVICE_ARGS[@]}" \

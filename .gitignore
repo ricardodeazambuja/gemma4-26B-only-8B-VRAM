@@ -2,6 +2,9 @@
 models/*
 !models/.gitkeep
 
+# Locally built llama.cpp source + build (created by scripts/build-llama-cuda.sh)
+vendor/
+
 # Logs / scratch
 *.log
 /tmp/
