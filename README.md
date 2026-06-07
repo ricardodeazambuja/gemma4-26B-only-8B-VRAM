@@ -337,14 +337,18 @@ There's also a built-in web UI at <http://127.0.0.1:8080>.
 │   ├── setup.sh              # env + model download
 │   ├── configure-pi.sh       # register provider in pi
 │   ├── start.sh              # all-in-one: server (if needed) + pi
-│   ├── run-server.sh         # launch llama-server (Vulkan default, BACKEND=cuda for the build)
+│   ├── run-server.sh         # launch llama-server (auto CUDA/Vulkan; --image for vision)
 │   ├── run-pi.sh             # launch pi against the local server
 │   ├── stop-server.sh        # stop the server
 │   ├── build-llama-cuda.sh   # build llama.cpp against the local CUDA (optional, ~5-6x faster)
 │   └── make-speed-chart.py   # regenerate docs/speed.svg from measured numbers
+├── utils/
+│   ├── inspect-gguf.sh       # report a GGUF's architecture / modality / tensors
+│   └── inspect-gguf.py       #   (the implementation; .sh runs it in the env)
 ├── config/
 │   └── pi-provider.json      # pi provider definition
 ├── docs/
+│   ├── TECHNICAL.md          # engineering write-up (architecture, perf, multimodal)
 │   └── speed.svg             # backend speed comparison chart (in the README)
 ├── models/                   # downloaded GGUF lives here (gitignored)
 └── vendor/                   # llama.cpp source + CUDA build (gitignored)
