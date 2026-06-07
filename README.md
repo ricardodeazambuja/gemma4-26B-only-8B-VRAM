@@ -15,9 +15,10 @@ NVIDIA GPU — and use it as the backend for [`pi`](https://github.com/badlogic/
 
 > ⚡ **Want the most tokens/sec? Use the CUDA backend.** It is **~5× faster** than the zero-build
 > Vulkan default (~23.5 vs ~4.9 tok/s here). Build it once with `scripts/build-llama-cuda.sh`
-> (or `BACKEND=cuda bash scripts/setup.sh`), then run everything with `BACKEND=cuda`. Vulkan is
-> only the default because it needs no build and works on any driver — it is the *fallback*, not
-> the fast path.
+> (or `BACKEND=cuda bash scripts/setup.sh`). Once built, the run scripts **auto-select CUDA** —
+> no need to pass `BACKEND=cuda` each time. Vulkan is only the *fallback* when there is no CUDA
+> build (it needs none and works on any driver) — not the fast path. The launch banner tells you
+> which one is live: 🟢 CUDA / 🟡 Vulkan / 🔴 CPU.
 
 The trick is llama.cpp's **`--cpu-moe`** flag: it pins the heavy MoE expert weights to
 system RAM while keeping the attention layers, the **KV cache (your context)**, and — VRAM
@@ -52,8 +53,13 @@ bash scripts/configure-pi.sh          # register the pi provider (once)
 bash scripts/start.sh                 # server + pi
 ```
 
-> Always pass `BACKEND=cuda` to the run scripts to use the CUDA build; without it they default to
-> Vulkan.
+> **Backend auto-detection:** once you've built the CUDA backend, the run scripts pick it up
+> automatically — you no longer need to pass `BACKEND=cuda` every time. Without a CUDA build they
+> fall back to Vulkan. Override either way with `BACKEND=cuda|vulkan|cpu`.
+>
+> At launch the server prints a **color-coded banner** so you can see the active backend at a
+> glance: 🟢 **green = CUDA** (fast), 🟡 **yellow = Vulkan** (slow MoE path), 🔴 **red = CPU-only**.
+> If you expected CUDA but see yellow, your build is missing — run `scripts/build-llama-cuda.sh`.
 
 Prefer to run the two halves yourself instead of `start.sh`:
 
@@ -169,7 +175,7 @@ kernels** from 12.9 are too new for the 12.2 driver to load. **Two fixes:**
 | `scripts/setup.sh` | **(once)** Creates the `llamacpp` conda env (llama.cpp + huggingface_hub) and downloads the GGUF into `models/`. `BACKEND=cuda` also builds the native CUDA backend. Idempotent. |
 | `scripts/configure-pi.sh` | **(once)** Adds the `llamacpp` provider to `~/.pi/agent/models.json` from `config/pi-provider.json`. |
 | `scripts/start.sh` | **All-in-one:** starts the server (if not already up), waits for it to load, then launches pi. Passes `BACKEND`/`NCMOE`/`CTX` through; extra args go to pi. |
-| `scripts/run-server.sh` | Launches `llama-server` with `--cpu-moe`, `--no-mmap`, `-c 32768`, `--jinja`, on `127.0.0.1:8080`. Vulkan by default; `BACKEND=cuda` uses the source build. |
+| `scripts/run-server.sh` | Launches `llama-server` with `--cpu-moe`, `--no-mmap`, `-c 32768`, `--jinja`, on `127.0.0.1:8080`. Auto-selects CUDA if built, else Vulkan; prints a color-coded backend banner at launch. Override with `BACKEND=cuda\|vulkan\|cpu`. |
 | `scripts/run-pi.sh` | Launches pi against the local server (`--provider llamacpp --model gemma-4-26b-a4b-qat`). Extra args pass through to pi. |
 | `scripts/stop-server.sh` | Stops the server by the port it listens on (default 8080). |
 | `scripts/build-llama-cuda.sh` | **(optional, ~5–6× faster)** Builds llama.cpp from source against your driver's CUDA version into a `llamacpp-cuda` env. Auto-detects CUDA + GPU arch, smoke-tests the result. |
@@ -182,7 +188,8 @@ All scripts accept env-var overrides — see the header comment in each.
 ```bash
 NCMOE=22    bash scripts/run-server.sh    # FASTEST on 8 GB: 8 expert layers on GPU (this is the default)
 CTX=65536   bash scripts/run-server.sh    # bigger context (see the ceiling table below)
-BACKEND=cuda bash scripts/run-server.sh   # native CUDA backend (after build-llama-cuda.sh) — ~5–6× faster
+BACKEND=cuda bash scripts/run-server.sh   # force native CUDA backend (auto-selected once built)
+BACKEND=cpu bash scripts/run-server.sh    # no GPU offload — slow, benchmark baseline only
 PORT=9000   bash scripts/run-server.sh    # different port
 ```
 
