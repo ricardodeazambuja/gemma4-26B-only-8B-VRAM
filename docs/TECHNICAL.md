@@ -275,6 +275,10 @@ faster than Vulkan") is what caught it.
 **Lesson:** measure backends on your actual hardware. For MoE token-generation on an older NVIDIA
 GPU, Vulkan can be ~5× slower than CUDA, which is well outside the usual gap.
 
+**Recommendation:** if you care about tokens/sec, **use the CUDA build** (`build-llama-cuda.sh`,
+then `BACKEND=cuda`). Vulkan is the zero-build fallback for when you can't build or aren't on
+NVIDIA — not the throughput choice.
+
 ---
 
 ## 9. Tuning

@@ -13,6 +13,12 @@ NVIDIA GPU — and use it as the backend for [`pi`](https://github.com/badlogic/
 
 <p align="center"><img src="docs/speed.svg" alt="Token generation speed by backend: CPU 1.9, Vulkan 4.9, CUDA 23.5 tok/s" width="680"></p>
 
+> ⚡ **Want the most tokens/sec? Use the CUDA backend.** It is **~5× faster** than the zero-build
+> Vulkan default (~23.5 vs ~4.9 tok/s here). Build it once with `scripts/build-llama-cuda.sh`
+> (or `BACKEND=cuda bash scripts/setup.sh`), then run everything with `BACKEND=cuda`. Vulkan is
+> only the default because it needs no build and works on any driver — it is the *fallback*, not
+> the fast path.
+
 The trick is llama.cpp's **`--cpu-moe`** flag: it pins the heavy MoE expert weights to
 system RAM while keeping the attention layers and KV cache on the GPU. A 14 GB model
 that can't possibly fit in 8 GB of VRAM then runs comfortably, because only ~4B params
@@ -32,24 +38,31 @@ are active per token.
 
 ## TL;DR
 
+**Fastest (recommended) — CUDA backend (~23.5 tok/s):**
+
 ```bash
-# 1. set up env + model (~14 GB). Pick a backend:
-bash scripts/setup.sh                 #   Vulkan  — works on any driver, no build (~4-5 tok/s)
-# BACKEND=cuda bash scripts/setup.sh  #   CUDA    — builds against your driver's CUDA (~5-6x faster, +20 min)
-
-# 2. register the server as a provider in pi (once)
-bash scripts/configure-pi.sh
-
-# 3. bring up the server AND launch pi in one command
-bash scripts/start.sh                 #   (add BACKEND=cuda if you set up CUDA above)
+BACKEND=cuda bash scripts/setup.sh    # env + model + build llama.cpp vs your CUDA (~20 min, once)
+bash scripts/configure-pi.sh          # register the pi provider (once)
+BACKEND=cuda bash scripts/start.sh    # server + pi
 ```
 
-Or run the two halves yourself:
+**Zero-build — Vulkan backend (~4.9 tok/s), works on any driver:**
 
 ```bash
-bash scripts/run-server.sh     # terminal A: start the server (leave running)
-bash scripts/run-pi.sh         # terminal B: chat through pi
-bash scripts/stop-server.sh    # when done: stop the server
+bash scripts/setup.sh                 # env + model (~14 GB), no compile
+bash scripts/configure-pi.sh          # register the pi provider (once)
+bash scripts/start.sh                 # server + pi
+```
+
+> Always pass `BACKEND=cuda` to the run scripts to use the CUDA build; without it they default to
+> Vulkan.
+
+Prefer to run the two halves yourself instead of `start.sh`:
+
+```bash
+BACKEND=cuda bash scripts/run-server.sh   # terminal A: start the server (drop BACKEND for Vulkan)
+bash scripts/run-pi.sh                     # terminal B: chat through pi
+bash scripts/stop-server.sh                # when done: stop the server
 ```
 
 ---
