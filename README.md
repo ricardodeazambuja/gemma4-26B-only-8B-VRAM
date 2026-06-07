@@ -24,12 +24,7 @@ system RAM while keeping the attention layers, the **KV cache (your context)**, 
 permitting — a few expert layers on the GPU. A 14 GB model that can't possibly fit in 8 GB of
 VRAM then runs comfortably, because only ~4B params are active per token.
 
-```
-            ┌──────────────── llama-server (OpenAI API :8080) ────────────────┐
-   pi  ───▶ │  GPU (8 GB):  attention + KV cache (context) + N expert layers   │
-            │  RAM:         the remaining MoE expert FFN weights  (--cpu-moe)   │
-            └─────────────────────────────────────────────────────────────────┘
-```
+<p align="center"><img src="docs/architecture.svg" alt="pi talks over HTTP to llama-server (OpenAI API on :8080); the GPU's 8 GB VRAM holds attention layers, the KV cache (your context), and N expert layers, while system RAM holds the remaining MoE expert FFN weights via --cpu-moe" width="700"></p>
 
 Only the expert FFN weights move to RAM; the context (KV cache) stays in VRAM, which is why context
 length and on-GPU experts share the 8 GB budget (see [tuning](#performance--tuning)).
