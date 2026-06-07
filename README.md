@@ -28,11 +28,16 @@ bash scripts/setup.sh
 # 2. register the server as a provider in pi (once)
 bash scripts/configure-pi.sh
 
-# 3. terminal A: start the model server (leave running)
-bash scripts/run-server.sh
+# 3. bring up the server AND launch pi in one command
+bash scripts/start.sh
+```
 
-# 4. terminal B: chat through pi
-pi --provider llamacpp --model gemma-4-26b-a4b-qat
+Or run the two halves yourself:
+
+```bash
+bash scripts/run-server.sh     # terminal A: start the server (leave running)
+bash scripts/run-pi.sh         # terminal B: chat through pi
+bash scripts/stop-server.sh    # when done: stop the server
 ```
 
 ---
@@ -97,10 +102,13 @@ kernels** from 12.9 are too new for the 12.2 driver to load. **Two fixes:**
 
 | Script | What it does |
 |---|---|
-| `scripts/setup.sh` | Creates the `llamacpp` conda env (llama.cpp + huggingface_hub) and downloads the GGUF into `models/`. Idempotent. |
+| `scripts/setup.sh` | **(once)** Creates the `llamacpp` conda env (llama.cpp + huggingface_hub) and downloads the GGUF into `models/`. Idempotent. |
+| `scripts/configure-pi.sh` | **(once)** Adds the `llamacpp` provider to `~/.pi/agent/models.json` from `config/pi-provider.json`. |
+| `scripts/start.sh` | **All-in-one:** starts the server (if not already up), waits for it to load, then launches pi. Passes `BACKEND`/`NCMOE`/`CTX` through; extra args go to pi. |
 | `scripts/run-server.sh` | Launches `llama-server` with `--cpu-moe`, `--no-mmap`, `-c 16384`, `--jinja`, on `127.0.0.1:8080`. Vulkan by default; `BACKEND=cuda` uses the source build. |
+| `scripts/run-pi.sh` | Launches pi against the local server (`--provider llamacpp --model gemma-4-26b-a4b-qat`). Extra args pass through to pi. |
+| `scripts/stop-server.sh` | Stops the server by the port it listens on (default 8080). |
 | `scripts/build-llama-cuda.sh` | **(optional, ~5–6× faster)** Builds llama.cpp from source against your driver's CUDA version into a `llamacpp-cuda` env. Auto-detects CUDA + GPU arch, smoke-tests the result. |
-| `scripts/configure-pi.sh` | Adds the `llamacpp` provider to `~/.pi/agent/models.json` from `config/pi-provider.json`. |
 | `config/pi-provider.json` | The pi provider definition (copy into `models.json` manually if you prefer). |
 
 All scripts accept env-var overrides — see the header comment in each.
@@ -194,9 +202,12 @@ There's also a built-in web UI at <http://127.0.0.1:8080>.
 ├── MEMORY.md                 # working notes / decisions log
 ├── scripts/
 │   ├── setup.sh              # env + model download
+│   ├── configure-pi.sh       # register provider in pi
+│   ├── start.sh              # all-in-one: server (if needed) + pi
 │   ├── run-server.sh         # launch llama-server (Vulkan default, BACKEND=cuda for the build)
-│   ├── build-llama-cuda.sh   # build llama.cpp against the local CUDA (optional, ~5-6x faster)
-│   └── configure-pi.sh       # register provider in pi
+│   ├── run-pi.sh             # launch pi against the local server
+│   ├── stop-server.sh        # stop the server
+│   └── build-llama-cuda.sh   # build llama.cpp against the local CUDA (optional, ~5-6x faster)
 ├── config/
 │   └── pi-provider.json      # pi provider definition
 ├── models/                   # downloaded GGUF lives here (gitignored)
