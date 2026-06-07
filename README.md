@@ -20,16 +20,19 @@ NVIDIA GPU — and use it as the backend for [`pi`](https://github.com/badlogic/
 > the fast path.
 
 The trick is llama.cpp's **`--cpu-moe`** flag: it pins the heavy MoE expert weights to
-system RAM while keeping the attention layers and KV cache on the GPU. A 14 GB model
-that can't possibly fit in 8 GB of VRAM then runs comfortably, because only ~4B params
-are active per token.
+system RAM while keeping the attention layers, the **KV cache (your context)**, and — VRAM
+permitting — a few expert layers on the GPU. A 14 GB model that can't possibly fit in 8 GB of
+VRAM then runs comfortably, because only ~4B params are active per token.
 
 ```
             ┌──────────────── llama-server (OpenAI API :8080) ────────────────┐
-   pi  ───▶ │  GPU (8 GB):  attention layers + KV cache                        │
-            │  RAM (≥16 GB): all MoE expert FFN weights  (via --cpu-moe)       │
+   pi  ───▶ │  GPU (8 GB):  attention + KV cache (context) + N expert layers   │
+            │  RAM:         the remaining MoE expert FFN weights  (--cpu-moe)   │
             └─────────────────────────────────────────────────────────────────┘
 ```
+
+Only the expert FFN weights move to RAM; the context (KV cache) stays in VRAM, which is why context
+length and on-GPU experts share the 8 GB budget (see [tuning](#performance--tuning)).
 
 > 📖 For the full engineering story — architecture, the CUDA-version wall, the build, the
 > performance analysis, and every caveat — see **[docs/TECHNICAL.md](docs/TECHNICAL.md)**.
@@ -192,10 +195,12 @@ PORT=9000  bash scripts/run-server.sh     # different port
 These env vars work on **`run-server.sh`, `start.sh`, and `build-llama-cuda.sh`** alike (e.g.
 `CTX=32768 NCMOE=24 BACKEND=cuda bash scripts/start.sh`).
 
-**Context size.** The context window is `CTX` (default **16384**; model max **262144**). It's the
-KV-cache size and lives in VRAM, so it competes with `NCMOE` for the 8 GB — raise `CTX` and you may
-need a higher `NCMOE`, or lower `CTX` to free VRAM. If you change it, pass the **same** `CTX` to
-`configure-pi.sh` so pi's view matches the server:
+**Context size.** The context window is `CTX` (default **16384**; model max **262144**). The
+context is the KV cache, and it lives in **VRAM**, not RAM (only the expert weights are offloaded) —
+so it competes with `NCMOE` for the 8 GB: raise `CTX` and you may need a higher `NCMOE`, or lower
+`CTX` to free VRAM. The KV cache here is small (~0.6 GB at 16K, thanks to flash attention and
+Gemma's sliding-window layers) and its size is **independent of the quant**. If you change `CTX`,
+pass the **same** value to `configure-pi.sh` so pi's view matches the server:
 
 ```bash
 CTX=32768 bash scripts/configure-pi.sh    # keep pi's contextWindow in sync with the server's -c

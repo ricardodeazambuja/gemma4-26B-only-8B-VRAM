@@ -116,12 +116,21 @@ each token is routed to only **8 of 128** experts per layer. The experts are mos
 - `--n-cpu-moe N` (`-ncmoe N`): experts of the **first N** layers → RAM; the rest stay on GPU.
   Lower N ⇒ more experts on GPU ⇒ faster, but more VRAM.
 
-Crucially, `--cpu-moe` is **backend-agnostic** — it is a tensor-placement directive, so the
-RAM/VRAM split is identical whether the GPU backend is CUDA or Vulkan. That fact is what let us
-swap backends freely (§6).
+`--cpu-moe` moves **only the expert FFN weights**. Everything else — the attention weights,
+embeddings, router, norms, and the **KV cache (the context)** — stays on the GPU. The context is
+therefore *not* in system RAM; it occupies VRAM alongside the model weights, which is why context
+length and on-GPU experts draw from the same 8 GB budget (§9).
 
-**Measured VRAM** at `CTX=16384`: `--cpu-moe` (0 expert layers on GPU) ≈ 3.5 GB; `NCMOE=22`
-(8 expert layers on GPU) ≈ 6.8 GB. On an 8 GB card, `NCMOE=22` is about the ceiling.
+The KV cache stays small: at `CTX=16384` it is only ~0.6 GB here, kept down by flash attention
+(`-fa auto`) and Gemma 4's **sliding-window attention** (every 6th layer uses just `KV=2` heads
+instead of 8). Its size depends on context length and model dimensions — **not** on the weight
+quant — so a higher-precision quant costs the *same* VRAM for context.
+
+`--cpu-moe` is also **backend-agnostic** — it is a tensor-placement directive, so the RAM/VRAM
+split is identical whether the GPU backend is CUDA or Vulkan (§6).
+
+VRAM at `CTX=16384`: `--cpu-moe` (0 expert layers on GPU) ≈ 3.5 GB; `NCMOE=22` (8 expert layers on
+GPU) ≈ 6.8 GB. On an 8 GB card, `NCMOE=22` is about the ceiling.
 
 ---
 
@@ -341,9 +350,9 @@ experts fit on the GPU ⇒ `NCMOE=22`.
 ### Context size
 
 The **context window** is the `-c` argument to `llama-server`, exposed as the **`CTX`** env var on
-all run scripts. It is the second VRAM consumer after the experts: the KV cache lives in VRAM and
-grows roughly linearly with `CTX`, so context and on-GPU experts (`NCMOE`) compete for the same
-8 GB.
+all run scripts. It is the second VRAM consumer after the experts: the KV cache lives in VRAM
+(~0.6 GB at 16K) and grows roughly linearly with `CTX`, so context and on-GPU experts (`NCMOE`)
+compete for the same 8 GB.
 
 | | |
 |---|---|
