@@ -92,21 +92,24 @@ bash scripts/stop-server.sh                # when done: stop the server
 `huggingface_hub` into `models/`, ~14 GB). The repo is **public**, so no Hugging Face
 account or token is required.
 
+The QAT repo ships **only this one 4-bit file** (QAT is trained for 4-bit). For other
+precisions, use the **non-QAT** repo
+[`unsloth/gemma-4-26B-A4B-it-GGUF`](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/tree/main),
+which has the full Q2–Q8 range (Q5 ≈ 21 GB, Q6 ≈ 23 GB, Q8 ≈ 27 GB).
+
 **Use a different quant or your own file:**
 
 ```bash
-# pick another file from the same repo (e.g. a smaller/larger quant)
-MODEL_FILE=gemma-4-26B-A4B-it-qat-UD-Q3_K_XL.gguf bash scripts/setup.sh
+# a higher-precision quant of the SAME model (more RAM, same ~speed; needs the non-QAT repo)
+MODEL_REPO=unsloth/gemma-4-26B-A4B-it-GGUF \
+MODEL_FILE=gemma-4-26B-A4B-it-UD-Q6_K_XL.gguf bash scripts/setup.sh
 
-# or a different repo entirely
-MODEL_REPO=some-org/some-gguf MODEL_FILE=model.gguf bash scripts/setup.sh
-
-# already have the GGUF somewhere? skip the download and point the server at it
+# already have a GGUF somewhere? skip the download and point the server at it
 MODEL=/path/to/model.gguf bash scripts/run-server.sh
 ```
 
-Browse available quants (Q3/Q4/Q5/Q6/Q8, different sizes) on the
-[repo's Files tab](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF/tree/main).
+See [docs/TECHNICAL.md](docs/TECHNICAL.md#13-running-bigger-models) for what fits in your RAM and
+whether a bigger Gemma 4 is worth it.
 
 ---
 

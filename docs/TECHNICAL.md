@@ -16,6 +16,7 @@ and the **caveats** discovered along the way. It is the engineering companion to
 - [10. Wiring up `pi`](#10-wiring-up-pi)
 - [11. Caveats & gotchas](#11-caveats--gotchas)
 - [12. Reproducibility](#12-reproducibility)
+- [13. Running bigger models](#13-running-bigger-models)
 
 ---
 
@@ -496,3 +497,60 @@ and GPU arch rather than relying on a static pin.
 - pi: <https://github.com/badlogic/pi-mono>
 - Ollama MoE-offload requests: [#11772](https://github.com/ollama/ollama/issues/11772),
   [#14579](https://github.com/ollama/ollama/issues/14579)
+
+---
+
+## 13. Running bigger models
+
+With `--cpu-moe`, two things set what you can run: the **quantized model must fit in RAM**
+(`--no-mmap` loads the CPU-resident weights there; it's a safe upper bound to use the *file size*),
+and **generation speed tracks _active_ params, not total**. That distinction decides whether
+"bigger" helps.
+
+### The Gemma 4 GGUF lineup (unsloth)
+
+| Model | Type | Active/token | Notes |
+|---|---|---|---|
+| E2B, E4B | small "efficient" | tiny | the ones bundled in ollama |
+| 12B | **dense** | 12B | all params active |
+| **26B-A4B** | **MoE** | **4B** | what this repo runs — the only big MoE |
+| 31B | **dense** | 31B | all params active |
+
+Each comes in QAT and non-QAT GGUF repos.
+
+### Path A — higher-precision quant of the *same* 26B-A4B MoE  ✅ recommended
+
+The QAT repo has only the 4-bit `UD-Q4_K_XL` (~14 GB). The
+[non-QAT repo](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF) has the full range. Since
+it's the same MoE (4B active), **the speed stays ~the same (~23 tok/s on CUDA)** — you're only
+spending RAM for quality:
+
+| Quant | Size | Fits in 32 GB RAM? |
+|---|---|---|
+| Q4_K_XL (QAT, current) | 14 GB | yes |
+| Q5_K_XL | 21 GB | yes — comfortable |
+| Q6_K_XL | 23 GB | yes — good headroom |
+| Q8_0 / Q8_K_XL | 27–28 GB | borderline; may fit because some experts live in VRAM, but test it |
+
+```bash
+MODEL_REPO=unsloth/gemma-4-26B-A4B-it-GGUF \
+MODEL_FILE=gemma-4-26B-A4B-it-UD-Q6_K_XL.gguf bash scripts/setup.sh
+BACKEND=cuda NCMOE=22 bash scripts/start.sh
+```
+
+> **Caveat — diminishing returns.** You're already on the **QAT** 4-bit, which is *trained* to be
+> high-quality at 4-bit and is roughly competitive with non-QAT Q5/Q6. Moving to Q6 costs ~9 GB of
+> RAM for what may be a small quality gain. Worth trying, not guaranteed to feel different.
+
+### Path B — a bigger *model* (31B)  ⚠️ not worth it here
+
+The only model bigger than 26B-A4B is the **31B, which is dense** — every token uses all 31B
+params. `--cpu-moe` does nothing (there are no experts to place), so on an 8 GB GPU most of it runs
+on the CPU. Expect **~1–3 tok/s** (recall CPU-only on the MoE — which computes just 4B active — was
+~2 tok/s; a dense 31B computes ~8× more per token). It runs, but it's not interactive.
+
+### Bottom line
+
+**26B-A4B is the sweet spot for this hardware** — it's the largest model that stays fast, precisely
+because only 4B params are active per token. With 32 GB RAM the realistic upgrade is a **Q5/Q6 quant
+of the same MoE** (same speed, marginally better quality), *not* a bigger model.
