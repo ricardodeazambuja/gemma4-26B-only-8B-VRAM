@@ -26,6 +26,9 @@ esac; done
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Shared backend banner + resolution (same source as run-server.sh — no dupes).
+source "$REPO_ROOT/scripts/_banner.sh"
+
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8080}"
 SERVER_LOG="${SERVER_LOG:-/tmp/gemma4-server.log}"
@@ -45,11 +48,17 @@ done
 
 if curl -fsS "http://$HOST:$PORT/health" >/dev/null 2>&1; then
   echo ">> server already running at http://$HOST:$PORT — reusing it"
+  # Surface the backend the *running* server reported, read from its log (its
+  # banner went there). Skipped silently if the log is absent/stale.
+  reused_be="$(sed -n 's/.*BACKEND: \([A-Za-z]*\).*/\1/p' "$SERVER_LOG" 2>/dev/null | tail -1 | tr '[:upper:]' '[:lower:]')"
+  [ -n "$reused_be" ] && backend_banner "$reused_be"
   if [ ${#SERVER_ARGS[@]} -gt 0 ]; then
     echo ">> NOTE: ${SERVER_ARGS[*]} only applies to a fresh server; the running one is reused as-is."
     echo "         Restart it to apply: bash scripts/stop-server.sh && bash scripts/start.sh ${SERVER_ARGS[*]}"
   fi
 else
+  # Show which backend the server will come up on (same logic run-server.sh uses).
+  backend_banner "$(resolve_backend)"
   echo ">> starting server in background (logs: $SERVER_LOG) ..."
   nohup bash "$REPO_ROOT/scripts/run-server.sh" "${SERVER_ARGS[@]}" > "$SERVER_LOG" 2>&1 &
   SRV_PID=$!

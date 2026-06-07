@@ -53,12 +53,15 @@ esac; done
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Shared backend banner + resolution (see scripts/_banner.sh).
+source "$REPO_ROOT/scripts/_banner.sh"
+
 ENV_NAME="${ENV_NAME:-llamacpp}"
 MODEL="${MODEL:-$REPO_ROOT/models/gemma4-26b-a4b-qat/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf}"
 # Auto-detect: use the locally-built CUDA binary if present, else fall back to
 # Vulkan (zero-build path for non-NVIDIA / unbuilt machines). Override with BACKEND=.
 CUDA_BIN="${CUDA_BIN:-$REPO_ROOT/vendor/llama.cpp/build/bin/llama-server}"
-BACKEND="${BACKEND:-$( [ -x "$CUDA_BIN" ] && echo cuda || echo vulkan )}"
+BACKEND="$(resolve_backend)"
 CTX="${CTX:-32768}"
 NCMOE="${NCMOE:-}"
 HOST="${HOST:-127.0.0.1}"
@@ -90,26 +93,6 @@ done
 command -v mamba >/dev/null 2>&1 || { echo "ERROR: 'mamba' not found on PATH."; exit 1; }
 [ -f "$MODEL" ] || { echo "ERROR: model not found: $MODEL"; echo "Run scripts/setup.sh first."; exit 1; }
 
-# --- splashy banner (color only when stdout is a real terminal) -------------
-if [ -t 1 ]; then
-  RST=$'\e[0m'
-  FG_GREEN=$'\e[1;32m'; FG_YELLOW=$'\e[1;33m'; FG_RED=$'\e[1;31m'
-else
-  RST=; FG_GREEN=; FG_YELLOW=; FG_RED=
-fi
-
-# splash <color> <icon> <title> <subtitle>
-# Full-width colored rules with no right border, so multi-byte emoji can't
-# misalign the box (the classic ANSI box-drawing pitfall).
-splash() {
-  local col="$1" icon="$2" title="$3" sub="$4"
-  local rule='════════════════════════════════════════════════════════════'
-  printf '\n%s%s%s\n' "$col" "$rule" "$RST"
-  printf '%s  %s  %s%s\n' "$col" "$icon" "$title" "$RST"
-  [ -n "$sub" ] && printf '%s     %s%s\n' "$col" "$sub" "$RST"
-  printf '%s%s%s\n\n' "$col" "$rule" "$RST"
-}
-
 # --- pick backend / device / binary ----------------------------------------
 DEVICE_ARGS=()
 NGL_ARGS=(-ngl 99)
@@ -120,7 +103,7 @@ case "$BACKEND" in
     RUN=(mamba run --no-capture-output -n "$CUDA_ENV")
     SERVER_BIN="$CUDA_BIN"
     # default CUDA device (CUDA0); -ngl 99 offloads to it
-    splash "$FG_GREEN" "🟢" "BACKEND: CUDA  —  GPU accelerated (fast path)" "binary: $CUDA_BIN"
+    backend_banner cuda "binary: $CUDA_BIN"
     ;;
   vulkan)
     RUN=(mamba run --no-capture-output -n "$ENV_NAME")
@@ -130,14 +113,14 @@ case "$BACKEND" in
     DEV="$("${RUN[@]}" llama-server --list-devices 2>/dev/null | grep -iE 'Vulkan[0-9]+: NVIDIA' | head -1 | sed -E 's/^ *([A-Za-z0-9]+):.*/\1/' || true)"
     DEV="${DEV:-Vulkan0}"
     DEVICE_ARGS=(--device "$DEV")
-    splash "$FG_YELLOW" "🟡" "BACKEND: VULKAN  —  GPU (slow MoE path, ~5x under CUDA)" "device: $DEV  ·  build the CUDA backend for full speed"
+    backend_banner vulkan "device: $DEV  ·  build the CUDA backend for full speed"
     ;;
   cpu)
     RUN=(mamba run --no-capture-output -n "$ENV_NAME")
     SERVER_BIN="llama-server"
     DEVICE_ARGS=(--device none)
     NGL_ARGS=(-ngl 0)
-    splash "$FG_RED" "🔴" "BACKEND: CPU ONLY  —  no GPU offload (very slow)" "benchmark baseline / testing only — expect ~2 tok/s"
+    backend_banner cpu "benchmark baseline / testing only — expect ~2 tok/s"
     ;;
   *)
     echo "ERROR: unknown BACKEND='$BACKEND' (use cuda | vulkan | cpu)"; exit 1
