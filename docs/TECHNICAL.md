@@ -336,6 +336,47 @@ GPU, Vulkan can be ~5× slower than CUDA, which is well outside the usual gap.
 then `BACKEND=cuda`). Vulkan is the zero-build fallback for when you can't build or aren't on
 NVIDIA — not the throughput choice.
 
+### Why pi feels slower than the benchmark tok/s
+
+The benchmark figures above are a best case: a tiny prompt, a fresh context, and a short
+generation. Interactive use through `pi` is the opposite on all three counts, so the *felt* latency
+is much higher than the decode rate suggests. The token-generation rate is real — but it is only
+one of three contributors to wall-clock time, and usually the smallest.
+
+A representative single reply (5,639-token prompt — system prompt + tool definitions + history +
+file contents — asking a trivial question):
+
+| Phase | Time | Visible? |
+|---|---|---|
+| Prefill (process the prompt) | ~14 s | no output yet (time-to-first-token) |
+| Generation (331 tokens @ ~20 tok/s) | ~17 s | mostly hidden reasoning |
+| **Total** | **~31 s** | for a one-token answer |
+
+The three contributors:
+
+1. **Time-to-first-token (prefill).** Before the first output token, the server must process the
+   entire prompt. `pi`'s prompts are large, and prefill is partly **CPU-bound** here — the
+   `--cpu-moe` experts run on the CPU for *every* prompt token — so TTFT grows with context and is
+   slower than a fully-GPU model. The server's **prompt cache** mitigates this on later turns: the
+   constant prefix (system prompt + tool defs) is prefilled once, so subsequent turns only reprocess
+   new tokens (your message + tool results). The first turn is the worst.
+
+2. **Hidden reasoning tokens.** Gemma 4 thinks before answering (`thinking = 1`); the chain-of-
+   thought goes to `reasoning_content`, not `content`. At a high thinking level most generated
+   tokens are *reasoning you don't see*, so you pay decode time while the visible answer appears to
+   stall. The `pi` thinking level (`--thinking off|low|medium|high`, or `defaultThinkingLevel` in
+   `~/.pi/agent/settings.json`) trades reasoning quality for responsiveness; the decode rate itself
+   is unchanged, only how many tokens get generated.
+
+3. **The agentic loop.** A single `pi` task is many model calls — generate a tool call, run it, feed
+   the result back, reason again. Each step is a fresh prefill + reasoning + generation cycle, so
+   wall-clock stacks across steps.
+
+None of these is the model running slower than measured; the decode rate stays ~low-20s tok/s. The
+gap is prefill latency + invisible reasoning + multi-step orchestration, which the raw tok/s number
+does not capture. Levers if responsiveness matters: lower the thinking level, keep the context lean,
+and use the CUDA backend (faster prefill *and* decode).
+
 ---
 
 ## 9. Tuning
