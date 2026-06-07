@@ -110,19 +110,15 @@ Browse available quants (Q3/Q4/Q5/Q6/Q8, different sizes) on the
 
 ---
 
-## Two findings that shaped this setup
+## The CUDA-vs-Vulkan gotcha
 
-### 1. Ollama cannot do `--cpu-moe`
-`pi` is "ollama-based" only in that it speaks the OpenAI-compatible API. But **Ollama has
-no per-expert CPU offload** — it only does automatic *whole-layer* GPU offload (tracked in
-ollama issues [#11772](https://github.com/ollama/ollama/issues/11772),
-[#14579](https://github.com/ollama/ollama/issues/14579)). To get the `--cpu-moe`
-behavior we run **llama.cpp's `llama-server`** instead and point `pi` at it. `pi` doesn't
-care which engine is behind the endpoint.
+The model is served by **llama.cpp's `llama-server`** — we need it for `--cpu-moe`, which
+ollama doesn't offer ([details](docs/TECHNICAL.md#5-why-not-ollama)). `pi` reaches it over the
+OpenAI-compatible API, like any other backend.
 
-### 2. The conda-forge CUDA build won't run on an older driver — use Vulkan
-The conda-forge `llama.cpp` package ships CUDA **12.9** / **13.0** builds. On a driver that
-only supports CUDA 12.2 (e.g. driver 535), the CUDA kernels fail at load with:
+The one non-obvious snag was getting the GPU backend to run at all. The conda-forge `llama.cpp`
+package ships CUDA **12.9** / **13.0** builds. On a driver that only supports CUDA 12.2 (e.g.
+driver 535), the CUDA kernels fail at load with:
 
 ```
 CUDA error: device kernel image is invalid

@@ -86,14 +86,14 @@ automatically via `huggingface_hub`.
                                           └─────────────────────────────────────────────────┘
 ```
 
-`pi` is often described as "ollama-based", but in practice it just speaks the **OpenAI
-chat-completions API**. Its provider config (`~/.pi/agent/models.json`) points at any
-OpenAI-compatible endpoint. We register a `llamacpp` provider with `baseUrl
-http://127.0.0.1:8080/v1` and `api: openai-completions`. From `pi`'s perspective, llama.cpp's
-`llama-server` is indistinguishable from ollama — it just needs the endpoint.
+`pi` talks to the model over the **OpenAI chat-completions API**. Its provider config
+(`~/.pi/agent/models.json`) points at any OpenAI-compatible endpoint — ollama, llama-server,
+vLLM, a hosted API, etc. We register a `llamacpp` provider with `baseUrl
+http://127.0.0.1:8080/v1` and `api: openai-completions`.
 
-This indirection is the key architectural insight: **the inference engine is decoupled from the
-agent.** We can run Vulkan or a custom CUDA build behind the same endpoint and `pi` never changes.
+This keeps the **inference engine decoupled from the agent**: we can run llama-server on Vulkan
+or on a custom CUDA build behind the same endpoint and `pi` never changes. The engine choice is
+therefore driven purely by what features we need from it — namely `--cpu-moe` (§5).
 
 ---
 
@@ -126,15 +126,16 @@ swap backends freely (§6).
 
 ## 5. Why not Ollama
 
-`pi` ships configured for ollama, and the box already had ollama 0.21.2. But **ollama cannot do
-`--cpu-moe`.** It performs only automatic *whole-layer* GPU offload — it cannot keep a layer's
-attention on the GPU while putting that same layer's experts on the CPU. There is no environment
-variable, Modelfile parameter, or CLI flag for per-expert placement. (Tracked upstream:
-[ollama#11772](https://github.com/ollama/ollama/issues/11772),
+Ollama is a popular local server and `pi`'s default provider, so it's the obvious first choice —
+but it **cannot do `--cpu-moe`.** It performs only automatic *whole-layer* GPU offload; it cannot
+keep a layer's attention on the GPU while putting that same layer's experts on the CPU, and there
+is no environment variable, Modelfile parameter, or CLI flag for per-expert placement. (Tracked
+upstream: [ollama#11772](https://github.com/ollama/ollama/issues/11772),
 [ollama#14579](https://github.com/ollama/ollama/issues/14579).)
 
-So we run **llama.cpp's `llama-server`** instead and point `pi` at it. Because `pi` only needs the
-OpenAI endpoint (§3), this is a drop-in swap — same agent, different engine.
+`llama.cpp`'s `llama-server` does have `--cpu-moe`, and since `pi` only needs an OpenAI endpoint
+(§3), pointing it at llama-server instead is a drop-in swap. That is the whole reason for the
+engine choice — nothing about `pi` requires either one.
 
 ---
 
