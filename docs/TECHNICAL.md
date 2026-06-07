@@ -408,6 +408,10 @@ Overrides worth knowing: `BACKEND` (vulkan\|cuda), `NCMOE`, `CTX`, `PORT`, `MODE
 | `llamacpp` | conda-forge llama.cpp (`cuda129`) + `huggingface_hub` | Vulkan (CUDA kernels unusable on driver 535) |
 | `llamacpp-cuda` | source-built llama.cpp + matching CUDA 12.2 toolchain | CUDA (native, fast) |
 
+The `llamacpp` runtime env is also captured as a manifest at [`environment.yml`](../environment.yml)
+(`mamba env create -f environment.yml`). The `llamacpp-cuda` toolchain is intentionally *not* a
+static manifest — `cuda-toolkit` must match each user's driver, so `build-llama-cuda.sh` detects it.
+
 ### References
 
 - Model: <https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF>

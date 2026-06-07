@@ -1,0 +1,27 @@
+# Minimal environment to run Gemma 4 26B-A4B (QAT) locally and download the model.
+#
+# This is the conda/mamba equivalent of a requirements.txt for the *runtime*:
+# llama.cpp (with the Vulkan backend, which is what we actually run — see
+# docs/TECHNICAL.md §6) plus huggingface_hub to fetch the GGUF.
+#
+#   mamba env create -f environment.yml
+#   # then: bash scripts/setup.sh   (downloads the ~14 GB model into models/)
+#
+# scripts/setup.sh creates this same env programmatically and downloads the model,
+# so you normally don't need this file — it's here for users who prefer a manifest,
+# and to document exactly what the runtime needs.
+#
+# NOT included here: the CUDA build toolchain. That must match YOUR driver's CUDA
+# version, so it can't be a static manifest — scripts/build-llama-cuda.sh detects
+# it and installs cuda-toolkit/gcc into a separate `llamacpp-cuda` env.
+#
+# `pi` itself is a Node tool, not a conda package:  npm i -g @mariozechner/pi-coding-agent
+name: llamacpp
+channels:
+  - conda-forge
+dependencies:
+  # The conda-forge llama.cpp CUDA build also bundles the Vulkan backend, which is
+  # what runs on drivers too old for the build's CUDA. Pin a different variant
+  # (e.g. *cuda130*, or *cpu*) or a specific version if you need to.
+  - "llama.cpp=*=*cuda129*"
+  - huggingface_hub

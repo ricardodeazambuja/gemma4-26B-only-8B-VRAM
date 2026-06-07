@@ -32,6 +32,7 @@ MODEL_DIR="$REPO_ROOT/models/gemma4-26b-a4b-qat"
 command -v mamba >/dev/null 2>&1 || { echo "ERROR: 'mamba' not found. Install Miniforge (https://github.com/conda-forge/miniforge) first."; exit 1; }
 
 # --- 1. create env ----------------------------------------------------------
+# (keep this package list in sync with ../environment.yml)
 if mamba env list | grep -qE "/${ENV_NAME}\$|^\s*${ENV_NAME}\s"; then
   echo ">> env '$ENV_NAME' already exists — skipping create"
 else
