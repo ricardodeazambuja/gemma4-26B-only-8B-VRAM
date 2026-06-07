@@ -181,7 +181,8 @@ kernels** from 12.9 are too new for the 12.2 driver to load. **Two fixes:**
 | `scripts/build-llama-cuda.sh` | **(optional, ~5–6× faster)** Builds llama.cpp from source against your driver's CUDA version into a `llamacpp-cuda` env. Auto-detects CUDA + GPU arch, smoke-tests the result. |
 | `config/pi-provider.json` | The pi provider definition (copy into `models.json` manually if you prefer). |
 
-All scripts accept env-var overrides — see the header comment in each.
+All scripts accept env-var overrides — see the header comment in each, or run any of them with
+`-h`/`--help` to print that header.
 
 ### Useful overrides
 
@@ -341,6 +342,7 @@ There's also a built-in web UI at <http://127.0.0.1:8080>.
 │   ├── run-pi.sh             # launch pi against the local server
 │   ├── stop-server.sh        # stop the server
 │   ├── build-llama-cuda.sh   # build llama.cpp against the local CUDA (optional, ~5-6x faster)
+│   ├── _banner.sh            # shared backend banner + resolution (sourced by the above)
 │   └── make-speed-chart.py   # regenerate docs/speed.svg from measured numbers
 ├── utils/
 │   ├── inspect-gguf.sh       # report a GGUF's architecture / modality / tensors
