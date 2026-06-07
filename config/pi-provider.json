@@ -1,0 +1,21 @@
+{
+  "api": "openai-completions",
+  "apiKey": "dummy",
+  "baseUrl": "http://127.0.0.1:8080/v1",
+  "compat": {
+    "supportsDeveloperRole": false
+  },
+  "models": [
+    {
+      "_launch": true,
+      "contextWindow": 16384,
+      "id": "gemma-4-26b-a4b-qat",
+      "name": "Gemma 4 26B-A4B QAT (llama.cpp -cmoe)",
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoning": true
+    }
+  ]
+}

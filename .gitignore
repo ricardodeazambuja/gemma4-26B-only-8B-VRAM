@@ -1,0 +1,11 @@
+# Model weights (download with scripts/setup.sh — ~14 GB, do not commit)
+models/*
+!models/.gitkeep
+
+# Logs / scratch
+*.log
+/tmp/
+
+# Python
+__pycache__/
+*.pyc
