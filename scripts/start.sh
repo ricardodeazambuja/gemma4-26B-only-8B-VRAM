@@ -4,8 +4,9 @@
 # and drop you into pi.
 #
 # Starts scripts/run-server.sh in the background (if nothing is serving yet),
-# waits for it to finish loading, then launches pi in the foreground. The server
-# is left running after pi exits (stop it with scripts/stop-server.sh).
+# waits for it to finish loading, then launches pi in the foreground. When pi
+# exits, if THIS script started the server it offers to stop it (a server that
+# was already running when you invoked start.sh is always left alone).
 #
 # All run-server.sh knobs pass through via env, e.g.:
 #   BACKEND=cuda NCMOE=22 bash scripts/start.sh
@@ -13,12 +14,17 @@
 #   bash scripts/start.sh --image                     # forwarded to the server
 #   bash scripts/start.sh -p "summarize @README.md"   # other args go to pi
 #
+#   STOP_ON_EXIT  control the shutdown offer after pi exits:
+#                 unset = ask (only when interactive); 1 = always stop; 0 = never
+#
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8080}"
 SERVER_LOG="${SERVER_LOG:-/tmp/gemma4-server.log}"
+STOP_ON_EXIT="${STOP_ON_EXIT:-}"   # unset = ask, 1 = always, 0 = never
+STARTED_SERVER=0                   # set to 1 only if we launch it below
 
 # Split args: server flags (currently just --image) go to run-server.sh, the
 # rest go to pi. Without this, --image would be sent to pi and silently ignored.
@@ -54,7 +60,38 @@ else
     echo; echo "ERROR: server did not become healthy in time. See $SERVER_LOG"; exit 1
   fi
   echo ">> server up (PID $SRV_PID). Stop it later with: bash scripts/stop-server.sh"
+  STARTED_SERVER=1
 fi
 
 echo ">> launching pi ..."
-exec bash "$REPO_ROOT/scripts/run-pi.sh" "${PI_ARGS[@]}"
+# Run pi in the foreground (not exec) so control returns here when it exits.
+# `|| PI_RC=$?` keeps `set -e` from aborting on a non-zero pi exit (e.g. Ctrl-C).
+PI_RC=0
+bash "$REPO_ROOT/scripts/run-pi.sh" "${PI_ARGS[@]}" || PI_RC=$?
+
+# --- offer to shut the server down ------------------------------------------
+# Only when we started it this run and it's still up. A reused server is the
+# user's pre-existing process — leave it alone.
+if [ "$STARTED_SERVER" = 1 ] && curl -fsS "http://$HOST:$PORT/health" >/dev/null 2>&1; then
+  do_stop=""
+  case "$STOP_ON_EXIT" in
+    1) do_stop=yes ;;
+    0) do_stop=no ;;
+    *)
+      if [ -t 0 ]; then
+        read -r -p $'\n>> pi exited. Stop the model server too? [y/N] ' ans || ans=""
+        [[ "$ans" =~ ^[Yy]$ ]] && do_stop=yes || do_stop=no
+      else
+        do_stop=no   # non-interactive (e.g. -p one-shot): don't guess, leave it up
+      fi
+      ;;
+  esac
+
+  if [ "$do_stop" = yes ]; then
+    bash "$REPO_ROOT/scripts/stop-server.sh"
+  else
+    echo ">> leaving the server running. Stop it with: bash scripts/stop-server.sh"
+  fi
+fi
+
+exit "$PI_RC"
