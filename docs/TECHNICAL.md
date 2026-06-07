@@ -17,6 +17,7 @@ and the **caveats** discovered along the way. It is the engineering companion to
 - [11. Caveats & gotchas](#11-caveats--gotchas)
 - [12. Reproducibility](#12-reproducibility)
 - [13. Running bigger models](#13-running-bigger-models)
+- [14. Multimodal: images via the mmproj](#14-multimodal-images-via-the-mmproj)
 
 ---
 
@@ -661,3 +662,50 @@ on the CPU. Expect **~1–3 tok/s** (recall CPU-only on the MoE — which comput
 because only 4B params are active per token. With 32 GB RAM the realistic upgrade is a **Q5/Q6 quant
 of the same MoE** (marginally better quality, but slower — into the mid-teens tok/s), *not* a bigger
 model. The clean ~23 tok/s belongs to the Q4 QAT file you're already running.
+
+---
+
+## 14. Multimodal: images via the mmproj
+
+Gemma 4 is a **natively multimodal** model (text + image + audio). That describes the *upstream*
+weights, though — it does **not** mean the GGUF you run is multimodal, and there is **no "native
+multimodal mode"** to switch on in llama.cpp.
+
+**Why the text GGUF can't see.** Inspecting `gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf` (arch `gemma4`,
+658 tensors) shows only language tensors — `token_embd`, `blk.N.attn_*`, expert FFNs — and **zero**
+vision/audio tensors or metadata. llama.cpp's converter **splits the vision/audio tower into a
+separate `mmproj` GGUF** loaded by the `libmtmd` subsystem. "Encoder baked into the upstream
+weights" ≠ "encoder in the GGUF": the split is a llama.cpp packaging convention, and it applies even
+to models (like Gemma 3) whose encoder is conceptually part of the model. So multimodal here is
+always **main GGUF + `--mmproj` projector**, never a flag on the text model alone.
+
+**The projector.** `unsloth/gemma-4-26B-A4B-it-GGUF/mmproj-BF16.gguf` (~1.19 GB). It pairs fine with
+the **QAT** weights even though it lives in the non-QAT repo — the projector is quant-agnostic. What
+it contains:
+
+| Key | Value |
+|---|---|
+| `general.architecture` | `clip` |
+| `clip.vision.projector_type` | `gemma4v` |
+| vision tensors (`v.blk.*`) | 352 |
+| audio / conformer tensors | **0** |
+
+So this file is **vision-only**. Gemma 4 *can* do audio — this llama.cpp's `mtmd` even ships the code
+(`models/gemma4a.cpp`, `mtmd_audio_preprocessor_gemma4a`, the "gemma4 audio conformer") — but the
+BF16 mmproj here has no audio conformer, so `--image` enables **images, not audio**. Audio would need
+a different/unified projector (the `gemma4ua`/`gemma4uv` path).
+
+**How `run-server.sh --image` wires it.** The flag adds `--mmproj "$MMPROJ" --no-mmproj-offload`:
+
+- `--no-mmproj-offload` keeps the projector on the **CPU**. A 1.2 GB BF16 tower won't fit in the
+  ~1 GB of VRAM left after `NCMOE=22` experts + KV cache; offloading it would OOM. Image *encoding*
+  is therefore CPU-bound (a one-off cost per image), but token **decode stays ~full speed** because
+  the language model's GPU split is unchanged.
+- A benign `-fit` warning appears at load — `failed to fit params to free device memory:
+  n_gpu_layers already set by user to 99, abort`. That's just the auto-fitter declining to override
+  the pinned `-ngl 99`; the server loads and serves normally.
+
+**Verified.** Sent a synthetic scene (red circle, blue square, green triangle, the text "42") via the
+OpenAI `image_url` format; the model returned all three shapes with correct colors and read "42".
+Decode held at ~30 tok/s with the image in context. (As always, give it enough `max_tokens` to finish
+its hidden reasoning before the visible answer — see §8.)

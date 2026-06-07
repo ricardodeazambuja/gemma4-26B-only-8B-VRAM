@@ -175,7 +175,7 @@ kernels** from 12.9 are too new for the 12.2 driver to load. **Two fixes:**
 | `scripts/setup.sh` | **(once)** Creates the `llamacpp` conda env (llama.cpp + huggingface_hub) and downloads the GGUF into `models/`. `BACKEND=cuda` also builds the native CUDA backend. Idempotent. |
 | `scripts/configure-pi.sh` | **(once)** Adds the `llamacpp` provider to `~/.pi/agent/models.json` from `config/pi-provider.json`. |
 | `scripts/start.sh` | **All-in-one:** starts the server (if not already up), waits for it to load, then launches pi. Passes `BACKEND`/`NCMOE`/`CTX` through; extra args go to pi. |
-| `scripts/run-server.sh` | Launches `llama-server` with `--cpu-moe`, `--no-mmap`, `-c 32768`, `--jinja`, on `127.0.0.1:8080`. Auto-selects CUDA if built, else Vulkan; prints a color-coded backend banner at launch. Override with `BACKEND=cuda\|vulkan\|cpu`. |
+| `scripts/run-server.sh` | Launches `llama-server` with `--cpu-moe`, `--no-mmap`, `-c 32768`, `--jinja`, on `127.0.0.1:8080`. Auto-selects CUDA if built, else Vulkan; prints a color-coded backend banner at launch. Override with `BACKEND=cuda\|vulkan\|cpu`. Pass `--image` to enable vision (loads the `mmproj`). |
 | `scripts/run-pi.sh` | Launches pi against the local server (`--provider llamacpp --model gemma-4-26b-a4b-qat`). Extra args pass through to pi. |
 | `scripts/stop-server.sh` | Stops the server by the port it listens on (default 8080). |
 | `scripts/build-llama-cuda.sh` | **(optional, ~5–6× faster)** Builds llama.cpp from source against your driver's CUDA version into a `llamacpp-cuda` env. Auto-detects CUDA + GPU arch, smoke-tests the result. |
@@ -191,10 +191,33 @@ CTX=65536   bash scripts/run-server.sh    # bigger context (see the ceiling tabl
 BACKEND=cuda bash scripts/run-server.sh   # force native CUDA backend (auto-selected once built)
 BACKEND=cpu bash scripts/run-server.sh    # no GPU offload — slow, benchmark baseline only
 PORT=9000   bash scripts/run-server.sh    # different port
+bash scripts/run-server.sh --image        # enable image input (CLI flag, not an env var)
 ```
 
 These env vars work on **`run-server.sh`, `start.sh`, and `build-llama-cuda.sh`** alike (e.g.
 `CTX=65536 NCMOE=27 BACKEND=cuda bash scripts/start.sh`).
+
+### Images (vision)
+
+Gemma 4 is natively multimodal, but the text GGUF doesn't carry the vision encoder — llama.cpp
+needs a **separate multimodal projector** (`mmproj`). Download it once (~1.2 GB, BF16), then start
+the server with `--image`:
+
+```bash
+curl -L -o models/gemma4-26b-a4b-qat/mmproj-BF16.gguf \
+  https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/main/mmproj-BF16.gguf
+bash scripts/run-server.sh --image        # add NCMOE=22 BACKEND=cuda as usual
+```
+
+Now send images through the standard OpenAI vision format (`image_url` with a `data:image/...;base64,`
+URI). Notes:
+
+- **Vision only.** This projector is `gemma4v` — images, **not** audio. (Gemma 4 *can* do audio, but
+  this BF16 file has no audio conformer; that needs a different/unified projector.)
+- **Projector runs on the CPU** (`--no-mmproj-offload`): on 8 GB there's no VRAM left for a 1.2 GB
+  BF16 tower beside the experts + KV. Image encoding is therefore CPU-bound, but decode stays ~full
+  speed. Override the path with `MMPROJ=…` if you keep the file elsewhere.
+- Without `--image` the server is **text-only** — the projector is never loaded.
 
 **Context size.** The context window is `CTX` (**default 32768** = 32K; model max **262144**). The
 context is the KV cache, and it lives in **VRAM**, not RAM (only the expert weights are offloaded) —
