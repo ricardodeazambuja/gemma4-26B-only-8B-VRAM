@@ -120,16 +120,34 @@ The model is **30 layers, 128 experts/layer, top-8 routing**; in this quant each
 experts are ~0.45 GB. `--n-cpu-moe N` (env `NCMOE=N`) keeps the **first N** layers' experts
 on CPU and puts the rest on the GPU — fewer on CPU = faster but more VRAM.
 
-Measured on the RTX 2070 (8 GB) at `CTX=16384`, Vulkan:
+Measured on the RTX 2070 (8 GB) at `CTX=16384`:
 
-| Setting | Experts on GPU | VRAM used | Eval speed |
+| Setting | Experts on GPU | VRAM used | Gen speed |
 |---|---|---|---|
+| CPU only (no GPU) | — | — | ~1.9 tok/s |
 | `--cpu-moe` (default) | 0 layers | ~3.5 GB | ~3.7 tok/s |
-| `NCMOE=22` | 8 layers | ~6.8 GB | **~4.9 tok/s** (+34%) |
+| `NCMOE=22` | 8 layers | ~6.8 GB | **~4.9 tok/s** |
 
 `NCMOE=22` leaves ~1.2 GB VRAM headroom — about the limit on an 8 GB card once the desktop
-is using some VRAM. If you hit out-of-memory, raise `NCMOE` (e.g. 24) or lower `CTX`. For a
-bigger jump, build llama.cpp against your driver's CUDA version and run `BACKEND=cuda`.
+is using some VRAM. If you hit out-of-memory, raise `NCMOE` (e.g. 24) or lower `CTX`.
+
+**Why "only" ~5 tok/s — and why the GPU still helps.** This is an MoE: most of the FLOPs are
+in the expert FFNs, and with `--cpu-moe` those run on the **CPU**, bottlenecked by **system-RAM
+bandwidth** (each token streams the active experts' weights from RAM). The GPU only handles
+attention + whatever experts you fit in VRAM. So:
+
+- The GPU is **not** slow vs CPU — it's ~2× faster (1.9 → 3.7 tok/s) and ~2.6× with `NCMOE=22`.
+- But it can't go much faster while 22 of 30 layers' experts live in RAM. The ceiling is RAM
+  bandwidth, not the GPU.
+- The only ways to break that ceiling: fit **more** experts in VRAM (you don't have the VRAM),
+  use **faster RAM**, or pick a **smaller quant**.
+
+**Would a CUDA build (matched to your driver) be faster?** Somewhat. CUDA kernels usually beat
+Vulkan on NVIDIA by ~15–40 % for the GPU-resident work, plus more efficient host↔device
+transfer — so expect a moderate bump (roughly into the 6 tok/s range), **not** a transformation,
+because the CPU-resident experts remain the bottleneck. To try it: `mamba install -c conda-forge
+cuda-toolkit=12.2`, build llama.cpp from source with `-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75`,
+then `BACKEND=cuda bash scripts/run-server.sh`.
 
 ---
 
