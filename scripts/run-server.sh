@@ -30,11 +30,18 @@
 #   TOP_P      top-p / nucleus                (default: 0.95)
 #   TOP_K      top-k                          (default: 64)
 #   EXTRA_ARGS any extra llama-server flags   (e.g. "--min-p 0.01 --repeat-penalty 1.1 --seed 42")
+#   MMPROJ     path to the multimodal projector (default: models/.../mmproj-BF16.gguf)
+#
+# Flags (CLI args, not env vars):
+#   --image    load the multimodal projector ($MMPROJ) so the server accepts
+#              images (and audio, if the projector carries it). Text-only without it.
+#              Any other CLI args pass straight through to llama-server.
 #
 # Examples:
-#   bash scripts/run-server.sh                 # Vulkan, 32K ctx, recommended sampling
+#   bash scripts/run-server.sh                 # auto backend, 32K ctx, text only
 #   TEMP=0.7 bash scripts/run-server.sh        # more deterministic
 #   CTX=65536 NCMOE=27 BACKEND=cuda bash scripts/run-server.sh
+#   bash scripts/run-server.sh --image         # enable vision/audio via the mmproj
 #
 set -euo pipefail
 
@@ -57,6 +64,23 @@ EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 CUDA_ENV="${CUDA_ENV:-llamacpp-cuda}"
 CUDA_BIN="${CUDA_BIN:-$REPO_ROOT/vendor/llama.cpp/build/bin/llama-server}"
+
+# Multimodal projector (vision + audio tower). Enabled only with the --image flag.
+MMPROJ="${MMPROJ:-$REPO_ROOT/models/gemma4-26b-a4b-qat/mmproj-BF16.gguf}"
+
+# --- CLI args ---------------------------------------------------------------
+#   --image   load the multimodal projector ($MMPROJ) so the server accepts
+#             images (and audio, if the projector carries it). Without it the
+#             server is text-only. Any other args pass through to llama-server.
+USE_IMAGE=0
+PASS_ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --image) USE_IMAGE=1 ;;
+    *) PASS_ARGS+=("$1") ;;
+  esac
+  shift
+done
 
 command -v mamba >/dev/null 2>&1 || { echo "ERROR: 'mamba' not found on PATH."; exit 1; }
 [ -f "$MODEL" ] || { echo "ERROR: model not found: $MODEL"; echo "Run scripts/setup.sh first."; exit 1; }
@@ -125,6 +149,26 @@ else
   echo ">> MoE: all experts on CPU (RAM)"
 fi
 
+# --- multimodal projector (only with --image) -------------------------------
+MMPROJ_ARGS=()
+if [ "$USE_IMAGE" = 1 ]; then
+  if [ ! -f "$MMPROJ" ]; then
+    echo "ERROR: --image given but projector not found at:"
+    echo "       $MMPROJ"
+    echo "Download it (~1.2 GB, BF16):"
+    echo "  curl -L -o \"$MMPROJ\" \\"
+    echo "    https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/main/mmproj-BF16.gguf"
+    exit 1
+  fi
+  # Keep the projector on the CPU: on an 8 GB card there is no VRAM left for a
+  # 1.2 GB BF16 tower next to NCMOE experts + KV. Drop --no-mmproj-offload (or
+  # set it via PASS_ARGS) if you have spare VRAM and want faster image encoding.
+  MMPROJ_ARGS=(--mmproj "$MMPROJ" --no-mmproj-offload)
+  echo ">> multimodal: ENABLED — projector on CPU ($MMPROJ)"
+else
+  echo ">> multimodal: off (text only; pass --image to enable vision/audio)"
+fi
+
 # --- sampling defaults (server-wide; clients may override per request) ------
 SAMPLER_ARGS=(--temp "$TEMP" --top-p "$TOP_P" --top-k "$TOP_K")
 # shellcheck disable=SC2206  # intentional word-splitting for passthrough flags
@@ -140,10 +184,12 @@ exec "${RUN[@]}" "$SERVER_BIN" \
   "${DEVICE_ARGS[@]}" \
   "${NGL_ARGS[@]}" \
   "${MOE_ARGS[@]}" \
+  "${MMPROJ_ARGS[@]}" \
   --no-mmap \
   -c "$CTX" \
   -fa auto \
   --jinja \
   "${SAMPLER_ARGS[@]}" \
+  "${PASS_ARGS[@]}" \
   --host "$HOST" \
   --port "$PORT"
