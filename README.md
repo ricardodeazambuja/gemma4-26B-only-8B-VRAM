@@ -207,6 +207,7 @@ the server with `--image`:
 curl -L -o models/gemma4-26b-a4b-qat/mmproj-BF16.gguf \
   https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/main/mmproj-BF16.gguf
 bash scripts/run-server.sh --image        # add NCMOE=22 BACKEND=cuda as usual
+bash scripts/start.sh --image             # or all-in-one: --image is forwarded to the server
 ```
 
 Now send images through the standard OpenAI vision format (`image_url` with a `data:image/...;base64,`

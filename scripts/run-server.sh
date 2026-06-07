@@ -7,12 +7,13 @@
 #   * Attention + embeddings  -> GPU VRAM
 #   * KV cache                -> GPU VRAM    (grows with context size, -c)
 #
-# By default it uses the **Vulkan** backend on the NVIDIA GPU. Why not CUDA:
-# the conda-forge llama.cpp is compiled for a recent CUDA (e.g. 12.9); if your
-# NVIDIA driver only supports an older CUDA (e.g. 12.2 on driver 535) the CUDA
-# kernels fail with "device kernel image is invalid". Vulkan uses the driver's
-# own ICD and sidesteps that entirely. --cpu-moe is backend-agnostic, so the
-# RAM/VRAM split is identical either way.
+# Backend is auto-detected: it uses the locally-built CUDA binary if present
+# (scripts/build-llama-cuda.sh), else falls back to Vulkan. Override with BACKEND=.
+# Why Vulkan is the fallback and not the prebuilt CUDA: the conda-forge llama.cpp
+# is compiled for a recent CUDA (e.g. 12.9); if your NVIDIA driver only supports an
+# older CUDA (e.g. 12.2 on driver 535) those CUDA kernels fail with "device kernel
+# image is invalid". Vulkan uses the driver's own ICD and sidesteps that entirely.
+# --cpu-moe is backend-agnostic, so the RAM/VRAM split is identical either way.
 #
 # Config (override via env vars):
 #   ENV_NAME   conda env name                 (default: llamacpp)
@@ -34,14 +35,14 @@
 #
 # Flags (CLI args, not env vars):
 #   --image    load the multimodal projector ($MMPROJ) so the server accepts
-#              images (and audio, if the projector carries it). Text-only without it.
-#              Any other CLI args pass straight through to llama-server.
+#              images. Text-only without it. (The default mmproj is vision-only;
+#              see docs/TECHNICAL.md §14.) Other CLI args pass through to llama-server.
 #
 # Examples:
 #   bash scripts/run-server.sh                 # auto backend, 32K ctx, text only
 #   TEMP=0.7 bash scripts/run-server.sh        # more deterministic
 #   CTX=65536 NCMOE=27 BACKEND=cuda bash scripts/run-server.sh
-#   bash scripts/run-server.sh --image         # enable vision/audio via the mmproj
+#   bash scripts/run-server.sh --image         # enable image input via the mmproj
 #
 set -euo pipefail
 
@@ -62,16 +63,15 @@ TOP_P="${TOP_P:-0.95}"
 TOP_K="${TOP_K:-64}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
-CUDA_ENV="${CUDA_ENV:-llamacpp-cuda}"
-CUDA_BIN="${CUDA_BIN:-$REPO_ROOT/vendor/llama.cpp/build/bin/llama-server}"
+CUDA_ENV="${CUDA_ENV:-llamacpp-cuda}"   # CUDA_BIN already set above (line ~54)
 
-# Multimodal projector (vision + audio tower). Enabled only with the --image flag.
+# Multimodal projector (the vision tower). Enabled only with the --image flag.
 MMPROJ="${MMPROJ:-$REPO_ROOT/models/gemma4-26b-a4b-qat/mmproj-BF16.gguf}"
 
 # --- CLI args ---------------------------------------------------------------
 #   --image   load the multimodal projector ($MMPROJ) so the server accepts
-#             images (and audio, if the projector carries it). Without it the
-#             server is text-only. Any other args pass through to llama-server.
+#             images. Without it the server is text-only. (The default mmproj is
+#             vision-only.) Any other args pass through to llama-server.
 USE_IMAGE=0
 PASS_ARGS=()
 while [ $# -gt 0 ]; do
@@ -87,10 +87,10 @@ command -v mamba >/dev/null 2>&1 || { echo "ERROR: 'mamba' not found on PATH."; 
 
 # --- splashy banner (color only when stdout is a real terminal) -------------
 if [ -t 1 ]; then
-  BOLD=$'\e[1m'; RST=$'\e[0m'
+  RST=$'\e[0m'
   FG_GREEN=$'\e[1;32m'; FG_YELLOW=$'\e[1;33m'; FG_RED=$'\e[1;31m'
 else
-  BOLD=; RST=; FG_GREEN=; FG_YELLOW=; FG_RED=
+  RST=; FG_GREEN=; FG_YELLOW=; FG_RED=
 fi
 
 # splash <color> <icon> <title> <subtitle>
@@ -120,7 +120,9 @@ case "$BACKEND" in
   vulkan)
     RUN=(mamba run --no-capture-output -n "$ENV_NAME")
     SERVER_BIN="llama-server"
-    DEV="$("${RUN[@]}" llama-server --list-devices 2>/dev/null | grep -iE 'Vulkan[0-9]+: NVIDIA' | head -1 | sed -E 's/^ *([A-Za-z0-9]+):.*/\1/')"
+    # `|| true`: under `set -euo pipefail`, a no-match grep makes the whole
+    # command-sub exit non-zero and would kill the script before the fallback.
+    DEV="$("${RUN[@]}" llama-server --list-devices 2>/dev/null | grep -iE 'Vulkan[0-9]+: NVIDIA' | head -1 | sed -E 's/^ *([A-Za-z0-9]+):.*/\1/' || true)"
     DEV="${DEV:-Vulkan0}"
     DEVICE_ARGS=(--device "$DEV")
     splash "$FG_YELLOW" "🟡" "BACKEND: VULKAN  —  GPU (slow MoE path, ~5x under CUDA)" "device: $DEV  ·  build the CUDA backend for full speed"
@@ -164,9 +166,9 @@ if [ "$USE_IMAGE" = 1 ]; then
   # 1.2 GB BF16 tower next to NCMOE experts + KV. Drop --no-mmproj-offload (or
   # set it via PASS_ARGS) if you have spare VRAM and want faster image encoding.
   MMPROJ_ARGS=(--mmproj "$MMPROJ" --no-mmproj-offload)
-  echo ">> multimodal: ENABLED — projector on CPU ($MMPROJ)"
+  echo ">> multimodal: ENABLED — vision projector on CPU ($MMPROJ)"
 else
-  echo ">> multimodal: off (text only; pass --image to enable vision/audio)"
+  echo ">> multimodal: off (text only; pass --image to enable vision)"
 fi
 
 # --- sampling defaults (server-wide; clients may override per request) ------
