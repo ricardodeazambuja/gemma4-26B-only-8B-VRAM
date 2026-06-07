@@ -23,11 +23,17 @@
 #              the rest on the GPU (faster, uses more VRAM). Empty = all on CPU.
 #   HOST/PORT  bind address                   (default: 127.0.0.1 / 8080)
 #
+#   Sampling defaults (server-wide; a client request can still override per-call).
+#   Defaults follow unsloth's Gemma 4 recommendation (https://unsloth.ai/docs/models/gemma-4/qat):
+#   TEMP       temperature                    (default: 1.0)
+#   TOP_P      top-p / nucleus                (default: 0.95)
+#   TOP_K      top-k                          (default: 64)
+#   EXTRA_ARGS any extra llama-server flags   (e.g. "--min-p 0.01 --repeat-penalty 1.1 --seed 42")
+#
 # Examples:
-#   bash scripts/run-server.sh                 # all experts on CPU, Vulkan, 16k ctx
-#   CTX=32768 bash scripts/run-server.sh       # bigger context
-#   NCMOE=20 bash scripts/run-server.sh        # offload some experts to GPU for speed
-#   BACKEND=cuda bash scripts/run-server.sh    # if your driver matches the CUDA build
+#   bash scripts/run-server.sh                 # Vulkan, 32K ctx, recommended sampling
+#   TEMP=0.7 bash scripts/run-server.sh        # more deterministic
+#   CTX=65536 NCMOE=27 BACKEND=cuda bash scripts/run-server.sh
 #
 set -euo pipefail
 
@@ -40,6 +46,10 @@ CTX="${CTX:-32768}"
 NCMOE="${NCMOE:-}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8080}"
+TEMP="${TEMP:-1.0}"
+TOP_P="${TOP_P:-0.95}"
+TOP_K="${TOP_K:-64}"
+EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 CUDA_ENV="${CUDA_ENV:-llamacpp-cuda}"
 CUDA_BIN="${CUDA_BIN:-$REPO_ROOT/vendor/llama.cpp/build/bin/llama-server}"
@@ -74,6 +84,12 @@ else
   echo ">> MoE: all experts on CPU (RAM)"
 fi
 
+# --- sampling defaults (server-wide; clients may override per request) ------
+SAMPLER_ARGS=(--temp "$TEMP" --top-p "$TOP_P" --top-k "$TOP_K")
+# shellcheck disable=SC2206  # intentional word-splitting for passthrough flags
+[ -n "$EXTRA_ARGS" ] && SAMPLER_ARGS+=($EXTRA_ARGS)
+
+echo ">> sampling: temp=$TEMP top-p=$TOP_P top-k=$TOP_K ${EXTRA_ARGS:+(+ $EXTRA_ARGS)}"
 echo ">> context: $CTX   listening: http://$HOST:$PORT/v1"
 echo
 
@@ -87,5 +103,6 @@ exec "${RUN[@]}" "$SERVER_BIN" \
   -c "$CTX" \
   -fa auto \
   --jinja \
+  "${SAMPLER_ARGS[@]}" \
   --host "$HOST" \
   --port "$PORT"

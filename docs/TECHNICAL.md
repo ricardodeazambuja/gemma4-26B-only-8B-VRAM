@@ -473,6 +473,28 @@ give it room. `pi` handles this; it matters mainly for raw `curl` tests.
 (extracting a value it could not otherwise know) and write a new file. The GGUF carries
 `<|tool_response>` tokens and the chat template emits OpenAI-format tool calls.
 
+### Sampling / model parameters
+
+Sampling is set on the **server**, not in `pi` (which exposes no sampling flags). `run-server.sh`
+passes `--temp`/`--top-p`/`--top-k` to `llama-server`, so they become the default for every request.
+The defaults follow unsloth's [Gemma 4 recommendation](https://unsloth.ai/docs/models/gemma-4/qat):
+
+| Env var | Flag | Default | llama.cpp's own default |
+|---|---|---|---|
+| `TEMP` | `--temp` | **1.0** | 0.8 |
+| `TOP_P` | `--top-p` | **0.95** | 0.95 |
+| `TOP_K` | `--top-k` | **64** | 40 |
+| `EXTRA_ARGS` | (verbatim) | — | for `--min-p`, `--repeat-penalty`, `--seed`, … |
+
+```bash
+TEMP=0.7 bash scripts/start.sh                                    # more deterministic
+EXTRA_ARGS="--min-p 0.01 --repeat-penalty 1.1 --seed 42" bash scripts/start.sh
+```
+
+These are server-wide defaults; a request that includes `temperature`/`top_p` overrides them for
+that call. Confirm the live values at `GET /props` → `default_generation_settings.params` (e.g.
+`temperature`, `top_k`, `top_p`).
+
 ---
 
 ## 11. Caveats & gotchas

@@ -215,6 +215,19 @@ CTX=131072 bash scripts/start.sh
 CTX=131072 bash scripts/configure-pi.sh   # keep pi's contextWindow in sync with the server's -c
 ```
 
+**Sampling (temperature & friends).** Set these on the **server** via env vars; they become the
+defaults for every request. The defaults follow [unsloth's Gemma 4
+recommendation](https://unsloth.ai/docs/models/gemma-4/qat): `TEMP=1.0`, `TOP_P=0.95`, `TOP_K=64`.
+
+```bash
+TEMP=0.7 bash scripts/start.sh                              # more deterministic
+TEMP=1.0 TOP_P=0.95 TOP_K=64 bash scripts/start.sh          # the defaults, explicit
+EXTRA_ARGS="--min-p 0.01 --repeat-penalty 1.1 --seed 42" bash scripts/start.sh   # anything else
+```
+
+(`pi` doesn't expose sampling flags, so the server is where you set them. An OpenAI client that
+*does* send `temperature`/`top_p` overrides the server default for that request.)
+
 ### Performance & tuning
 
 The model is **30 layers, 128 experts/layer, top-8 routing**; in this quant each layer's
