@@ -1,9 +1,17 @@
 # Gemma 4 26B-A4B (QAT) locally on an 8 GB GPU, driven by `pi`
 
+![model](https://img.shields.io/badge/Gemma%204-26B--A4B%20QAT-4c8bf5)
+![GPU](https://img.shields.io/badge/GPU-RTX%202070%208%E2%80%AFGB-76b900)
+![CUDA](https://img.shields.io/badge/CUDA%20build-~23.5%20tok%2Fs-2ea043)
+![Vulkan](https://img.shields.io/badge/Vulkan-~4.9%20tok%2Fs-f0883e)
+![CPU](https://img.shields.io/badge/CPU%20only-~1.9%20tok%2Fs-8b949e)
+
 Run Google's **Gemma 4 26B-A4B** mixture-of-experts model (26B total / **4B active**
 parameters), in the unsloth **QAT** 4-bit GGUF (~14 GB), on a laptop with an **8 GB**
 NVIDIA GPU — and use it as the backend for [`pi`](https://github.com/badlogic/pi-mono)
 (a local coding agent).
+
+<p align="center"><img src="docs/speed.svg" alt="Token generation speed by backend: CPU 1.9, Vulkan 4.9, CUDA 23.5 tok/s" width="680"></p>
 
 The trick is llama.cpp's **`--cpu-moe`** flag: it pins the heavy MoE expert weights to
 system RAM while keeping the attention layers and KV cache on the GPU. A 14 GB model

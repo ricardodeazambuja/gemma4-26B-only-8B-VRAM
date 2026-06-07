@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="272" viewBox="0 0 720 272" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+<rect x="0" y="0" width="720" height="272" rx="12" fill="#ffffff" stroke="#d0d7de"/>
+<text x="24" y="32" font-size="19" font-weight="700" fill="#1f2328">Token generation speed by backend</text>
+<text x="24" y="52" font-size="12.5" fill="#656d76">Gemma 4 26B-A4B QAT (UD-Q4_K_XL) &#183; RTX 2070 8 GB &#183; NCMOE=22 &#183; higher is better</text>
+<line x1="150.0" y1="58" x2="150.0" y2="220" stroke="#eaeef2" stroke-width="1"/>
+<text x="150.0" y="236" font-size="10.5" fill="#8c959f" text-anchor="middle">0</text>
+<line x1="245.0" y1="58" x2="245.0" y2="220" stroke="#eaeef2" stroke-width="1"/>
+<text x="245.0" y="236" font-size="10.5" fill="#8c959f" text-anchor="middle">5</text>
+<line x1="340.0" y1="58" x2="340.0" y2="220" stroke="#eaeef2" stroke-width="1"/>
+<text x="340.0" y="236" font-size="10.5" fill="#8c959f" text-anchor="middle">10</text>
+<line x1="435.0" y1="58" x2="435.0" y2="220" stroke="#eaeef2" stroke-width="1"/>
+<text x="435.0" y="236" font-size="10.5" fill="#8c959f" text-anchor="middle">15</text>
+<line x1="530.0" y1="58" x2="530.0" y2="220" stroke="#eaeef2" stroke-width="1"/>
+<text x="530.0" y="236" font-size="10.5" fill="#8c959f" text-anchor="middle">20</text>
+<line x1="625.0" y1="58" x2="625.0" y2="220" stroke="#eaeef2" stroke-width="1"/>
+<text x="625.0" y="236" font-size="10.5" fill="#8c959f" text-anchor="middle">25</text>
+<text x="388" y="252" font-size="11" fill="#656d76" text-anchor="middle">tokens / second</text>
+<text x="138" y="85.0" font-size="13" fill="#1f2328" text-anchor="end" font-weight="600">CPU only</text>
+<rect x="150" y="64" width="36.1" height="34" rx="5" fill="#8b949e"/>
+<text x="196.1" y="85.0" font-size="13" fill="#1f2328" font-weight="700">1.9 tok/s</text>
+<text x="138" y="143.0" font-size="13" fill="#1f2328" text-anchor="end" font-weight="600">Vulkan</text>
+<rect x="150" y="122" width="93.1" height="34" rx="5" fill="#f0883e"/>
+<text x="253.1" y="143.0" font-size="13" fill="#1f2328" font-weight="700">4.9 tok/s</text>
+<text x="138" y="201.0" font-size="13" fill="#1f2328" text-anchor="end" font-weight="600">CUDA (built)</text>
+<rect x="150" y="180" width="446.5" height="34" rx="5" fill="#2ea043"/>
+<text x="606.5" y="201.0" font-size="13" fill="#1f2328" font-weight="700">23.5 tok/s</text>
+<text x="586.5" y="201.0" font-size="11.5" fill="#ffffff" text-anchor="end" font-weight="700">~5x faster</text>
+</svg>
