@@ -59,8 +59,38 @@ bash scripts/stop-server.sh    # when done: stop the server
 | **GPU** | NVIDIA RTX 2070 Max-Q, **8 GB VRAM**, driver **535** (CUDA 12.2) |
 | **RAM** | 31 GB (16 GB is enough) |
 | **CPU** | Intel Core i7-8750H |
-| **Backend** | llama.cpp (conda-forge build) on the **Vulkan** backend |
-| **Result** | ~3.1 GB VRAM used, reasoning works, ~3–4 tok/s |
+| **Backend** | llama.cpp — **Vulkan** (zero-build) or **CUDA** (built from source, ~5–6× faster) |
+| **Result** | reasoning + tool-calls work; **~4.9 tok/s on Vulkan, ~23.5 tok/s on CUDA** |
+
+---
+
+## The model
+
+| | |
+|---|---|
+| **Repo** | [`unsloth/gemma-4-26B-A4B-it-qat-GGUF`](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF) on Hugging Face |
+| **File** | `gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf` (~14 GB) |
+| **What** | Gemma 4 26B-total / 4B-active MoE, **QAT** (quantization-aware-trained) 4-bit, unsloth "UD" dynamic quant |
+
+**You don't download it manually — `scripts/setup.sh` fetches it for you** (via
+`huggingface_hub` into `models/`, ~14 GB). The repo is **public**, so no Hugging Face
+account or token is required.
+
+**Use a different quant or your own file:**
+
+```bash
+# pick another file from the same repo (e.g. a smaller/larger quant)
+MODEL_FILE=gemma-4-26B-A4B-it-qat-UD-Q3_K_XL.gguf bash scripts/setup.sh
+
+# or a different repo entirely
+MODEL_REPO=some-org/some-gguf MODEL_FILE=model.gguf bash scripts/setup.sh
+
+# already have the GGUF somewhere? skip the download and point the server at it
+MODEL=/path/to/model.gguf bash scripts/run-server.sh
+```
+
+Browse available quants (Q3/Q4/Q5/Q6/Q8, different sizes) on the
+[repo's Files tab](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF/tree/main).
 
 ---
 
@@ -102,8 +132,12 @@ kernels** from 12.9 are too new for the 12.2 driver to load. **Two fixes:**
   dedicated env by `scripts/setup.sh`.
 - An NVIDIA GPU with a working driver (the driver provides the Vulkan ICD).
 - ~14 GB free disk for the model, and ≥16 GB system RAM.
+- An internet connection for the first run (downloads the ~14 GB model + conda packages).
 - [`pi`](https://github.com/badlogic/pi-mono) if you want the agent front-end
   (`npm i -g @mariozechner/pi-coding-agent`). Not required just to run the server.
+- **Only for the optional CUDA build** (`build-llama-cuda.sh`): `git`, ~4 GB extra disk for the
+  CUDA toolchain, and ~20 min to compile. Everything (toolkit, compiler) is auto-installed into
+  an isolated conda env — nothing system-wide.
 
 ---
 
@@ -216,9 +250,12 @@ There's also a built-in web UI at <http://127.0.0.1:8080>.
 │   ├── run-server.sh         # launch llama-server (Vulkan default, BACKEND=cuda for the build)
 │   ├── run-pi.sh             # launch pi against the local server
 │   ├── stop-server.sh        # stop the server
-│   └── build-llama-cuda.sh   # build llama.cpp against the local CUDA (optional, ~5-6x faster)
+│   ├── build-llama-cuda.sh   # build llama.cpp against the local CUDA (optional, ~5-6x faster)
+│   └── make-speed-chart.py   # regenerate docs/speed.svg from measured numbers
 ├── config/
 │   └── pi-provider.json      # pi provider definition
+├── docs/
+│   └── speed.svg             # backend speed comparison chart (in the README)
 ├── models/                   # downloaded GGUF lives here (gitignored)
 └── vendor/                   # llama.cpp source + CUDA build (gitignored)
 ```
