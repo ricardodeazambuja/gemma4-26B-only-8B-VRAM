@@ -256,6 +256,44 @@ model.
 | **CUDA (built from source)** | llama-bench | 63 t/s | **25.25 t/s** |
 | **CUDA (built from source)** | server | — | **23.5 t/s** |
 
+(Token-gen is run-to-run noisy on a laptop ±10–20% from background load — e.g. CPU-only measured
+1.9 and 2.4 tok/s on two runs. Treat these as representative, not exact.)
+
+### How these were measured
+
+Two tools, both from the relevant env. **`llama-bench`** is the clean micro-benchmark (loads the
+model, runs `pp`/`tg`, prints tokens/s); **server** numbers are `predicted_per_second` from a real
+`/v1/chat/completions` request — what `pi` actually experiences.
+
+```bash
+M=models/gemma4-26b-a4b-qat/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf
+
+# CPU only — no GPU at all. --device none excludes every offload device; -ngl 0 keeps all layers
+# on the CPU. (llama-bench accepts --device none; --cpu-moe is a server-only flag.)
+mamba run -n llamacpp      llama-bench -m $M --device none -ngl 0           -n 64 -p 32
+
+# Vulkan, 8 expert layers on GPU (the NCMOE=22 config)
+mamba run -n llamacpp      llama-bench -m $M --device Vulkan1 -ngl 99 --n-cpu-moe 22 -n 64 -p 64
+
+# CUDA (source build), same split
+mamba run -n llamacpp-cuda vendor/llama.cpp/build/bin/llama-bench \
+                                       -m $M -ngl 99 --n-cpu-moe 22         -n 64 -p 64
+
+# server-side (start the server, then time a request):
+NCMOE=22 BACKEND=cuda bash scripts/run-server.sh    # or drop BACKEND for Vulkan
+curl -s localhost:8080/v1/chat/completions -d '{"model":"gemma-4-26b-a4b-qat",
+  "messages":[{"role":"user","content":"Write a haiku about RAM."}],"max_tokens":300}' \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["timings"]["predicted_per_second"])'
+```
+
+**Verifying the CPU-only number really used no GPU.** Because this machine's conda CUDA kernels
+crash on *any* launch (§6), a CPU-only run that completes is already proof no CUDA kernel ran. We
+also confirmed it directly: with the server stopped, while the CPU `llama-bench` ran,
+`nvidia-smi --query-compute-apps` showed **no compute process** and GPU memory stayed at the idle
+desktop baseline (~302 MiB, zero delta). The 6–36% `utilization.gpu` seen meanwhile is *graphics*
+(desktop compositing), not compute — `utilization.gpu` counts both. The `dev` column in
+llama-bench's own output also reads `none`.
+
 ### Two conclusions
 
 **(a) The GPU is not slower than the CPU — Vulkan was just slow.** Pure CPU is ~1.9 tok/s; Vulkan
@@ -295,11 +333,43 @@ experts fit on the GPU ⇒ `NCMOE=22`.
 
 - `NCMOE=22` leaves ~1.2 GB headroom — about the limit on 8 GB once the desktop uses some VRAM.
   Going lower (more experts on GPU) risks OOM. If it OOMs, raise `NCMOE` or lower `CTX`.
-- **Context:** the OP recipe used `-c 248000`. That is fantasy on 8 GB — KV cache for 248K tokens
-  does not fit. We use `-c 16384`; raise it only if VRAM allows (it competes with experts).
 - **`--no-mmap`:** with CPU tensor overrides, llama.cpp warns that mmap is slower; we load fully
   into RAM (the box has 31 GB).
 - **`-fa auto`:** flash attention reduces KV-cache footprint.
+
+### Context size
+
+The **context window** is the `-c` argument to `llama-server`, exposed as the **`CTX`** env var on
+all run scripts. It is the second VRAM consumer after the experts: the KV cache lives in VRAM and
+grows roughly linearly with `CTX`, so context and on-GPU experts (`NCMOE`) compete for the same
+8 GB.
+
+| | |
+|---|---|
+| Default | **`CTX=16384`** (16K tokens) |
+| Maximum | **262144** (256K — the value Gemma 4 was trained for; `gemma4.context_length`) |
+| Practical max on 8 GB | well below 256K — the KV cache won't fit. The OP's `-c 248000` is not realistic here. |
+
+Change it on any run script:
+
+```bash
+CTX=32768 BACKEND=cuda bash scripts/start.sh        # bigger window
+CTX=8192  BACKEND=cuda bash scripts/start.sh        # smaller, frees VRAM for experts
+CTX=32768 NCMOE=24 BACKEND=cuda bash scripts/run-server.sh   # bigger ctx, fewer GPU experts to fit it
+```
+
+**Two knobs, one budget.** Raising `CTX` enlarges the KV cache (more VRAM); if it OOMs, raise
+`NCMOE` (push experts back to RAM) or lower `CTX`. Flash attention (`-fa auto`, always on here)
+keeps the KV cache smaller than it would otherwise be — and Gemma 4's sliding-window layers (every
+6th layer uses `KV=2` heads) also reduce it.
+
+**Keep `pi` in sync.** `pi`'s own `contextWindow` (in `~/.pi/agent/models.json`) is independent of
+the server's `-c`; if they disagree, `pi` plans around its own value. Pass the same `CTX` to
+`configure-pi.sh` so they match:
+
+```bash
+CTX=32768 bash scripts/configure-pi.sh
+```
 
 ---
 

@@ -177,9 +177,21 @@ All scripts accept env-var overrides — see the header comment in each.
 ```bash
 NCMOE=22   bash scripts/run-server.sh     # FASTEST on 8 GB: keep first 22 layers' experts
                                           # on CPU, put the last 8 layers' experts on the GPU
-CTX=32768  bash scripts/run-server.sh     # larger context (more VRAM for KV cache)
+CTX=32768  bash scripts/run-server.sh     # larger context window (more VRAM for KV cache)
 BACKEND=cuda bash scripts/run-server.sh   # native CUDA backend (after build-llama-cuda.sh) — ~5–6× faster
 PORT=9000  bash scripts/run-server.sh     # different port
+```
+
+These env vars work on **`run-server.sh`, `start.sh`, and `build-llama-cuda.sh`** alike (e.g.
+`CTX=32768 NCMOE=24 BACKEND=cuda bash scripts/start.sh`).
+
+**Context size.** The context window is `CTX` (default **16384**; model max **262144**). It's the
+KV-cache size and lives in VRAM, so it competes with `NCMOE` for the 8 GB — raise `CTX` and you may
+need a higher `NCMOE`, or lower `CTX` to free VRAM. If you change it, pass the **same** `CTX` to
+`configure-pi.sh` so pi's view matches the server:
+
+```bash
+CTX=32768 bash scripts/configure-pi.sh    # keep pi's contextWindow in sync with the server's -c
 ```
 
 ### Performance & tuning
