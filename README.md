@@ -131,9 +131,12 @@ kernels** from 12.9 are too new for the 12.2 driver to load. **Two fixes:**
 ## Prerequisites
 
 - **mamba / conda** ([Miniforge](https://github.com/conda-forge/miniforge)). All other
-  dependencies (llama.cpp, the Vulkan loader, `huggingface_hub`) are installed into a
-  dedicated env by `scripts/setup.sh` — or from the manifest: `mamba env create -f environment.yml`
-  (the minimal runtime deps; `setup.sh` does the same and also downloads the model).
+  dependencies are installed into dedicated envs by the scripts, or from the manifests:
+  - **Runtime:** `mamba env create -f environment.yml` (llama.cpp + Vulkan + `huggingface_hub`).
+    `scripts/setup.sh` does the same and also downloads the model.
+  - **Build (optional, native CUDA):** `mamba env create -f environment-build.yml` (CUDA toolkit +
+    compiler + cmake). Pinned to CUDA 12.2 — adjust to your driver, or just run
+    `scripts/build-llama-cuda.sh` which auto-detects.
 - An NVIDIA GPU with a working driver (the driver provides the Vulkan ICD).
 - ~14 GB free disk for the model, and ≥16 GB system RAM.
 - An internet connection for the first run (downloads the ~14 GB model + conda packages).
@@ -247,7 +250,8 @@ There's also a built-in web UI at <http://127.0.0.1:8080>.
 .
 ├── README.md                 # this file
 ├── MEMORY.md                 # working notes / decisions log
-├── environment.yml           # minimal conda/mamba runtime deps (Vulkan path)
+├── environment.yml           # conda/mamba runtime deps (Vulkan path)
+├── environment-build.yml     # conda/mamba build toolchain (native CUDA build)
 ├── scripts/
 │   ├── setup.sh              # env + model download
 │   ├── configure-pi.sh       # register provider in pi

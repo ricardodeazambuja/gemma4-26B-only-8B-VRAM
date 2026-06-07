@@ -1,0 +1,38 @@
+# Build-time environment for compiling llama.cpp with the NATIVE CUDA backend.
+#
+# Companion to environment.yml (runtime). This installs only the toolchain:
+# the CUDA toolkit + a compatible host compiler + cmake/ninja/git. Use it when
+# the prebuilt conda llama.cpp CUDA kernels won't load on your driver (see
+# docs/TECHNICAL.md section 6) and you want the ~5x-faster native CUDA build.
+#
+#   mamba env create -f environment-build.yml
+#
+# IMPORTANT — match these to YOUR GPU/driver before creating the env:
+#   * cuda-toolkit / cuda-version : your driver's MAX CUDA version.
+#       Check:  nvidia-smi | grep 'CUDA Version'        (this repo: 12.2, driver 535)
+#       Building against a newer CUDA than the driver supports -> kernels won't
+#       load at runtime ("device kernel image is invalid").
+#   * gxx/gcc : nvcc 12.x requires host gcc <= 12 (CUDA 11.x: gcc <= 11). Pinned to 12.
+#
+# EASIER: scripts/build-llama-cuda.sh auto-detects your CUDA version + GPU arch,
+# creates this env, builds, and smoke-tests. Prefer it unless you want a manual build.
+#
+# Manual build with this env (after `mamba env create -f environment-build.yml`):
+#   git clone --depth 1 https://github.com/ggml-org/llama.cpp vendor/llama.cpp
+#   mamba run -n llamacpp-cuda cmake -S vendor/llama.cpp -B vendor/llama.cpp/build -G Ninja \
+#       -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75 -DLLAMA_CURL=OFF
+#   mamba run -n llamacpp-cuda cmake --build vendor/llama.cpp/build -j --target llama-server
+#   BACKEND=cuda bash scripts/run-server.sh
+# (CMAKE_CUDA_ARCHITECTURES=75 is for Turing/RTX 2070; use your GPU's compute capability.)
+name: llamacpp-cuda
+channels:
+  - conda-forge
+dependencies:
+  - cuda-toolkit=12.2     # <-- CHANGE to your driver's max CUDA (nvidia-smi)
+  - cuda-version=12.2     # <-- keep in sync with cuda-toolkit
+  - gxx_linux-64=12       # nvcc 12.x host compiler must be gcc <= 12
+  - gcc_linux-64=12
+  - cmake
+  - ninja
+  - git
+  - make

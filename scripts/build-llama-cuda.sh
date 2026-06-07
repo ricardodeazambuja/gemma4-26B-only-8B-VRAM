@@ -69,6 +69,8 @@ if mamba env list | grep -qE "/${ENV_NAME}\$|^\s*${ENV_NAME}\s"; then
   echo ">> env '$ENV_NAME' exists — skipping create (delete it to rebuild the toolchain)"
 else
   echo ">> creating env '$ENV_NAME' (cuda-toolkit $CUDA_VER + gcc $GCCV + cmake/ninja) ..."
+  # Same package set as ../environment-build.yml, but with the CUDA version
+  # auto-detected from the driver instead of pinned. Keep the two in sync.
   mamba create -y -n "$ENV_NAME" -c conda-forge \
     cuda-toolkit="$CUDA_VER" "cuda-version=$CUDA_VER" \
     "gxx_linux-64=$GCCV" "gcc_linux-64=$GCCV" \

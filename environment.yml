@@ -11,9 +11,10 @@
 # so you normally don't need this file — it's here for users who prefer a manifest,
 # and to document exactly what the runtime needs.
 #
-# NOT included here: the CUDA build toolchain. That must match YOUR driver's CUDA
-# version, so it can't be a static manifest — scripts/build-llama-cuda.sh detects
-# it and installs cuda-toolkit/gcc into a separate `llamacpp-cuda` env.
+# NOT included here: the CUDA build toolchain. That lives in the companion
+# environment-build.yml (and is auto-detected/built by scripts/build-llama-cuda.sh).
+# It's a separate env because building needs the CUDA toolkit + a pinned compiler,
+# which must match your driver's CUDA version.
 #
 # `pi` itself is a Node tool, not a conda package:  npm i -g @mariozechner/pi-coding-agent
 name: llamacpp
