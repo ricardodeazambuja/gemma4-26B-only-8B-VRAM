@@ -63,13 +63,21 @@ Architecture, read straight from the GGUF metadata (we parsed the header by hand
 
 llama.cpp reports it as `gemma4 26B.A4B`, **25.23 B** params, **13.26 GiB** in this quant.
 
-Two terms worth defining:
+Two terms worth defining (both detailed in unsloth's
+[Gemma 4 QAT guide](https://unsloth.ai/docs/models/gemma-4/qat)):
 
-- **QAT (Quantization-Aware Training):** the model was fine-tuned with quantization simulated in
-  the forward pass, so the 4-bit weights keep much more quality than naive post-training
-  quantization. This is what makes a 4-bit 26B model genuinely usable.
+- **QAT (Quantization-Aware Training):** the model was fine-tuned with quantization simulated in the
+  forward pass, so the 4-bit weights keep much more quality than naive post-training quantization —
+  unsloth cites **~72% lower memory** at near-original quality. This is what makes a 4-bit 26B model
+  genuinely usable.
 - **UD-Q4_K_XL:** unsloth's "Unsloth Dynamic" quant — different tensors get different bit-widths
-  (important ones kept higher) rather than a uniform Q4.
+  (important ones kept higher) rather than a uniform Q4. It also fixes a scale-format mismatch when
+  converting the QAT weights to GGUF: per unsloth, naive `Q4_0` conversion of this model lands at
+  **70.2%** top-1 accuracy, while the dynamic method reaches **85.6%** (+15.4) *and* is smaller, by
+  matching the BF16 QAT scales much more exactly (99.96% vs 24.77% byte-exactness).
+
+Per the same guide, the recommended **sampling** settings are temperature **1.0**, top-p **0.95**,
+top-k **64**.
 
 The repo is **public**: no Hugging Face token is needed, and `scripts/setup.sh` downloads the file
 automatically via `huggingface_hub`.
@@ -356,22 +364,35 @@ compete for the same 8 GB.
 
 | | |
 |---|---|
-| Default | **`CTX=16384`** (16K tokens) |
+| Default | **`CTX=32768`** (32K — the most that fits at the fast `NCMOE=22`) |
 | Maximum | **262144** (256K — the value Gemma 4 was trained for; `gemma4.context_length`) |
-| Practical max on 8 GB | well below 256K — the KV cache won't fit. The OP's `-c 248000` is not realistic here. |
+| Practical max on 8 GB | ~160K, and only with all experts in RAM (`--cpu-moe`). 256K does not fit. |
 
-Change it on any run script:
+#### Measured ceilings (RTX 2070, 8 GB, CUDA)
+
+Context trades directly against on-GPU experts (= speed). Both share the 8 GB:
+
+| Config | Experts on GPU | Context | VRAM used / free | Speed |
+|---|---|---|---|---|
+| `NCMOE=22` (default) | 8 layers | 16K | 6700 / 1274 MiB | ~23 tok/s |
+| `NCMOE=22` (default) | 8 layers | **32K** | 6960 / 1013 MiB | ~23 tok/s |
+| `--cpu-moe` | 0 layers | **128K** | 5716 / 2257 MiB | slower |
+| `--cpu-moe` | 0 layers | 192K | — (won't fit) | — |
+
+So: **~32K at full speed**, or up to **~128K** (≈160K hard ceiling) if you push every expert to RAM
+with `--cpu-moe` — at the cost of speed (all 30 expert layers then run on the CPU, and prefill of a
+large prompt is CPU-bound). Dial `NCMOE` between 22 and 30 to trade speed for context.
 
 ```bash
-CTX=32768 BACKEND=cuda bash scripts/start.sh        # bigger window
-CTX=8192  BACKEND=cuda bash scripts/start.sh        # smaller, frees VRAM for experts
-CTX=32768 NCMOE=24 BACKEND=cuda bash scripts/run-server.sh   # bigger ctx, fewer GPU experts to fit it
+CTX=8192  BACKEND=cuda bash scripts/start.sh                 # smaller, frees VRAM
+CTX=65536 NCMOE=27 BACKEND=cuda bash scripts/start.sh        # ~64K, some experts still on GPU
+CTX=131072 BACKEND=cuda bash scripts/start.sh                # 128K, all experts in RAM (slower)
 ```
 
-**Two knobs, one budget.** Raising `CTX` enlarges the KV cache (more VRAM); if it OOMs, raise
-`NCMOE` (push experts back to RAM) or lower `CTX`. Flash attention (`-fa auto`, always on here)
-keeps the KV cache smaller than it would otherwise be — and Gemma 4's sliding-window layers (every
-6th layer uses `KV=2` heads) also reduce it.
+**Two knobs, one budget.** Raising `CTX` enlarges the KV cache (more VRAM); if it won't fit, raise
+`NCMOE` (push experts back to RAM) or lower `CTX`. (The `-fit` auto-checker aborts cleanly at load
+rather than crashing if `-ngl 99` + the requested context can't fit.) Flash attention (`-fa auto`)
+and Gemma 4's sliding-window layers (every 6th uses `KV=2` heads) keep the cache small to begin with.
 
 **Keep `pi` in sync.** `pi`'s own `contextWindow` (in `~/.pi/agent/models.json`) is independent of
 the server's `-c`; if they disagree, `pi` plans around its own value. Pass the same `CTX` to
@@ -502,6 +523,8 @@ and GPU arch rather than relying on a static pin.
 ### References
 
 - Model: <https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF>
+- **unsloth Gemma 4 QAT guide** (QAT explained, UD-quant accuracy numbers, recommended sampling):
+  <https://unsloth.ai/docs/models/gemma-4/qat>
 - llama.cpp: <https://github.com/ggml-org/llama.cpp>
 - pi: <https://github.com/badlogic/pi-mono>
 - Ollama MoE-offload requests: [#11772](https://github.com/ollama/ollama/issues/11772),

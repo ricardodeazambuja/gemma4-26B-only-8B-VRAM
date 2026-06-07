@@ -18,7 +18,7 @@
 #   ENV_NAME   conda env name                 (default: llamacpp)
 #   MODEL      path to the .gguf              (default: ./models/.../UD-Q4_K_XL.gguf)
 #   BACKEND    vulkan | cuda                  (default: vulkan)
-#   CTX        context window                 (default: 16384)
+#   CTX        context window                 (default: 32768; ~max at NCMOE=22 on 8 GB)
 #   NCMOE      if set to N, keep only the first N layers' experts on CPU and put
 #              the rest on the GPU (faster, uses more VRAM). Empty = all on CPU.
 #   HOST/PORT  bind address                   (default: 127.0.0.1 / 8080)
@@ -36,7 +36,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_NAME="${ENV_NAME:-llamacpp}"
 MODEL="${MODEL:-$REPO_ROOT/models/gemma4-26b-a4b-qat/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf}"
 BACKEND="${BACKEND:-vulkan}"
-CTX="${CTX:-16384}"
+CTX="${CTX:-32768}"
 NCMOE="${NCMOE:-}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8080}"

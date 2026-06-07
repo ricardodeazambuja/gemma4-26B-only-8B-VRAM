@@ -174,7 +174,7 @@ kernels** from 12.9 are too new for the 12.2 driver to load. **Two fixes:**
 | `scripts/setup.sh` | **(once)** Creates the `llamacpp` conda env (llama.cpp + huggingface_hub) and downloads the GGUF into `models/`. `BACKEND=cuda` also builds the native CUDA backend. Idempotent. |
 | `scripts/configure-pi.sh` | **(once)** Adds the `llamacpp` provider to `~/.pi/agent/models.json` from `config/pi-provider.json`. |
 | `scripts/start.sh` | **All-in-one:** starts the server (if not already up), waits for it to load, then launches pi. Passes `BACKEND`/`NCMOE`/`CTX` through; extra args go to pi. |
-| `scripts/run-server.sh` | Launches `llama-server` with `--cpu-moe`, `--no-mmap`, `-c 16384`, `--jinja`, on `127.0.0.1:8080`. Vulkan by default; `BACKEND=cuda` uses the source build. |
+| `scripts/run-server.sh` | Launches `llama-server` with `--cpu-moe`, `--no-mmap`, `-c 32768`, `--jinja`, on `127.0.0.1:8080`. Vulkan by default; `BACKEND=cuda` uses the source build. |
 | `scripts/run-pi.sh` | Launches pi against the local server (`--provider llamacpp --model gemma-4-26b-a4b-qat`). Extra args pass through to pi. |
 | `scripts/stop-server.sh` | Stops the server by the port it listens on (default 8080). |
 | `scripts/build-llama-cuda.sh` | **(optional, ~5–6× faster)** Builds llama.cpp from source against your driver's CUDA version into a `llamacpp-cuda` env. Auto-detects CUDA + GPU arch, smoke-tests the result. |
@@ -185,25 +185,34 @@ All scripts accept env-var overrides — see the header comment in each.
 ### Useful overrides
 
 ```bash
-NCMOE=22   bash scripts/run-server.sh     # FASTEST on 8 GB: keep first 22 layers' experts
-                                          # on CPU, put the last 8 layers' experts on the GPU
-CTX=32768  bash scripts/run-server.sh     # larger context window (more VRAM for KV cache)
+NCMOE=22    bash scripts/run-server.sh    # FASTEST on 8 GB: 8 expert layers on GPU (this is the default)
+CTX=65536   bash scripts/run-server.sh    # bigger context (see the ceiling table below)
 BACKEND=cuda bash scripts/run-server.sh   # native CUDA backend (after build-llama-cuda.sh) — ~5–6× faster
-PORT=9000  bash scripts/run-server.sh     # different port
+PORT=9000   bash scripts/run-server.sh    # different port
 ```
 
 These env vars work on **`run-server.sh`, `start.sh`, and `build-llama-cuda.sh`** alike (e.g.
-`CTX=32768 NCMOE=24 BACKEND=cuda bash scripts/start.sh`).
+`CTX=65536 NCMOE=27 BACKEND=cuda bash scripts/start.sh`).
 
-**Context size.** The context window is `CTX` (default **16384**; model max **262144**). The
+**Context size.** The context window is `CTX` (**default 32768** = 32K; model max **262144**). The
 context is the KV cache, and it lives in **VRAM**, not RAM (only the expert weights are offloaded) —
-so it competes with `NCMOE` for the 8 GB: raise `CTX` and you may need a higher `NCMOE`, or lower
-`CTX` to free VRAM. The KV cache here is small (~0.6 GB at 16K, thanks to flash attention and
-Gemma's sliding-window layers) and its size is **independent of the quant**. If you change `CTX`,
-pass the **same** value to `configure-pi.sh` so pi's view matches the server:
+so it shares the 8 GB with the attention weights and on-GPU experts. **More context means fewer
+experts on the GPU, which means slower** — context trades directly against speed:
+
+| Goal | Setting | Max context on 8 GB | Speed |
+|---|---|---|---|
+| **Full speed (default)** | `NCMOE=22` | **~32K** | ~23 tok/s |
+| Balance | `NCMOE=27`, etc. | ~64K | medium |
+| **Max context** | `--cpu-moe` (omit `NCMOE`) | **~128K** (≈160K ceiling) | slower (all experts on CPU) |
+
+(The KV cache itself is tiny — ~0.6 GB at 16K — thanks to flash attention and Gemma's
+sliding-window layers, and its size is **independent of the quant**. 256K, the model's trained max,
+does not fit on 8 GB.) If you change `CTX`, pass the **same** value to `configure-pi.sh`:
 
 ```bash
-CTX=32768 bash scripts/configure-pi.sh    # keep pi's contextWindow in sync with the server's -c
+# e.g. a 128K window (slower): all experts to RAM, big context
+CTX=131072 bash scripts/start.sh
+CTX=131072 bash scripts/configure-pi.sh   # keep pi's contextWindow in sync with the server's -c
 ```
 
 ### Performance & tuning

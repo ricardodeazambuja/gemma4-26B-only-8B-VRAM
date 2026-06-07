@@ -7,7 +7,7 @@
 #
 #   PI_MODELS   path to pi's models.json   (default: ~/.pi/agent/models.json)
 #   CTX         override the model's contextWindow to match the server's -c
-#               (default: keep the value in config/pi-provider.json, 16384).
+#               (default: keep the value in config/pi-provider.json, 32768).
 #               Use the SAME value you pass as CTX to run-server.sh/start.sh.
 #
 set -euo pipefail
