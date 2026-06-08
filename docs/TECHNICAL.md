@@ -509,6 +509,37 @@ Every later launch reads the cache and applies the split (and chosen context) in
 part runs *once*, not on every start. A declined offer is remembered (so it never nags), `AUTOTUNE=1`
 forces a fresh sweep, `AUTOTUNE=0` disables it, and an explicit `NCMOE=` bypasses the whole thing.
 
+### Guided setup: `start.sh --menu`
+
+Everything above — plus the KV-cache and sampling knobs below — is reachable from one interactive
+front-end: `bash scripts/start.sh --menu`. It is deliberately **not** a new configuration system.
+Each prompt just sets the same environment variable the equivalent command line would, then the
+normal launch path runs unchanged. Each step shows its valid values and a one-line explanation,
+**every** prompt accepts `q` (or Ctrl-D) to cancel cleanly, and picking auto-tune prints an
+up-front heads-up that the first measurement takes a few minutes (it's cached afterwards):
+
+| Menu step | Sets | Notes |
+|---|---|---|
+| Backend | `BACKEND` (unset = auto-detect) | cuda / vulkan / cpu |
+| Strategy | — | **auto-tune** (reuse-or-measure, the sweep above) vs **manual** |
+| Context | `CTX` (+ the explicit flag) | manual, or "auto-tune one specific context" |
+| Expert split | `NCMOE` | manual mode only; blank = all experts on CPU |
+| KV cache | `KVQUANT` | f16 / q8_0 / q4_0 / other |
+| Sampling | `TEMP` / `TOP_P` / `TOP_K` | defaults follow unsloth |
+| Image | `--image` | loads the vision projector |
+
+It runs only for a **fresh** server (a reused one can't be reconfigured) and requires a real TTY (it
+refuses on a pipe). The `--menu` token is consumed by `start.sh` and never forwarded to `pi`. Because
+every step maps to a plain env var, the menu is purely ergonomics — each choice has a non-interactive
+equivalent, e.g. `BACKEND=cuda CTX=65536 NCMOE=20 KVQUANT=q8_0 bash scripts/start.sh`.
+
+One thing the menu does that the bare env-var path does **not**: once the final context is resolved
+(after the sweep-and-pick, if any), it runs `configure-pi.sh` automatically so pi's `contextWindow`
+matches the server's `-c`. Without that, the server can serve 128K while pi silently caps the
+context at its own configured window — a 128K server with a 32K client. The sync is gated on
+`--menu` (an explicit interactive opt-in, since it edits `~/.pi/agent/models.json`); env-var
+launches only get a printed reminder to run `configure-pi.sh` themselves.
+
 ### KV-cache quantization: `KVQUANT`
 
 `CTX` and `NCMOE` both spend the same 8 GB; **`KVQUANT`** adds a third lever by shrinking the KV
@@ -523,9 +554,19 @@ Implementation notes (and the reasons behind them):
   `-fa` to `on` — the script makes `-fa` a variable for exactly this. The valid type list is read
   from `common/arg.cpp` and validated up-front (a typo errors before the 14 GB load, not after).
 - **It's a long-context lever, not a default.** At 32K the KV cache is ~0.6 GB — quantizing it is
-  noise. The payoff grows with context: measured here at **CTX=65536, `q8_0` cut VRAM 4118 → 3098
-  MiB (~1 GB)**, which is room for more on-GPU experts or more context. Below ~64K it rarely earns
-  the (small) quality cost.
+  noise. The payoff grows with context. Measured here (CUDA, RTX 2070, 8 GB), at the same `NCMOE`
+  `q8_0` freed ~976 MiB at 65536 and ~2 GB at 131072 — enough to fit a *faster* expert split, so
+  the gain shows up as both higher tok/s and a larger usable context:
+
+  | Context | f16 (off) | `q8_0` | Gain |
+  |---|---|---|---|
+  | 65536  | `NCMOE=22` → 26.1 tok/s | `NCMOE=20` → 30.5 tok/s | +17% |
+  | 131072 | `NCMOE=27` (only fit) → 19.5 tok/s | `NCMOE=22` → 27.0 tok/s | +38% |
+
+  At 128K, f16's KV cache is large enough that *only* the slowest all-but-three-layers-on-CPU split
+  fits; `q8_0` shrinks it so the fast split fits. Same 4-bit model weights in both columns — only the
+  KV-cache precision changes. (tok/s measured at low context fill; use to rank, not as a deep-context
+  promise.) Below ~64K it rarely earns the small quality cost.
 - **It is a tuning dimension.** Because quantizing the KV cache frees VRAM, the *fastest fitting
   `NCMOE` changes* — so the auto-tune cache is keyed `backend:ctx:kvquant`, and the benchmark probes
   with the same `KVQUANT`. A `q8_0` tune and an `f16` tune never collide; existing pre-`KVQUANT`

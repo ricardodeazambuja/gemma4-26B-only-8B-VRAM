@@ -53,6 +53,13 @@ bash scripts/configure-pi.sh          # register the pi provider (once)
 bash scripts/start.sh                 # server + pi
 ```
 
+> **Don't want to memorize env vars? Use the guided setup —** `bash scripts/start.sh --menu`
+> walks you through backend, **auto-tune vs manual**, context, KV-cache quantization, sampling
+> and image input, then launches the server and pi with your picks. It also **syncs pi's context
+> window to the server's** automatically (so a 128K server doesn't end up with a 32K client).
+> Everything it sets is also a plain env var (see [Useful overrides](#useful-overrides) and
+> [Performance & tuning](#performance--tuning)), so the menu is a convenience, never the only way.
+
 > **Backend auto-detection:** once you've built the CUDA backend, the run scripts pick it up
 > automatically — you no longer need to pass `BACKEND=cuda` every time. Without a CUDA build they
 > fall back to Vulkan. Override either way with `BACKEND=cuda|vulkan|cpu`.
@@ -174,7 +181,7 @@ kernels** from 12.9 are too new for the 12.2 driver to load. **Two fixes:**
 |---|---|
 | `scripts/setup.sh` | **(once)** Creates the `llamacpp` conda env (llama.cpp + huggingface_hub) and downloads the GGUF into `models/`. `BACKEND=cuda` also builds the native CUDA backend. Idempotent. |
 | `scripts/configure-pi.sh` | **(once)** Adds the `llamacpp` provider to `~/.pi/agent/models.json` from `config/pi-provider.json`. |
-| `scripts/start.sh` | **All-in-one:** starts the server (if not already up) — showing the CUDA/Vulkan/CPU banner — waits for it to load, then launches pi. Passes `BACKEND`/`NCMOE`/`CTX`/`--image` through; other args go to pi. On the **first** fresh launch it offers to **auto-tune** (runs `benchmark-config.sh` once, then remembers the result): with no `CTX` set it sweeps context sizes and lets you pick one; with `CTX=` pinned it tunes the expert split for that context (`AUTOTUNE=1` re-run, `0` off). When pi exits, if it started the server it offers to stop it (interactive prompt; force with `STOP_ON_EXIT=1`/`0`). A server that was already running is left alone. |
+| `scripts/start.sh` | **All-in-one:** starts the server (if not already up) — showing the CUDA/Vulkan/CPU banner — waits for it to load, then launches pi. Pass **`--menu`** for a guided setup that walks every knob (backend, auto-tune vs manual, context, `KVQUANT`, sampling, image) and launches with your picks. Otherwise set knobs as env vars: passes `BACKEND`/`NCMOE`/`CTX`/`KVQUANT`/`TEMP`/`--image` through; other args go to pi. On the **first** fresh launch it offers to **auto-tune** (runs `benchmark-config.sh` once, then remembers the result): with no `CTX` set it sweeps context sizes and lets you pick one; with `CTX=` pinned it tunes the expert split for that context (`AUTOTUNE=1` re-run, `0` off). When pi exits, if it started the server it offers to stop it (interactive prompt; force with `STOP_ON_EXIT=1`/`0`). A server that was already running is left alone. |
 | `scripts/run-server.sh` | Launches `llama-server` with `--cpu-moe`, `--no-mmap`, `-c 32768`, `--jinja`, on `127.0.0.1:8080`. Auto-selects CUDA if built, else Vulkan; prints a color-coded backend banner at launch. Override with `BACKEND=cuda\|vulkan\|cpu`. `KVQUANT=q8_0` quantizes the KV cache (long-context lever). Pass `--image` to enable vision (loads the `mmproj`). |
 | `scripts/run-pi.sh` | Launches pi against the local server (`--provider llamacpp --model gemma-4-26b-a4b-qat`). Extra args pass through to pi. |
 | `scripts/stop-server.sh` | Stops the server by the port it listens on (default 8080). |
@@ -248,9 +255,21 @@ CTX=131072 bash scripts/configure-pi.sh   # keep pi's contextWindow in sync with
 *weight* quant" — but you can quantize the **KV cache itself** to shrink it in VRAM, freeing room for
 more context or more on-GPU experts. `KVQUANT=q8_0` (near-lossless) roughly halves the KV cache;
 `q5_1`/`q4_0` go further but cost quality. It's a **long-context lever** — at 32K the KV cache is
-already ~0.6 GB so it barely matters; at 64K it saved ~1 GB here. Quantizing the V cache requires
-flash attention, so `KVQUANT` forces `-fa on` automatically. `KVQUANT` is also a dimension of the
-auto-tune cache, so the tuned expert split is measured separately per KV-quant setting.
+already ~0.6 GB so it barely matters. Quantizing the V cache requires flash attention, so `KVQUANT`
+forces `-fa on` automatically. `KVQUANT` is also a dimension of the auto-tune cache, so the tuned
+expert split is measured separately per KV-quant setting.
+
+Measured here (CUDA, RTX 2070 8 GB) — the freed VRAM lets *more* expert layers onto the GPU, so the
+win is both **bigger usable context** and **higher tok/s**:
+
+| Context | f16 (off) | `KVQUANT=q8_0` | Gain |
+|---|---|---|---|
+| 65536 | `NCMOE=22` → 26.1 tok/s | `NCMOE=20` → **30.5 tok/s** | **+17%** |
+| 131072 | `NCMOE=27` (only fit) → 19.5 tok/s | `NCMOE=22` → **27.0 tok/s** | **+38%** |
+
+At 128K, f16's KV cache is so large that *only* the slow all-but-three-layers-on-CPU split fits;
+`q8_0` shrinks it ~2 GB and makes the fast split fit. Same 4-bit model weights in both columns —
+only the KV-cache precision changes. (tok/s measured at low context fill — use it to rank.)
 
 ```bash
 CTX=131072 KVQUANT=q8_0 bash scripts/start.sh   # 128K context with a quantized KV cache
@@ -331,6 +350,17 @@ reuse it instantly — no re-measuring. It has two modes:
 
 Skip it with `AUTOTUNE=0`, force a fresh sweep with `AUTOTUNE=1`, widen the grid with
 `CTX_LIST=`/`NCMOE_LIST=`, or set `NCMOE=` yourself to bypass it entirely.
+
+**Or drive all of this from one menu.** `bash scripts/start.sh --menu` is a guided front-end to
+everything above: it asks for the backend, then **auto-tune vs manual** (auto-tune reuses or runs
+exactly this measurement; manual lets you type `CTX`/`NCMOE` directly), then `KVQUANT`, sampling,
+and image input — and launches with your choices. It sets the same env vars described here, so
+anything the menu does you can also do non-interactively on the command line.
+
+The menu also runs `configure-pi.sh` for you, so pi's context window matches the server's `-c`
+without a second command. On the **env-var path** that sync isn't automatic — if you launch with
+`CTX=131072` directly, also run `CTX=131072 bash scripts/configure-pi.sh` once, or pi caps the
+usable context at its previously configured window (32768 by default).
 
 ---
 
