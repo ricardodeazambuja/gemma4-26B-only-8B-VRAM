@@ -495,12 +495,19 @@ implies. That table assumed a large context forces every expert to RAM (`--cpu-m
   `NCMOE=27` as the robust "snappy everywhere" pick.
 
 **Driven from `start.sh` (measure once, reuse forever).** You don't have to run the benchmark by
-hand. The first time `start.sh` brings up a fresh server for a given backend + context with no saved
-result, it offers to run the measurement, then writes the winning `NCMOE` to a small gitignored cache
-(`.gemma4-tuning`, keyed `backend:ctx`, shared via `scripts/_tuning.sh`). Every later launch reads that
-cache and applies the split instantly — the slow part runs *once*, not on every start. A declined offer
-is also remembered (so it never nags), `AUTOTUNE=1` forces a fresh measurement, `AUTOTUNE=0` disables
-it, and an explicit `NCMOE=` bypasses the whole thing.
+hand. The first time `start.sh` brings up a fresh server with no saved result, it offers to run it,
+then writes the outcome to a small gitignored cache (`.gemma4-tuning`, keyed `backend:ctx`, shared via
+`scripts/_tuning.sh`). It has two modes:
+
+- **No `CTX` set (the default launch):** it sweeps `CTX_LIST × NCMOE_LIST`, prints the fastest split
+  that fits at each context, and **prompts you to pick which context to launch** (default = the
+  largest that fit). Your choice is remembered as `backend:chosen` so later launches reuse it — no
+  re-sweeping. This is the answer to "show me what's possible across context sizes."
+- **`CTX=` pinned:** it tunes only `NCMOE` for that single context.
+
+Every later launch reads the cache and applies the split (and chosen context) instantly — the slow
+part runs *once*, not on every start. A declined offer is remembered (so it never nags), `AUTOTUNE=1`
+forces a fresh sweep, `AUTOTUNE=0` disables it, and an explicit `NCMOE=` bypasses the whole thing.
 
 ---
 
@@ -716,12 +723,43 @@ params. `--cpu-moe` does nothing (there are no experts to place), so on an 8 GB 
 on the CPU. Expect **~1–3 tok/s** (recall CPU-only on the MoE — which computes just 4B active — was
 ~2 tok/s; a dense 31B computes ~8× more per token). It runs, but it's not interactive.
 
+### Aside — MTP (self-speculative decoding) is *not* a win here
+
+Gemma 4 ships a **Multi-Token Prediction** head, and llama.cpp added support for it
+([ggml-org/llama.cpp#23398](https://github.com/ggml-org/llama.cpp/pull/23398), merged 2026-06-07). A
+small "draft" head proposes the next few tokens and the full model verifies them in one batched pass:
+
+```bash
+llama-server -m <model>.gguf --model-draft <mtp-head>.gguf --spec-type draft-mtp --spec-draft-n-max 4
+```
+
+**Quality is safe** — speculative decoding is lossless by construction (the full model checks every
+drafted token, so the output distribution is identical; the PR replicates Gemma's AIME-26 ~87%). But
+**it doesn't help *this* setup**, for structural reasons:
+
+- The headline **>2× speedup is the *dense* 31B**. On the **MoE 26B-A4B** the author saw *no* speedup;
+  others report only ~10–30% — and only on big GPUs with the whole model resident in VRAM. MoE's
+  bottleneck is streaming experts from RAM (`--cpu-moe`), and verifying *K* draft tokens activates the
+  *union* of experts those tokens route to ⇒ **more** RAM traffic per step, working against the exact
+  thing that limits us.
+- On **8 GB it may not even load**: there's a reported model-load crash for "26B-A4B target + draft on
+  a 16 GB card" when the target nearly fills VRAM before the draft loads. We're already at ~7 GB at
+  `NCMOE=22`; making room for the draft head + its KV means pushing experts back to RAM (lower `NCMOE`)
+  — trading away the speed that makes this rig fast, to chase a gain that nets ~zero on MoE.
+- Practical blockers anyway: the stock build predates the merge (rebuild via `build-llama-cuda.sh`),
+  and the QAT GGUF carries **no MTP tensors** — you'd need a separate draft head (QAT-matched heads
+  exist at `huggingface.co/boxwrench/gemma-4-qat-mtp-assistant-heads`).
+
+So MTP is a **dense-model / big-VRAM** optimization. If you ever run the dense 31B on a larger GPU it's
+a real >2× win; for 26B-A4B on 8 GB, the CUDA backend + `NCMOE` tuning is where the tok/s lives.
+
 ### Bottom line
 
 **26B-A4B is the sweet spot for this hardware** — it's the largest model that stays fast, precisely
 because only 4B params are active per token. With 32 GB RAM the realistic upgrade is a **Q5/Q6 quant
 of the same MoE** (marginally better quality, but slower — into the mid-teens tok/s), *not* a bigger
-model. The clean ~23 tok/s belongs to the Q4 QAT file you're already running.
+model — and *not* MTP (see the aside above). The clean ~23 tok/s belongs to the Q4 QAT file you're
+already running.
 
 ---
 

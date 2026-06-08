@@ -174,7 +174,7 @@ kernels** from 12.9 are too new for the 12.2 driver to load. **Two fixes:**
 |---|---|
 | `scripts/setup.sh` | **(once)** Creates the `llamacpp` conda env (llama.cpp + huggingface_hub) and downloads the GGUF into `models/`. `BACKEND=cuda` also builds the native CUDA backend. Idempotent. |
 | `scripts/configure-pi.sh` | **(once)** Adds the `llamacpp` provider to `~/.pi/agent/models.json` from `config/pi-provider.json`. |
-| `scripts/start.sh` | **All-in-one:** starts the server (if not already up) — showing the CUDA/Vulkan/CPU banner — waits for it to load, then launches pi. Passes `BACKEND`/`NCMOE`/`CTX`/`--image` through; other args go to pi. On the **first** fresh launch for a given backend+context it offers to **auto-tune** the expert split (runs `benchmark-config.sh` once, then remembers the result — `AUTOTUNE=1` re-measure, `0` off). When pi exits, if it started the server it offers to stop it (interactive prompt; force with `STOP_ON_EXIT=1`/`0`). A server that was already running is left alone. |
+| `scripts/start.sh` | **All-in-one:** starts the server (if not already up) — showing the CUDA/Vulkan/CPU banner — waits for it to load, then launches pi. Passes `BACKEND`/`NCMOE`/`CTX`/`--image` through; other args go to pi. On the **first** fresh launch it offers to **auto-tune** (runs `benchmark-config.sh` once, then remembers the result): with no `CTX` set it sweeps context sizes and lets you pick one; with `CTX=` pinned it tunes the expert split for that context (`AUTOTUNE=1` re-run, `0` off). When pi exits, if it started the server it offers to stop it (interactive prompt; force with `STOP_ON_EXIT=1`/`0`). A server that was already running is left alone. |
 | `scripts/run-server.sh` | Launches `llama-server` with `--cpu-moe`, `--no-mmap`, `-c 32768`, `--jinja`, on `127.0.0.1:8080`. Auto-selects CUDA if built, else Vulkan; prints a color-coded backend banner at launch. Override with `BACKEND=cuda\|vulkan\|cpu`. Pass `--image` to enable vision (loads the `mmproj`). |
 | `scripts/run-pi.sh` | Launches pi against the local server (`--provider llamacpp --model gemma-4-26b-a4b-qat`). Extra args pass through to pi. |
 | `scripts/stop-server.sh` | Stops the server by the port it listens on (default 8080). |
@@ -305,11 +305,17 @@ It runs on an isolated port (8099), so it won't disturb a server you already hav
 The reported tok/s is measured at *low* context fill (it deliberately doesn't prefill 128K) —
 use it to rank configs; real throughput drops as the context fills.
 
-**Or just let `start.sh` ask.** The first time you launch a fresh server for a given backend +
-context, `start.sh` offers to run this measurement once and then **remembers** the winning `NCMOE`
-(per backend + context, in a gitignored cache) so later launches reuse it instantly — no
-re-measuring. Skip it with `AUTOTUNE=0`, force a fresh run with `AUTOTUNE=1`, or set `NCMOE=` yourself
-to bypass it entirely.
+**Or just let `start.sh` ask.** The first time you launch a fresh server, `start.sh` offers to run
+this measurement once and then **remembers** the result (in a gitignored cache) so later launches
+reuse it instantly — no re-measuring. It has two modes:
+
+- **No `CTX` set (default):** it **sweeps several context sizes** (`CTX_LIST`) and shows the fastest
+  split that fits at each, then lets you **pick which context to launch with**. Your pick is
+  remembered.
+- **`CTX=` pinned:** it tunes only the expert split (`NCMOE`) for that one context.
+
+Skip it with `AUTOTUNE=0`, force a fresh sweep with `AUTOTUNE=1`, widen the grid with
+`CTX_LIST=`/`NCMOE_LIST=`, or set `NCMOE=` yourself to bypass it entirely.
 
 ---
 
