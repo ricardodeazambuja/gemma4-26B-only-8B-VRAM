@@ -28,6 +28,8 @@
 #   NCMOE_LIST NCMOE values to try, low=faster/more-VRAM (default: 20,22,24,27,30)
 #              30 = all 30 layers' experts on CPU (== --cpu-moe, slowest/safest).
 #   BACKEND    cuda | vulkan | cpu                   (default: auto — cuda if built)
+#   KVQUANT    KV-cache quant to measure under (q8_0, q5_1, ...; default f16/off).
+#              Tuning is keyed by it, so each KV setting gets its own results.
 #   MODEL      path to the .gguf                     (default: ./models/.../UD-Q4_K_XL.gguf)
 #   PORT       probe port — kept off 8080 so it never touches a real server (default: 8099)
 #   N_PREDICT  tokens to generate per timed probe (after a discarded warmup) (default: 128)
@@ -77,6 +79,7 @@ else
 fi
 
 BACKEND="$(resolve_backend)"
+KV="${KVQUANT:-f16}"                        # tuning-cache dimension (f16 = unquantized KV)
 SERVER_LOG="${SERVER_LOG:-/tmp/gemma4-benchmark-server.log}"
 RESULTS="$(mktemp)"                        # ctx|ncmoe|status|tokps|pp|vram
 
@@ -97,7 +100,7 @@ trap cleanup EXIT INT TERM
 gpu_mib() { command -v nvidia-smi >/dev/null 2>&1 &&
   nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ' || true; }
 
-splash "$_FG_GREEN" "📊" "GEMMA 4 CONFIG BENCHMARK" "backend: $BACKEND  ·  probe port: $PORT"
+splash "$_FG_GREEN" "📊" "GEMMA 4 CONFIG BENCHMARK" "backend: $BACKEND  ·  KV: $KV  ·  probe port: $PORT"
 echo ">> contexts: $CTX_LIST    NCMOE: $NCMOE_LIST    (gen $N_PREDICT tok/probe)"
 echo ">> tok/s is measured at low context fill — use it to rank, not as a deep-context promise."
 echo
@@ -107,7 +110,7 @@ echo
 probe() {
   local ctx="$1" ncmoe="$2"
   : > "$SERVER_LOG"
-  CTX="$ctx" NCMOE="$ncmoe" PORT="$PORT" BACKEND="$BACKEND" HOST="$HOST" \
+  CTX="$ctx" NCMOE="$ncmoe" PORT="$PORT" BACKEND="$BACKEND" HOST="$HOST" KVQUANT="${KVQUANT:-}" \
     nohup bash "$REPO_ROOT/scripts/run-server.sh" > "$SERVER_LOG" 2>&1 &
   local pid=$!
 
@@ -210,11 +213,11 @@ for ctx in "${CTXS[@]}"; do
     tokps="$(printf '%s' "$best" | cut -f1)"
     ncmoe="$(printf '%s' "$best" | cut -f2)"
     printf "   %-9s %-7s %-9s %s\n" "$ctx" "$ncmoe" "$(round1 "$tokps")" \
-      "CTX=$ctx NCMOE=$ncmoe bash scripts/start.sh"
-    tune_set "$BACKEND" "$ctx" "$ncmoe"        # remember it so start.sh can reuse it
+      "CTX=$ctx NCMOE=$ncmoe${KVQUANT:+ KVQUANT=$KVQUANT} bash scripts/start.sh"
+    tune_set "$(tune_key "$BACKEND" "$ctx" "$KV")" "$ncmoe"   # remember it so start.sh can reuse it
   else
     printf "   %-9s %-7s %-9s %s\n" "$ctx" "-" "-" "doesn't fit on this GPU — lower CTX or raise NCMOE"
-    tune_set "$BACKEND" "$ctx" nofit
+    tune_set "$(tune_key "$BACKEND" "$ctx" "$KV")" nofit
   fi
 done
 echo

@@ -32,6 +32,11 @@
 #   TOP_K      top-k                          (default: 64)
 #   EXTRA_ARGS any extra llama-server flags   (e.g. "--min-p 0.01 --repeat-penalty 1.1 --seed 42")
 #   MMPROJ     path to the multimodal projector (default: models/.../mmproj-BF16.gguf)
+#   KVQUANT    quantize the KV cache to shrink the context in VRAM (long-context
+#              lever). empty/f16 = off (default). Values: q8_0 (near-lossless,
+#              safe), q5_1, q5_0, q4_1, q4_0/iq4_nl (aggressive), f32, bf16.
+#              Quantizing the V cache requires flash attention, so this forces -fa on.
+#   FA         flash attention: on | off | auto   (default: auto; KVQUANT forces on)
 #
 # Flags (CLI args, not env vars):
 #   --image    load the multimodal projector ($MMPROJ) so the server accepts
@@ -42,6 +47,7 @@
 #   bash scripts/run-server.sh                 # auto backend, 32K ctx, text only
 #   TEMP=0.7 bash scripts/run-server.sh        # more deterministic
 #   CTX=65536 NCMOE=27 BACKEND=cuda bash scripts/run-server.sh
+#   CTX=131072 KVQUANT=q8_0 bash scripts/run-server.sh   # quantized KV for long context
 #   bash scripts/run-server.sh --image         # enable image input via the mmproj
 #
 set -euo pipefail
@@ -70,6 +76,8 @@ TEMP="${TEMP:-1.0}"
 TOP_P="${TOP_P:-0.95}"
 TOP_K="${TOP_K:-64}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
+KVQUANT="${KVQUANT:-}"                   # KV-cache type: empty/f16 = off; q8_0, q5_1, q4_0, ...
+FA="${FA:-auto}"                        # flash-attn (on|off|auto); KVQUANT forces 'on' (V-quant needs it)
 
 CUDA_ENV="${CUDA_ENV:-llamacpp-cuda}"   # CUDA_BIN already set above (line ~54)
 
@@ -159,6 +167,32 @@ else
   echo ">> multimodal: off (text only; pass --image to enable vision)"
 fi
 
+# --- KV-cache quantization (KVQUANT) ----------------------------------------
+# Shrinks the context (KV cache) in VRAM so longer contexts fit / more expert
+# layers stay on the GPU. Mainly a long-context lever — at 32K the KV cache is
+# already tiny. Quantizing the V cache REQUIRES flash attention, so any quant
+# type forces -fa on (overriding FA/-fa auto).
+KV_ARGS=()
+KVQUANT="${KVQUANT,,}"                   # normalize case: llama.cpp wants lowercase type names
+case "$KVQUANT" in
+  ""|f16)
+    : ;;                                # default: unquantized KV, nothing to add
+  f32|bf16|q8_0|q5_1|q5_0|q4_1|q4_0|iq4_nl)
+    KV_ARGS=(-ctk "$KVQUANT" -ctv "$KVQUANT")
+    [ "$FA" != "on" ] && echo ">> KV-cache: forcing flash-attn on (required for V-cache quant)."
+    FA=on
+    echo ">> KV-cache: K and V quantized to $KVQUANT (was f16)"
+    [ "$BACKEND" = "vulkan" ] && echo ">> WARNING: flash-attn + KV-quant on the Vulkan backend can be slow or unsupported; CUDA is recommended."
+    case " $EXTRA_ARGS " in
+      *" -ctk "*|*" -ctv "*|*" -fa "*|*" --flash-attn "*)
+        echo ">> WARNING: EXTRA_ARGS also sets -ctk/-ctv/-fa; it is applied last and will override KVQUANT." ;;
+    esac
+    ;;
+  *)
+    echo "ERROR: unknown KVQUANT='$KVQUANT' (use f16|f32|bf16|q8_0|q5_1|q5_0|q4_1|q4_0|iq4_nl)"; exit 1
+    ;;
+esac
+
 # --- sampling defaults (server-wide; clients may override per request) ------
 SAMPLER_ARGS=(--temp "$TEMP" --top-p "$TOP_P" --top-k "$TOP_K")
 # shellcheck disable=SC2206  # intentional word-splitting for passthrough flags
@@ -177,7 +211,8 @@ exec "${RUN[@]}" "$SERVER_BIN" \
   "${MMPROJ_ARGS[@]}" \
   --no-mmap \
   -c "$CTX" \
-  -fa auto \
+  "${KV_ARGS[@]}" \
+  -fa "$FA" \
   --jinja \
   "${SAMPLER_ARGS[@]}" \
   "${PASS_ARGS[@]}" \

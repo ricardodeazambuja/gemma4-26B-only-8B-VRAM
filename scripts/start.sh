@@ -12,7 +12,11 @@
 #   BACKEND=cuda NCMOE=22 bash scripts/start.sh
 #   CTX=32768 bash scripts/start.sh
 #   bash scripts/start.sh --image                     # forwarded to the server
+#   CTX=131072 KVQUANT=q8_0 bash scripts/start.sh      # quantized KV for long context
 #   bash scripts/start.sh -p "summarize @README.md"   # other args go to pi
+#
+#   KVQUANT also keys the auto-tune cache (backend × context × KV quant), so the
+#   tuned expert split is measured per KV-quant setting — they don't collide.
 #
 #   STOP_ON_EXIT  control the shutdown offer after pi exits:
 #                 unset = ask (only when interactive); 1 = always stop; 0 = never
@@ -52,6 +56,7 @@ PORT="${PORT:-8080}"
 # across context sizes and lets you pick which to launch.
 if [ -n "${CTX:-}" ]; then CTX_EXPLICIT=1; else CTX_EXPLICIT=0; fi
 export CTX="${CTX:-32768}"         # effective context (also the auto-tune cache key); export so run-server.sh sees the same value
+export KVQUANT="${KVQUANT:-}"      # KV-cache quant; a tuning-cache dimension too. export so run-server.sh + benchmark see it
 SERVER_LOG="${SERVER_LOG:-/tmp/gemma4-server.log}"
 STOP_ON_EXIT="${STOP_ON_EXIT:-}"   # unset = ask, 1 = always, 0 = never
 STARTED_SERVER=0                   # set to 1 only if we launch it below
@@ -90,6 +95,7 @@ else
   #   * no CTX (the default)          -> sweep several contexts, then you pick
   #                                       which to launch (remembered as 'chosen').
   BE="$(resolve_backend)"
+  KV="${KVQUANT:-f16}"             # tuning-cache dimension (f16 = unquantized KV)
   bench_port=8099; [ "$bench_port" = "$PORT" ] && bench_port=8100
   if [ -n "${NCMOE:-}" ]; then
     echo ">> NCMOE=$NCMOE set explicitly — skipping auto-tuning."
@@ -98,11 +104,11 @@ else
 
   elif [ "$CTX_EXPLICIT" = 1 ]; then
     # ---- pinned context: tune the expert split for this CTX only ----
-    saved="$(tune_get "$BE" "$CTX")"
+    saved="$(tune_get "$(tune_key "$BE" "$CTX" "$KV")")"
     [ "${AUTOTUNE:-}" = "1" ] && saved=""   # force a fresh measurement
     if [[ "$saved" =~ ^[0-9]+$ ]]; then
       export NCMOE="$saved"
-      echo ">> auto-tune: reusing saved NCMOE=$NCMOE for BACKEND=$BE CTX=$CTX (re-measure: AUTOTUNE=1 bash scripts/start.sh)"
+      echo ">> auto-tune: reusing saved NCMOE=$NCMOE for BACKEND=$BE CTX=$CTX KV=$KV (re-measure: AUTOTUNE=1 bash scripts/start.sh)"
     elif [ "$saved" = "declined" ]; then
       : # the user previously said no for this key — don't nag, launch as-is
     elif [ "$saved" = "nofit" ]; then
@@ -117,30 +123,30 @@ else
       read -r -p ">> Run auto-tuning now? [y/N] " ans || ans=""
       if [[ "$ans" =~ ^[Yy]$ ]]; then
         echo ">> measuring (this is the slow part — once) ..."
-        CTX="$CTX" BACKEND="$BE" NCMOE_LIST="$nlist" PORT="$bench_port" \
+        CTX="$CTX" BACKEND="$BE" KVQUANT="$KVQUANT" NCMOE_LIST="$nlist" PORT="$bench_port" \
           bash "$REPO_ROOT/scripts/benchmark-config.sh" || true
-        best="$(tune_get "$BE" "$CTX")"
+        best="$(tune_get "$(tune_key "$BE" "$CTX" "$KV")")"
         if [[ "$best" =~ ^[0-9]+$ ]]; then
           export NCMOE="$best"
-          echo ">> auto-tune: applying NCMOE=$NCMOE for CTX=$CTX."
+          echo ">> auto-tune: applying NCMOE=$NCMOE for CTX=$CTX KV=$KV."
         else
           echo ">> auto-tune: no fitting split measured — launching with the default expert split."
         fi
       else
-        tune_set "$BE" "$CTX" declined
+        tune_set "$(tune_key "$BE" "$CTX" "$KV")" declined
         echo ">> skipped — launching with the default expert split. Re-enable later: AUTOTUNE=1 bash scripts/start.sh"
       fi
     fi
 
   else
     # ---- no context pinned: sweep contexts, then let the user pick one ----
-    chosen="$(tune_get "$BE" chosen)"
+    chosen="$(tune_get "$(tune_key "$BE" chosen "$KV")")"
     [ "${AUTOTUNE:-}" = "1" ] && chosen=""   # force a fresh exploration
     if [[ "$chosen" =~ ^[0-9]+$ ]]; then
       export CTX="$chosen"
-      ncmoe_for="$(tune_get "$BE" "$chosen")"
+      ncmoe_for="$(tune_get "$(tune_key "$BE" "$chosen" "$KV")")"
       [[ "$ncmoe_for" =~ ^[0-9]+$ ]] && export NCMOE="$ncmoe_for"
-      echo ">> auto-tune: reusing your saved choice CTX=$CTX${NCMOE:+ NCMOE=$NCMOE} for BACKEND=$BE (re-explore: AUTOTUNE=1 bash scripts/start.sh)"
+      echo ">> auto-tune: reusing your saved choice CTX=$CTX${NCMOE:+ NCMOE=$NCMOE} KV=$KV for BACKEND=$BE (re-explore: AUTOTUNE=1 bash scripts/start.sh)"
     elif [ "$chosen" = "declined" ]; then
       : # explored-and-declined before — launch the default, don't nag
     elif [ -t 0 ]; then
@@ -156,14 +162,14 @@ else
       if [[ "$ans" =~ ^[Yy]$ ]]; then
         echo ">> sweeping (this is the slow part — once) ..."
         # CTX= (empty) so benchmark-config.sh sweeps CTX_LIST instead of pinning our default.
-        CTX= BACKEND="$BE" CTX_LIST="$clist" NCMOE_LIST="$nlist" PORT="$bench_port" \
+        CTX= BACKEND="$BE" KVQUANT="$KVQUANT" CTX_LIST="$clist" NCMOE_LIST="$nlist" PORT="$bench_port" \
           bash "$REPO_ROOT/scripts/benchmark-config.sh" || true
-        # Build the menu from what fit (cache holds backend:ctx=NCMOE per swept ctx).
+        # Build the menu from what fit (cache holds backend:ctx:kv=NCMOE per swept ctx).
         opts=()
         IFS=',' read -r -a _cl <<< "$clist"
         for c in "${_cl[@]}"; do
           c="$(printf '%s' "$c" | tr -d ' ')"
-          v="$(tune_get "$BE" "$c")"
+          v="$(tune_get "$(tune_key "$BE" "$c" "$KV")")"
           [[ "$v" =~ ^[0-9]+$ ]] && opts+=("$c:$v")
         done
         if [ "${#opts[@]}" -eq 0 ]; then
@@ -178,12 +184,12 @@ else
           sel="${opts[$((pick-1))]}"
           export CTX="${sel%%:*}"
           export NCMOE="${sel##*:}"
-          tune_set "$BE" chosen "$CTX"
-          echo ">> auto-tune: launching at CTX=$CTX NCMOE=$NCMOE (re-explore: AUTOTUNE=1 bash scripts/start.sh)"
+          tune_set "$(tune_key "$BE" chosen "$KV")" "$CTX"
+          echo ">> auto-tune: launching at CTX=$CTX NCMOE=$NCMOE KV=$KV (re-explore: AUTOTUNE=1 bash scripts/start.sh)"
           echo ">> NOTE: keep pi in sync with this context:  CTX=$CTX bash scripts/configure-pi.sh"
         fi
       else
-        tune_set "$BE" chosen declined
+        tune_set "$(tune_key "$BE" chosen "$KV")" declined
         echo ">> skipped — launching at the default CTX=$CTX. Re-enable later: AUTOTUNE=1 bash scripts/start.sh"
       fi
     fi

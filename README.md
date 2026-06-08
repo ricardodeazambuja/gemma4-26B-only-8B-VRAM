@@ -175,7 +175,7 @@ kernels** from 12.9 are too new for the 12.2 driver to load. **Two fixes:**
 | `scripts/setup.sh` | **(once)** Creates the `llamacpp` conda env (llama.cpp + huggingface_hub) and downloads the GGUF into `models/`. `BACKEND=cuda` also builds the native CUDA backend. Idempotent. |
 | `scripts/configure-pi.sh` | **(once)** Adds the `llamacpp` provider to `~/.pi/agent/models.json` from `config/pi-provider.json`. |
 | `scripts/start.sh` | **All-in-one:** starts the server (if not already up) — showing the CUDA/Vulkan/CPU banner — waits for it to load, then launches pi. Passes `BACKEND`/`NCMOE`/`CTX`/`--image` through; other args go to pi. On the **first** fresh launch it offers to **auto-tune** (runs `benchmark-config.sh` once, then remembers the result): with no `CTX` set it sweeps context sizes and lets you pick one; with `CTX=` pinned it tunes the expert split for that context (`AUTOTUNE=1` re-run, `0` off). When pi exits, if it started the server it offers to stop it (interactive prompt; force with `STOP_ON_EXIT=1`/`0`). A server that was already running is left alone. |
-| `scripts/run-server.sh` | Launches `llama-server` with `--cpu-moe`, `--no-mmap`, `-c 32768`, `--jinja`, on `127.0.0.1:8080`. Auto-selects CUDA if built, else Vulkan; prints a color-coded backend banner at launch. Override with `BACKEND=cuda\|vulkan\|cpu`. Pass `--image` to enable vision (loads the `mmproj`). |
+| `scripts/run-server.sh` | Launches `llama-server` with `--cpu-moe`, `--no-mmap`, `-c 32768`, `--jinja`, on `127.0.0.1:8080`. Auto-selects CUDA if built, else Vulkan; prints a color-coded backend banner at launch. Override with `BACKEND=cuda\|vulkan\|cpu`. `KVQUANT=q8_0` quantizes the KV cache (long-context lever). Pass `--image` to enable vision (loads the `mmproj`). |
 | `scripts/run-pi.sh` | Launches pi against the local server (`--provider llamacpp --model gemma-4-26b-a4b-qat`). Extra args pass through to pi. |
 | `scripts/stop-server.sh` | Stops the server by the port it listens on (default 8080). |
 | `scripts/build-llama-cuda.sh` | **(optional, ~5–6× faster)** Builds llama.cpp from source against your driver's CUDA version into a `llamacpp-cuda` env. Auto-detects CUDA + GPU arch, smoke-tests the result. |
@@ -193,6 +193,7 @@ CTX=65536   bash scripts/run-server.sh    # bigger context (see the ceiling tabl
 BACKEND=cuda bash scripts/run-server.sh   # force native CUDA backend (auto-selected once built)
 BACKEND=cpu bash scripts/run-server.sh    # no GPU offload — slow, benchmark baseline only
 PORT=9000   bash scripts/run-server.sh    # different port
+CTX=131072 KVQUANT=q8_0 bash scripts/run-server.sh   # quantize the KV cache to fit long context
 bash scripts/run-server.sh --image        # enable image input (CLI flag, not an env var)
 ```
 
@@ -242,6 +243,20 @@ does not fit on 8 GB.) If you change `CTX`, pass the **same** value to `configur
 CTX=131072 bash scripts/start.sh
 CTX=131072 bash scripts/configure-pi.sh   # keep pi's contextWindow in sync with the server's -c
 ```
+
+**Quantize the KV cache for long context (`KVQUANT`).** Above, "KV size is independent of the
+*weight* quant" — but you can quantize the **KV cache itself** to shrink it in VRAM, freeing room for
+more context or more on-GPU experts. `KVQUANT=q8_0` (near-lossless) roughly halves the KV cache;
+`q5_1`/`q4_0` go further but cost quality. It's a **long-context lever** — at 32K the KV cache is
+already ~0.6 GB so it barely matters; at 64K it saved ~1 GB here. Quantizing the V cache requires
+flash attention, so `KVQUANT` forces `-fa on` automatically. `KVQUANT` is also a dimension of the
+auto-tune cache, so the tuned expert split is measured separately per KV-quant setting.
+
+```bash
+CTX=131072 KVQUANT=q8_0 bash scripts/start.sh   # 128K context with a quantized KV cache
+```
+
+(Best on the CUDA backend; on Vulkan, flash-attention + KV-quant can be slow — the server warns.)
 
 **Sampling (temperature & friends).** Set these on the **server** via env vars; they become the
 defaults for every request. The defaults follow [unsloth's Gemma 4

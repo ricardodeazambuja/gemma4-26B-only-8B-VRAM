@@ -501,13 +501,42 @@ then writes the outcome to a small gitignored cache (`.gemma4-tuning`, keyed `ba
 
 - **No `CTX` set (the default launch):** it sweeps `CTX_LIST × NCMOE_LIST`, prints the fastest split
   that fits at each context, and **prompts you to pick which context to launch** (default = the
-  largest that fit). Your choice is remembered as `backend:chosen` so later launches reuse it — no
+  largest that fit). Your choice is remembered as `backend:chosen:kvquant` so later launches reuse it — no
   re-sweeping. This is the answer to "show me what's possible across context sizes."
 - **`CTX=` pinned:** it tunes only `NCMOE` for that single context.
 
 Every later launch reads the cache and applies the split (and chosen context) instantly — the slow
 part runs *once*, not on every start. A declined offer is remembered (so it never nags), `AUTOTUNE=1`
 forces a fresh sweep, `AUTOTUNE=0` disables it, and an explicit `NCMOE=` bypasses the whole thing.
+
+### KV-cache quantization: `KVQUANT`
+
+`CTX` and `NCMOE` both spend the same 8 GB; **`KVQUANT`** adds a third lever by shrinking the KV
+cache *itself* in VRAM. Set it to a llama.cpp cache type — `q8_0` (near-lossless, recommended),
+`q5_1`, `q5_0`, `q4_1`, `q4_0`/`iq4_nl` (aggressive), or `f16` (default/off). `run-server.sh` maps it
+to `-ctk`/`-ctv`.
+
+Implementation notes (and the reasons behind them):
+
+- **It forces flash attention on.** llama.cpp refuses to quantize the V cache without it
+  (`llama-context.cpp`: *"V cache quantization requires flash_attn"*). So any quant type overrides
+  `-fa` to `on` — the script makes `-fa` a variable for exactly this. The valid type list is read
+  from `common/arg.cpp` and validated up-front (a typo errors before the 14 GB load, not after).
+- **It's a long-context lever, not a default.** At 32K the KV cache is ~0.6 GB — quantizing it is
+  noise. The payoff grows with context: measured here at **CTX=65536, `q8_0` cut VRAM 4118 → 3098
+  MiB (~1 GB)**, which is room for more on-GPU experts or more context. Below ~64K it rarely earns
+  the (small) quality cost.
+- **It is a tuning dimension.** Because quantizing the KV cache frees VRAM, the *fastest fitting
+  `NCMOE` changes* — so the auto-tune cache is keyed `backend:ctx:kvquant`, and the benchmark probes
+  with the same `KVQUANT`. A `q8_0` tune and an `f16` tune never collide; existing pre-`KVQUANT`
+  caches are migrated to the `:f16` slot rather than discarded.
+- **Backend caveat:** verified working on CUDA *and* Vulkan, but flash-attn + KV-quant on the older
+  Vulkan path can be slow — `run-server.sh` prints a warning there. CUDA is the recommended path.
+
+```bash
+CTX=131072 KVQUANT=q8_0 bash scripts/start.sh        # 128K context, quantized KV
+CTX=131072 KVQUANT=q8_0 bash scripts/configure-pi.sh # keep pi's window in sync
+```
 
 ---
 
