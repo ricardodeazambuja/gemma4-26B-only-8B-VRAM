@@ -15,3 +15,6 @@ __pycache__/
 
 # Local working notes (kept out of the repo)
 MEMORY.md
+
+# Auto-tuning cache (machine-specific NCMOE/CTX results; written by start.sh / benchmark-config.sh)
+.gemma4-tuning

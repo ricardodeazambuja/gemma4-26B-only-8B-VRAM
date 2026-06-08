@@ -174,11 +174,12 @@ kernels** from 12.9 are too new for the 12.2 driver to load. **Two fixes:**
 |---|---|
 | `scripts/setup.sh` | **(once)** Creates the `llamacpp` conda env (llama.cpp + huggingface_hub) and downloads the GGUF into `models/`. `BACKEND=cuda` also builds the native CUDA backend. Idempotent. |
 | `scripts/configure-pi.sh` | **(once)** Adds the `llamacpp` provider to `~/.pi/agent/models.json` from `config/pi-provider.json`. |
-| `scripts/start.sh` | **All-in-one:** starts the server (if not already up) — showing the CUDA/Vulkan/CPU banner — waits for it to load, then launches pi. Passes `BACKEND`/`NCMOE`/`CTX`/`--image` through; other args go to pi. When pi exits, if it started the server it offers to stop it (interactive prompt; force with `STOP_ON_EXIT=1`/`0`). A server that was already running is left alone. |
+| `scripts/start.sh` | **All-in-one:** starts the server (if not already up) — showing the CUDA/Vulkan/CPU banner — waits for it to load, then launches pi. Passes `BACKEND`/`NCMOE`/`CTX`/`--image` through; other args go to pi. On the **first** fresh launch for a given backend+context it offers to **auto-tune** the expert split (runs `benchmark-config.sh` once, then remembers the result — `AUTOTUNE=1` re-measure, `0` off). When pi exits, if it started the server it offers to stop it (interactive prompt; force with `STOP_ON_EXIT=1`/`0`). A server that was already running is left alone. |
 | `scripts/run-server.sh` | Launches `llama-server` with `--cpu-moe`, `--no-mmap`, `-c 32768`, `--jinja`, on `127.0.0.1:8080`. Auto-selects CUDA if built, else Vulkan; prints a color-coded backend banner at launch. Override with `BACKEND=cuda\|vulkan\|cpu`. Pass `--image` to enable vision (loads the `mmproj`). |
 | `scripts/run-pi.sh` | Launches pi against the local server (`--provider llamacpp --model gemma-4-26b-a4b-qat`). Extra args pass through to pi. |
 | `scripts/stop-server.sh` | Stops the server by the port it listens on (default 8080). |
 | `scripts/build-llama-cuda.sh` | **(optional, ~5–6× faster)** Builds llama.cpp from source against your driver's CUDA version into a `llamacpp-cuda` env. Auto-detects CUDA + GPU arch, smoke-tests the result. |
+| `scripts/benchmark-config.sh` | **(optional)** Finds the fastest `NCMOE`/`CTX` for *your* GPU: probes real configs on an isolated port and prints the fastest that fits per context. Pin one context with `CTX=` or sweep `CTX_LIST`. |
 | `config/pi-provider.json` | The pi provider definition (copy into `models.json` manually if you prefer). |
 
 All scripts accept env-var overrides — see the header comment in each, or run any of them with
@@ -291,6 +292,25 @@ streams only a few tens of MB of expert weights from RAM — light enough that R
 `NCMOE=22` leaves ~1.2 GB VRAM headroom — about the limit on an 8 GB card once the desktop is
 using some VRAM. If you hit out-of-memory, raise `NCMOE` (e.g. 24) or lower `CTX`.
 
+**Don't want to guess? Let the script find it.** `scripts/benchmark-config.sh` probes real
+configs on *your* GPU and reports the fastest `NCMOE` that fits for each context — measuring
+the same server-side tok/s that pi sees. Pin a context and optimise for it, or sweep a range:
+
+```bash
+CTX=32768 bash scripts/benchmark-config.sh                 # optimise NCMOE for a 32K window
+CTX_LIST=16384,32768,65536 bash scripts/benchmark-config.sh   # sweep several contexts
+```
+
+It runs on an isolated port (8099), so it won't disturb a server you already have on 8080.
+The reported tok/s is measured at *low* context fill (it deliberately doesn't prefill 128K) —
+use it to rank configs; real throughput drops as the context fills.
+
+**Or just let `start.sh` ask.** The first time you launch a fresh server for a given backend +
+context, `start.sh` offers to run this measurement once and then **remembers** the winning `NCMOE`
+(per backend + context, in a gitignored cache) so later launches reuse it instantly — no
+re-measuring. Skip it with `AUTOTUNE=0`, force a fresh run with `AUTOTUNE=1`, or set `NCMOE=` yourself
+to bypass it entirely.
+
 ---
 
 ## Using it without pi
@@ -341,7 +361,9 @@ There's also a built-in web UI at <http://127.0.0.1:8080>.
 │   ├── run-pi.sh             # launch pi against the local server
 │   ├── stop-server.sh        # stop the server
 │   ├── build-llama-cuda.sh   # build llama.cpp against the local CUDA (optional, ~5-6x faster)
+│   ├── benchmark-config.sh   # probe NCMOE/CTX configs, recommend the fastest that fits (optional)
 │   ├── _banner.sh            # shared backend banner + resolution (sourced by the above)
+│   ├── _tuning.sh            # shared auto-tune cache: remembers the best NCMOE per backend+context
 │   └── make-speed-chart.py   # regenerate docs/speed.svg from measured numbers
 ├── utils/
 │   ├── inspect-gguf.sh       # report a GGUF's architecture / modality / tensors

@@ -444,6 +444,64 @@ the server's `-c`; if they disagree, `pi` plans around its own value. Pass the s
 CTX=32768 bash scripts/configure-pi.sh
 ```
 
+### Auto-tuning the split: `scripts/benchmark-config.sh`
+
+The fit boundary and the speed of each `(CTX, NCMOE)` pair are GPU-specific — free VRAM, driver, and
+whatever else is on the card all move them. Rather than guess from the *Measured ceilings* table
+above, `scripts/benchmark-config.sh` measures them on **your** hardware. For each context it launches
+the *real* `llama-server` (through `run-server.sh`, on an isolated port — 8099 — so it never touches a
+server you already have on 8080), waits for `/health`, runs one **discarded warm-up** generation (the
+first CUDA decode pays a one-time graph-capture cost that would unfairly penalise GPU-heavy configs),
+then times a short `/completion` and reads `predicted_per_second` straight from the server's own
+timings. A config whose server dies while loading is reported as OOM. Pin one context with `CTX=`, or
+sweep several with `CTX_LIST=`:
+
+```bash
+CTX=131072 bash scripts/benchmark-config.sh                    # optimise NCMOE for a 128K window
+CTX_LIST=16384,32768,65536,131072 NCMOE_LIST=22,27,30 bash scripts/benchmark-config.sh
+```
+
+A representative sweep on this RTX 2070 (CUDA), reporting the **fastest NCMOE that fit** per context:
+
+| CTX | Fastest fitting NCMOE | Gen (low fill) | Verdict |
+|---|---|---|---|
+| 16K  | `NCMOE=27` | ~23.6 t/s | snappy |
+| 32K  | `NCMOE=27` | ~24.0 t/s | snappy |
+| 65K  | `NCMOE=22` | ~28&nbsp;t/s | snappy |
+| **128K** | `NCMOE=27` | **~23.7 t/s** | still snappy |
+
+**What it shows: context is nearly free on this model.** Gemma 4's KV cache is tiny — flash attention
+plus the sliding-window layers (every 6th uses `KV=2` heads) hold it to ~0.6 GB at 16K — so growing
+the window 8× (16K→128K) only moved `NCMOE=27`'s VRAM from ~4.6 to ~7.0 GB and left generation flat at
+~23–24 tok/s. What sets speed is the **backend** (CUDA vs Vulkan) and **`NCMOE`**, *not* the context
+length. So the practical *"max context while still snappy"* here is the **full ~128K window at
+`NCMOE=27` (~23 tok/s)**, with headroom to spare — better than the *Measured ceilings* table above
+implies. That table assumed a large context forces every expert to RAM (`--cpu-moe`); in fact
+`NCMOE=27` keeps the last 3 layers' experts on the GPU even at 128K and stays fast. (Even all-CPU
+`NCMOE=30` held ~22 tok/s — on this box RAM bandwidth isn't the bottleneck, just as §8 notes.)
+
+**Two caveats the numbers carry:**
+
+- **Measured at low context fill.** The probe times generation against a near-empty KV cache, so
+  "~23 tok/s at 128K" means *while the window is mostly empty*. Actually filling 128K is slower —
+  attention runs over more tokens — and the tool deliberately doesn't pay the ~35-minute prefill that
+  measuring it would cost (llama-bench has no `-c` flag; reaching a 128K depth via `-d` means
+  prefilling 128K tokens at ~50 t/s). Use the numbers to **rank** configs; treat the absolute value as
+  an optimistic ceiling.
+- **Single-shot, so it picks up background load.** Each cell is one timed generation; if the desktop
+  is using the GPU mid-run you'll see dips (a contended run here briefly read ~16 t/s where clean runs
+  read ~23). And because `NCMOE=22` is a *marginal* fit (~7.6 GB of ~7.7 GB free), a transient VRAM
+  blip can flip it from fit to OOM. Run it on an idle machine for clean numbers, and prefer
+  `NCMOE=27` as the robust "snappy everywhere" pick.
+
+**Driven from `start.sh` (measure once, reuse forever).** You don't have to run the benchmark by
+hand. The first time `start.sh` brings up a fresh server for a given backend + context with no saved
+result, it offers to run the measurement, then writes the winning `NCMOE` to a small gitignored cache
+(`.gemma4-tuning`, keyed `backend:ctx`, shared via `scripts/_tuning.sh`). Every later launch reads that
+cache and applies the split instantly — the slow part runs *once*, not on every start. A declined offer
+is also remembered (so it never nags), `AUTOTUNE=1` forces a fresh measurement, `AUTOTUNE=0` disables
+it, and an explicit `NCMOE=` bypasses the whole thing.
+
 ---
 
 ## 10. Wiring up `pi`

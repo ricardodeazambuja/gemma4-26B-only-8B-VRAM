@@ -17,6 +17,16 @@
 #   STOP_ON_EXIT  control the shutdown offer after pi exits:
 #                 unset = ask (only when interactive); 1 = always stop; 0 = never
 #
+#   AUTOTUNE      auto-pick the fastest expert split (NCMOE) for the chosen CTX,
+#                 the first time you launch a fresh server. It runs
+#                 scripts/benchmark-config.sh once and REMEMBERS the result per
+#                 (backend, context) in a gitignored cache, so later launches
+#                 reuse it instantly — no re-measuring.
+#                   unset = reuse a saved result, else ask (interactive only)
+#                   1     = force a fresh measurement now (ignore the cache)
+#                   0     = never tune, never ask
+#                 An explicit NCMOE= always wins and skips tuning entirely.
+#
 set -euo pipefail
 
 # -h / --help: print this script's header comment block and exit.
@@ -28,9 +38,12 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Shared backend banner + resolution (same source as run-server.sh — no dupes).
 source "$REPO_ROOT/scripts/_banner.sh"
+# Shared auto-tuning cache (tune_get/tune_set) — see scripts/_tuning.sh.
+source "$REPO_ROOT/scripts/_tuning.sh"
 
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8080}"
+export CTX="${CTX:-32768}"         # effective context (also the auto-tune cache key); export so run-server.sh sees the same value
 SERVER_LOG="${SERVER_LOG:-/tmp/gemma4-server.log}"
 STOP_ON_EXIT="${STOP_ON_EXIT:-}"   # unset = ask, 1 = always, 0 = never
 STARTED_SERVER=0                   # set to 1 only if we launch it below
@@ -59,6 +72,55 @@ if curl -fsS "http://$HOST:$PORT/health" >/dev/null 2>&1; then
 else
   # Show which backend the server will come up on (same logic run-server.sh uses).
   backend_banner "$(resolve_backend)"
+
+  # --- auto-tuning: pick the fastest expert split (NCMOE) for this CTX --------
+  # Remembers the result per (backend, context) in $(tune_cache_file), so the
+  # measurement runs once, not on every launch. Controlled by AUTOTUNE:
+  #   unset = use a saved result, else ask (interactive only); 1 = force re-tune;
+  #           0 = never tune/ask. An explicit NCMOE= always wins (skips tuning).
+  BE="$(resolve_backend)"
+  if [ -n "${NCMOE:-}" ]; then
+    echo ">> NCMOE=$NCMOE set explicitly — skipping auto-tuning."
+  elif [ "${AUTOTUNE:-}" = "0" ]; then
+    : # auto-tuning disabled
+  else
+    saved="$(tune_get "$BE" "$CTX")"
+    [ "${AUTOTUNE:-}" = "1" ] && saved=""   # force a fresh measurement
+    if [[ "$saved" =~ ^[0-9]+$ ]]; then
+      export NCMOE="$saved"
+      echo ">> auto-tune: reusing saved NCMOE=$NCMOE for BACKEND=$BE CTX=$CTX (re-measure: AUTOTUNE=1 bash scripts/start.sh)"
+    elif [ "$saved" = "declined" ]; then
+      : # the user previously said no for this key — don't nag, launch as-is
+    elif [ "$saved" = "nofit" ]; then
+      echo ">> auto-tune: no expert split fit CTX=$CTX here before — launching with all experts on CPU (may still OOM; consider a smaller CTX)."
+    elif [ -t 0 ]; then
+      # No record yet and we're interactive: offer to measure it now.
+      nlist="${NCMOE_LIST:-22,27,30}"
+      ncount="$(awk -F, '{print NF}' <<< "$nlist")"
+      bench_port=8099; [ "$bench_port" = "$PORT" ] && bench_port=8100
+      echo
+      echo ">> No tuned config yet for BACKEND=$BE CTX=$CTX."
+      echo "   Auto-tuning briefly launches the server $ncount time(s) (splits: $nlist) to find the"
+      echo "   fastest one that fits — roughly ${ncount}–$((ncount * 2)) min. The result is saved and reused next time."
+      read -r -p ">> Run auto-tuning now? [y/N] " ans || ans=""
+      if [[ "$ans" =~ ^[Yy]$ ]]; then
+        echo ">> measuring (this is the slow part — once) ..."
+        CTX="$CTX" BACKEND="$BE" NCMOE_LIST="$nlist" PORT="$bench_port" \
+          bash "$REPO_ROOT/scripts/benchmark-config.sh" || true
+        best="$(tune_get "$BE" "$CTX")"
+        if [[ "$best" =~ ^[0-9]+$ ]]; then
+          export NCMOE="$best"
+          echo ">> auto-tune: applying NCMOE=$NCMOE for CTX=$CTX."
+        else
+          echo ">> auto-tune: no fitting split measured — launching with the default expert split."
+        fi
+      else
+        tune_set "$BE" "$CTX" declined
+        echo ">> skipped — launching with the default expert split. Re-enable later: AUTOTUNE=1 bash scripts/start.sh"
+      fi
+    fi
+  fi
+
   echo ">> starting server in background (logs: $SERVER_LOG) ..."
   nohup bash "$REPO_ROOT/scripts/run-server.sh" "${SERVER_ARGS[@]}" > "$SERVER_LOG" 2>&1 &
   SRV_PID=$!
