@@ -452,9 +452,10 @@ above, `scripts/benchmark-config.sh` measures them on **your** hardware. For eac
 the *real* `llama-server` (through `run-server.sh`, on an isolated port — 8099 — so it never touches a
 server you already have on 8080), waits for `/health`, runs one **discarded warm-up** generation (the
 first CUDA decode pays a one-time graph-capture cost that would unfairly penalise GPU-heavy configs),
-then times a short `/completion` and reads `predicted_per_second` straight from the server's own
-timings. A config whose server dies while loading is reported as OOM. Pin one context with `CTX=`, or
-sweep several with `CTX_LIST=`:
+then times `RUNS` short `/completion`s (default 5) and reports the **median** of `predicted_per_second`
+read straight from the server's own timings. A config whose server dies while loading is reported as
+OOM. Each config prints live progress (`loading… runs: 1/5 2/5 …`) to stderr as it goes. Pin one
+context with `CTX=`, or sweep several with `CTX_LIST=`:
 
 ```bash
 CTX=131072 bash scripts/benchmark-config.sh                    # optimise NCMOE for a 128K window
@@ -488,11 +489,18 @@ implies. That table assumed a large context forces every expert to RAM (`--cpu-m
   measuring it would cost (llama-bench has no `-c` flag; reaching a 128K depth via `-d` means
   prefilling 128K tokens at ~50 t/s). Use the numbers to **rank** configs; treat the absolute value as
   an optimistic ceiling.
-- **Single-shot, so it picks up background load.** Each cell is one timed generation; if the desktop
-  is using the GPU mid-run you'll see dips (a contended run here briefly read ~16 t/s where clean runs
-  read ~23). And because `NCMOE=22` is a *marginal* fit (~7.6 GB of ~7.7 GB free), a transient VRAM
-  blip can flip it from fit to OOM. Run it on an idle machine for clean numbers, and prefer
-  `NCMOE=27` as the robust "snappy everywhere" pick.
+- **Median of `RUNS` runs, to smooth the GPU clock.** The 2070's boost clock bounces between probes —
+  each config reloads the 14 GB model first, so the GPU idles and then ramps back unevenly, and a lone
+  timed run could read anywhere from ~20 to ~30 tok/s for the *same* `NCMOE` purely on clock state.
+  Left unchecked that made the per-context "fastest NCMOE" pick depend on which probe happened to clock
+  high. So each config is timed `RUNS` times (default 5; `RUNS=` to change) and reported as the
+  **median**, with the min–max spread shown alongside (`median of 5: 19.6–30.1`) so you can see how
+  noisy that config was. A telltale that you're looking at clock noise rather than a real difference:
+  prompt-processing and generation rise and fall *together* across probes (a hot probe reads high on
+  both), and the same `NCMOE` varies wildly across contexts even though context size barely affects
+  decode speed at low fill. Still: run it on an idle machine, and because `NCMOE=22` is a *marginal*
+  fit (~7.6 GB of ~7.7 GB free) a transient VRAM blip can flip it from fit to OOM, so prefer `NCMOE=27`
+  as the robust "snappy everywhere" pick.
 
 **Driven from `start.sh` (measure once, reuse forever).** You don't have to run the benchmark by
 hand. The first time `start.sh` brings up a fresh server with no saved result, it offers to run it,

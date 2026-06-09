@@ -186,7 +186,7 @@ kernels** from 12.9 are too new for the 12.2 driver to load. **Two fixes:**
 | `scripts/run-pi.sh` | Launches pi against the local server (`--provider llamacpp --model gemma-4-26b-a4b-qat`). Extra args pass through to pi. |
 | `scripts/stop-server.sh` | Stops the server by the port it listens on (default 8080). |
 | `scripts/build-llama-cuda.sh` | **(optional, ~5–6× faster)** Builds llama.cpp from source against your driver's CUDA version into a `llamacpp-cuda` env. Auto-detects CUDA + GPU arch, smoke-tests the result. |
-| `scripts/benchmark-config.sh` | **(optional)** Finds the fastest `NCMOE`/`CTX` for *your* GPU: probes real configs on an isolated port and prints the fastest that fits per context. Pin one context with `CTX=` or sweep `CTX_LIST`. |
+| `scripts/benchmark-config.sh` | **(optional)** Finds the fastest `NCMOE`/`CTX` for *your* GPU: probes real configs on an isolated port and prints the fastest that fits per context. Times each config `RUNS` times (default 5) and reports the **median** (with min–max spread) to smooth out GPU-clock noise, showing live `runs: 1/5 …` progress. Pin one context with `CTX=` or sweep `CTX_LIST`. |
 | `config/pi-provider.json` | The pi provider definition (copy into `models.json` manually if you prefer). |
 
 All scripts accept env-var overrides — see the header comment in each, or run any of them with
@@ -336,6 +336,9 @@ CTX_LIST=16384,32768,65536 bash scripts/benchmark-config.sh   # sweep several co
 ```
 
 It runs on an isolated port (8099), so it won't disturb a server you already have on 8080.
+Each config is timed **`RUNS` times (default 5) and reported as the median** — the GPU's boost clock
+bounces between probes, so one sample is noisy; the median makes the picks stable, and the min–max
+spread is shown so you can see the noise. It prints live progress (`runs: 1/5 2/5 …`) as it goes.
 The reported tok/s is measured at *low* context fill (it deliberately doesn't prefill 128K) —
 use it to rank configs; real throughput drops as the context fills.
 

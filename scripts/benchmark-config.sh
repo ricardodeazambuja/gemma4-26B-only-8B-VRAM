@@ -32,7 +32,10 @@
 #              Tuning is keyed by it, so each KV setting gets its own results.
 #   MODEL      path to the .gguf                     (default: ./models/.../UD-Q4_K_XL.gguf)
 #   PORT       probe port — kept off 8080 so it never touches a real server (default: 8099)
-#   N_PREDICT  tokens to generate per timed probe (after a discarded warmup) (default: 128)
+#   N_PREDICT  tokens to generate per timed run (after a discarded warmup) (default: 128)
+#   RUNS       timed runs per config; the MEDIAN is reported (default: 5). The GPU's
+#              boost clock bounces between probes, so one sample is noisy; the median
+#              of several makes the ranking stop depending on which probe clocked high.
 #   PROMPT     prompt used for the timed generation  (default: a short fixed string)
 #   LOAD_TIMEOUT  seconds to wait for a config to load before calling it failed (default: 180)
 #   ENV_NAME / CUDA_ENV / CUDA_BIN  passed through to run-server.sh as-is.
@@ -42,8 +45,11 @@
 #     fills up (that deep-context cost is exactly why this doesn't prefill 128K).
 #     Use the numbers to RANK configs (the ranking holds); the absolute value is
 #     an optimistic ceiling.
-#   * Probing reloads the ~14 GB model once per config. The default grid is
-#     ~15 probes (~10 min). Trim CTX_LIST / NCMOE_LIST to go faster.
+#   * Each config is timed RUNS times and reported as the median, with the min–max
+#     spread shown alongside so you can see how noisy that config was.
+#   * Probing reloads the ~14 GB model once per config (the slow part); the RUNS
+#     extra generations are cheap (~seconds each). The default grid is ~15 configs
+#     (~12 min). Trim CTX_LIST / NCMOE_LIST, or lower RUNS, to go faster.
 #
 # Examples:
 #   CTX=32768 bash scripts/benchmark-config.sh              # optimise NCMOE for 32K
@@ -68,8 +74,13 @@ HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8099}"                       # off 8080 so we never disturb a real server
 NCMOE_LIST="${NCMOE_LIST:-20,22,24,27,30}"
 N_PREDICT="${N_PREDICT:-128}"
+RUNS="${RUNS:-5}"                          # timed generations per config; report the MEDIAN
 PROMPT="${PROMPT:-The quick brown fox jumps over the lazy dog. Tell me a short story.}"
 LOAD_TIMEOUT="${LOAD_TIMEOUT:-180}"
+# A 2070's boost clock bounces between probes (each reloads 14 GB, GPU idles, ramps
+# back unevenly), so a single timed run is noisy. Take RUNS samples and report the
+# median — the ranking stops depending on which probe happened to clock high.
+case "$RUNS" in ''|*[!0-9]*|0) RUNS=5 ;; esac
 
 # CTX (single, pinned) wins over CTX_LIST (sweep).
 if [ -n "${CTX:-}" ]; then
@@ -101,18 +112,21 @@ gpu_mib() { command -v nvidia-smi >/dev/null 2>&1 &&
   nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ' || true; }
 
 splash "$_FG_GREEN" "📊" "GEMMA 4 CONFIG BENCHMARK" "backend: $BACKEND  ·  KV: $KV  ·  probe port: $PORT"
-echo ">> contexts: $CTX_LIST    NCMOE: $NCMOE_LIST    (gen $N_PREDICT tok/probe)"
+echo ">> contexts: $CTX_LIST    NCMOE: $NCMOE_LIST    ($RUNS runs × $N_PREDICT tok, median per config)"
 echo ">> tok/s is measured at low context fill — use it to rank, not as a deep-context promise."
+echo ">> each config runs $RUNS times (RUNS=) and reports the median — smooths out the GPU's clock bounce."
 echo
 
 # --- probe one (CTX, NCMOE) -------------------------------------------------
-# Echoes: "<status> <tokps> <pp> <vram>"  (status: ok | oom | fail)
+# Echoes (stdout): "<status> <med_tps> <med_pp> <vram> <lo_tps> <hi_tps>"
+#   status: ok | oom | fail.  Live progress goes to stderr, never to stdout.
 probe() {
   local ctx="$1" ncmoe="$2"
   : > "$SERVER_LOG"
   CTX="$ctx" NCMOE="$ncmoe" PORT="$PORT" BACKEND="$BACKEND" HOST="$HOST" KVQUANT="${KVQUANT:-}" \
     nohup bash "$REPO_ROOT/scripts/run-server.sh" > "$SERVER_LOG" 2>&1 &
   local pid=$!
+  printf 'loading… ' >&2          # live progress (stderr → shown but not captured)
 
   # Wait for /health, or the process to die (OOM/fail), or timeout.
   local waited=0 ready=0
@@ -130,37 +144,52 @@ probe() {
     fi
     kill "$pid" 2>/dev/null || true
     PORT="$PORT" bash "$REPO_ROOT/scripts/stop-server.sh" >/dev/null 2>&1 || true
-    echo "$status   -   -   -"
+    echo "$status   -   -   -   -   -"
     return
   fi
 
   local vram; vram="$(gpu_mib)"
 
-  # Warm up first: the very first decode pays one-time CUDA kernel / graph-capture
-  # cost that would unfairly penalise GPU-heavy (low-NCMOE) configs. Discard it,
-  # then time a fresh generation. ignore_eos => exactly N tokens for a stable rate.
+  # Warm up first (discarded): the very first decode pays one-time CUDA kernel /
+  # graph-capture cost that would unfairly penalise GPU-heavy (low-NCMOE) configs.
   curl -fsS "http://$HOST:$PORT/completion" -H 'Content-Type: application/json' \
     -d "{\"prompt\":$(json_str "$PROMPT"),\"n_predict\":24,\"ignore_eos\":true,\"cache_prompt\":false,\"temperature\":0}" \
     >/dev/null 2>&1 || true
 
-  local resp; resp="$(curl -fsS "http://$HOST:$PORT/completion" \
-    -H 'Content-Type: application/json' \
-    -d "{\"prompt\":$(json_str "$PROMPT"),\"n_predict\":$N_PREDICT,\"ignore_eos\":true,\"cache_prompt\":false,\"temperature\":0}" \
-    2>/dev/null || true)"
+  # Then time RUNS generations and keep the MEDIAN — one sample is noisy because the
+  # GPU's clock bounces between runs. ignore_eos => exactly N tokens for a stable
+  # rate. Progress prints to stderr ("runs: 1/5 2/5 …") so it shows live but never
+  # lands in the result the caller captures via $(probe ...).
+  local tps_list="" pp_list="" r resp flat tps pp
+  printf 'runs:' >&2
+  for r in $(seq 1 "$RUNS"); do
+    printf ' %d/%d' "$r" "$RUNS" >&2
+    resp="$(curl -fsS "http://$HOST:$PORT/completion" \
+      -H 'Content-Type: application/json' \
+      -d "{\"prompt\":$(json_str "$PROMPT"),\"n_predict\":$N_PREDICT,\"ignore_eos\":true,\"cache_prompt\":false,\"temperature\":0}" \
+      2>/dev/null || true)"
+    flat="$(printf '%s' "$resp" | tr -d ' \n')"
+    tps="$(printf '%s' "$flat" | grep -oE '"predicted_per_second":[0-9.]+' | head -1 | cut -d: -f2)"
+    pp="$( printf '%s' "$flat" | grep -oE '"prompt_per_second":[0-9.]+'    | head -1 | cut -d: -f2)"
+    [ -n "$tps" ] && tps_list+="$tps"$'\n'
+    [ -n "$pp"  ] && pp_list+="$pp"$'\n'
+  done
+  printf ' ' >&2   # one space so the caller's result doesn't butt against "5/5"
 
-  # Pull predicted/prompt tokens-per-second straight from the server's timings.
-  local flat tokps pp
-  flat="$(printf '%s' "$resp" | tr -d ' \n')"
-  tokps="$(printf '%s' "$flat" | grep -oE '"predicted_per_second":[0-9.]+' | head -1 | cut -d: -f2)"
-  pp="$(printf '%s' "$flat" | grep -oE '"prompt_per_second":[0-9.]+' | head -1 | cut -d: -f2)"
+  # Collapse the samples: median for the headline, min/max to show the spread.
+  local med_tps med_pp lo hi
+  med_tps="$(printf '%s' "$tps_list" | _stat median)"
+  med_pp="$( printf '%s' "$pp_list"  | _stat median)"
+  lo="$(printf '%s' "$tps_list" | _stat min)"
+  hi="$(printf '%s' "$tps_list" | _stat max)"
 
   PORT="$PORT" bash "$REPO_ROOT/scripts/stop-server.sh" >/dev/null 2>&1 || true
   wait "$pid" 2>/dev/null || true
 
-  if [ -n "$tokps" ]; then
-    echo "ok   $tokps   ${pp:--}   ${vram:--}"
+  if [ -n "$med_tps" ]; then
+    echo "ok   $med_tps   ${med_pp:--}   ${vram:--}   ${lo:--}   ${hi:--}"
   else
-    echo "fail   -   -   ${vram:--}"   # loaded but generation returned nothing usable
+    echo "fail   -   -   ${vram:--}   -   -"   # loaded but no usable generation
   fi
 }
 
@@ -170,6 +199,21 @@ json_str() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sy
 
 # Round a numeric field to 1 decimal; pass non-numbers ("-") through untouched.
 round1() { case "$1" in ''|*[!0-9.]*) printf '%s' "${1:--}";; *) printf '%.1f' "$1";; esac; }
+
+# _stat <median|min|max>: read numbers (one per line) on stdin, print the stat to
+# 1 decimal (empty if there were none). Used to collapse the RUNS samples per probe.
+_stat() {
+  awk -v what="$1" '
+    /[0-9]/ { a[n++] = $1 + 0 }
+    END {
+      if (n == 0) exit
+      for (i = 0; i < n; i++) for (j = i + 1; j < n; j++) if (a[j] < a[i]) { t = a[i]; a[i] = a[j]; a[j] = t }
+      if      (what == "min") printf "%.1f", a[0]
+      else if (what == "max") printf "%.1f", a[n - 1]
+      else if (n % 2)         printf "%.1f", a[(n - 1) / 2]
+      else                    printf "%.1f", (a[n/2 - 1] + a[n/2]) / 2
+    }'
+}
 
 # Wait for the probe port to free up before the next launch.
 wait_port_free() {
@@ -190,9 +234,16 @@ for ctx in "${CTXS[@]}"; do
     ncmoe="$(printf '%s' "$ncmoe" | tr -d ' ')"
     printf "   NCMOE=%-3s … " "$ncmoe"
     wait_port_free
-    read -r status tokps pp vram <<< "$(probe "$ctx" "$ncmoe")"
+    read -r status tokps pp vram lo hi <<< "$(probe "$ctx" "$ncmoe")"
     case "$status" in
-      ok)   printf "✅ %s tok/s  (pp %s, VRAM %s MiB)\n" "$(round1 "$tokps")" "$(round1 "$pp")" "$vram" ;;
+      ok)
+        if [ "${lo:--}" != "-" ] && [ "$lo" != "$hi" ]; then
+          printf "✅ %s tok/s  (median of %s: %s–%s; pp %s, VRAM %s MiB)\n" \
+            "$(round1 "$tokps")" "$RUNS" "$lo" "$hi" "$(round1 "$pp")" "$vram"
+        else
+          printf "✅ %s tok/s  (median of %s; pp %s, VRAM %s MiB)\n" \
+            "$(round1 "$tokps")" "$RUNS" "$(round1 "$pp")" "$vram"
+        fi ;;
       oom)  printf "🔴 OOM — doesn't fit\n" ;;
       *)    printf "⚠️  failed (see %s)\n" "$SERVER_LOG" ;;
     esac
