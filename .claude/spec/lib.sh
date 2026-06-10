@@ -49,3 +49,24 @@ spec_log() {
 spec_cache_path() {
   printf '%s/%s.json' "$CACHE_DIR" "$1"
 }
+
+# Where speculate.sh records its single most-recent next-turn prediction.
+LAST_PREDICTION="$CACHE_DIR/last_prediction.json"
+
+# Branch-prediction match threshold (% word overlap to count actual≈predicted as a HIT).
+SPEC_MATCH_MIN="${SPEC_MATCH_MIN:-34}"
+
+# spec_similarity <a> <b> -> integer 0..100, Jaccard overlap of lowercased word sets.
+# Cheap, instant, dependency-free — the "was the branch predicted?" test.
+spec_similarity() {
+  awk -v a="$1" -v b="$2" 'BEGIN{
+    n=split(tolower(a),A," "); m=split(tolower(b),B," ");
+    for(i=1;i<=n;i++){gsub(/[^a-z0-9]/,"",A[i]); if(A[i]!="")sa[A[i]]=1}
+    for(i=1;i<=m;i++){gsub(/[^a-z0-9]/,"",B[i]); if(B[i]!="")sb[B[i]]=1}
+    for(k in sa){uni[k]=1; if(k in sb)inter++}
+    for(k in sb)uni[k]=1
+    u=0; for(k in uni)u++
+    if(u==0){print 0; exit}
+    printf "%d", (inter*100)/u
+  }'
+}

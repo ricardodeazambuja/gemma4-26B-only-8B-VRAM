@@ -44,6 +44,28 @@ EOF
   fi
 fi
 
+# --- 1b. Fuzzy branch-prediction hit (actual prompt ≈ last predicted) -------
+if [ -f "$LAST_PREDICTION" ]; then
+  predicted="$(jq -r '.predicted // empty' "$LAST_PREDICTION" 2>/dev/null)"
+  pdraft="$(jq -r '.draft // empty' "$LAST_PREDICTION" 2>/dev/null)"
+  if [ -n "$predicted" ] && [ -n "$pdraft" ]; then
+    score="$(spec_similarity "$prompt" "$predicted")"
+    if [ "${score:-0}" -ge "$SPEC_MATCH_MIN" ]; then
+      spec_log "$(jq -cn --arg k "$key" --argjson s "${score:-0}" --arg p "$predicted" \
+        '{event:"predict",result:"hit_predicted",key:$k,score:$s,predicted:$p}')"
+      cat <<EOF
+[speculative-agent · BRANCH PREDICTED ${score}%] Last turn Gemma guessed your next request would be:
+  "$predicted"
+and pre-drafted this. Treat as a DRAFT to VERIFY — confirm if right, supersede if wrong:
+---
+$pdraft
+---
+EOF
+      exit 0
+    fi
+  fi
+fi
+
 # --- 2/3. Cache miss: cheap inline draft if the server is up ----------------
 if ! spec_server_up; then
   spec_log "$(jq -cn --arg k "$key" '{event:"predict",result:"miss_offline",key:$k}')"

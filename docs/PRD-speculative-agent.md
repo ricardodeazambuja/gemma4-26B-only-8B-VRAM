@@ -9,9 +9,9 @@
 |---|---|
 | **Branch** | `feat/spec-exec-branch-prediction` |
 | **Owner** | ricardodeazambuja |
-| **Status** | 🟢 Building — M0–M2 + MI(images) done, M3 next |
+| **Status** | 🟢 Building — M0–M3 + MI(images) done, M4 next |
 | **Last updated** | 2026-06-10 |
-| **Pending live tests** | Need `llama-server` up: predict.sh latency (R1), image offload OCR (MI). Tracked in board. |
+| **Pending live tests** | Need `llama-server` up: predict.sh latency (R1), image OCR (MI), background predict+draft hit (M3). |
 | **Host surface** | Claude Code (hooks → plugin) |
 | **Backends** | local `llama-server` (Gemma 4 26B-A4B QAT, :8080) + Claude Code / Opus |
 
@@ -161,10 +161,12 @@ Legend: `TODO` · `DOING` · `DONE` · `BLOCKED` · `DROPPED`
 - [x] `DONE` Tested: degrade-to-allow paths + deny-JSON payload shape valid
 - [ ] `TODO` LIVE test (needs server up): real image → denied + correct OCR text reaches Opus; bytes logged
 
-### Milestone M3 — Background speculation (branch prediction)
-- [ ] `TODO` `speculate.sh`: predict next prompt, pre-compute read-only result → `cache/` (detached)
-- [ ] `TODO` Register `Stop` hook; confirm it does not block the user
-- [ ] `TODO` Wire cache **hit** detection back into `predict.sh` (close the loop)
+### Milestone M3 — Background speculation (branch prediction)  ✅ DONE (live test pending server)
+- [x] `DONE` `speculate.sh`: predicts next prompt + drafts it → `cache/` + `last_prediction.json` (detached via setsid)
+- [x] `DONE` Register `Stop` hook; verified it returns instantly (~12ms) and never blocks the user
+- [x] `DONE` Wire **hit** detection into `predict.sh`: lexical-Jaccard match (`SPEC_MATCH_MIN`, default 34%) → `hit_predicted`
+- [x] `DONE` Tested: similarity 100/42/0, fuzzy-hit injection, no false hit on unrelated prompt
+- [ ] `TODO` LIVE test (needs server up): worker actually predicts + drafts next turn; real hit on a follow-up
 
 ### Milestone M4 — Observability
 - [ ] `TODO` `stats.jsonl` records predict/hit/miss/accept per turn
@@ -188,6 +190,7 @@ a second small GGUF. Speeds up every Gemma call above. Tracked, not required for
 
 Newest first. One line per meaningful change; reference commits/tags.
 
+- `2026-06-10` — M3 done. `speculate.sh` Stop hook detaches a setsid worker that predicts the next request and pre-drafts it into `cache/` + `last_prediction.json`; hook returns ~12ms (non-blocking). `predict.sh` matches the real next prompt via lexical Jaccard (`spec_similarity`, threshold `SPEC_MATCH_MIN`) → `hit_predicted` with score. Verified with mocks. Next: M4 observability.
 - `2026-06-10` — MI done (multimodal image offload, MUST/G6, added per user request). `gemma.sh --image` (OpenAI vision), `describe.sh` PreToolUse(Read) hook denies image reads and hands Opus Gemma's OCR/text so Opus pays 0 image tokens. Safe-degrade (R5) verified for server-down/non-image/non-Read; deny-JSON shape verified. Live OCR test pending server. Next: M3.
 - `2026-06-10` — M2 done. `predict.sh` UserPromptSubmit hook: warm-cache HIT injects draft, cache MISS does a short inline classify+draft (server up), server-down/empty → silent no-op. Registered in committed `.claude/settings.json`. All paths log to stats.jsonl with latency. Next: M3 background speculation.
 - `2026-06-10` — M1 done. `lib.sh` + `gemma.sh` under `.claude/spec/`; graceful degradation verified (server down → exit 3, no noise); stats logging works. `.gitignore` updated. Next: M2 synchronous path.
