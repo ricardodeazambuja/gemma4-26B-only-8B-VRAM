@@ -18,3 +18,7 @@ MEMORY.md
 
 # Auto-tuning cache (machine-specific NCMOE/CTX results; written by start.sh / benchmark-config.sh)
 .gemma4-tuning
+
+# Speculative-agent runtime state (warm speculative results + predictor hit/miss log)
+.claude/spec/cache/
+.claude/spec/stats.jsonl

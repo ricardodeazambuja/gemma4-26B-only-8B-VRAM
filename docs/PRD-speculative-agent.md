@@ -9,8 +9,8 @@
 |---|---|
 | **Branch** | `feat/spec-exec-branch-prediction` |
 | **Owner** | ricardodeazambuja |
-| **Status** | 🟡 Planning complete — implementation not started |
-| **Last updated** | 2026-06-09 |
+| **Status** | 🟢 Building — M0–M1 done, M2 next |
+| **Last updated** | 2026-06-10 |
 | **Host surface** | Claude Code (hooks → plugin) |
 | **Backends** | local `llama-server` (Gemma 4 26B-A4B QAT, :8080) + Claude Code / Opus |
 
@@ -132,10 +132,11 @@ Legend: `TODO` · `DOING` · `DONE` · `BLOCKED` · `DROPPED`
 - [x] `DONE` Create branch `feat/spec-exec-branch-prediction`
 - [x] `DONE` Write this PRD and commit as the living tracker
 
-### Milestone M1 — Gemma client & graceful degradation
-- [ ] `TODO` `gemma.sh`: curl wrapper to `/v1/chat/completions`, configurable host/port/model
-- [ ] `TODO` Health check + graceful no-op when server down (R4)
-- [ ] `TODO` `lib.sh`: prompt hashing, cache paths, `stats.jsonl` append helpers
+### Milestone M1 — Gemma client & graceful degradation  ✅ DONE
+- [x] `DONE` `gemma.sh`: curl wrapper to `/v1/chat/completions`, configurable host/port/model
+- [x] `DONE` Health check + graceful no-op when server down (R4) — exits 3 silently
+- [x] `DONE` `lib.sh`: prompt hashing, cache paths, `stats.jsonl` append helpers
+- [x] `DONE` `.gitignore`: ignore `cache/` and `stats.jsonl` (moved up from M5)
 
 ### Milestone M2 — Synchronous path (the "start with A" entry)
 - [ ] `TODO` `predict.sh`: cache lookup → cheap classify/draft → inject via stdout
@@ -169,4 +170,5 @@ a second small GGUF. Speeds up every Gemma call above. Tracked, not required for
 
 Newest first. One line per meaningful change; reference commits/tags.
 
+- `2026-06-10` — M1 done. `lib.sh` + `gemma.sh` under `.claude/spec/`; graceful degradation verified (server down → exit 3, no noise); stats logging works. `.gitignore` updated. Next: M2 synchronous path.
 - `2026-06-09` — M0 done. Branch created, PRD authored as living tracker. Status: planning → ready to build M1.
