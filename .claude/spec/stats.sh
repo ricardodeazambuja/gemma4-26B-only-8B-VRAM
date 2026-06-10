@@ -16,6 +16,8 @@ jq -rs '
   | ($p | c(.result=="hit"))                                        as $hit
   | ($p | c(.result=="hit_predicted"))                              as $bp
   | ($p | c(.result=="miss_drafted"))                               as $md
+  | ($p | c(.result=="miss_hard"))                                  as $mh
+  | ($p | c(.result=="miss_skipped_long"))                          as $ms
   | ($p | c(.result=="miss_nodraft"))                               as $mn
   | ($p | c(.result=="miss_offline"))                               as $off
   | ($p | length)                                                   as $tot
@@ -32,7 +34,9 @@ jq -rs '
   "────────────────────────────────────────────",
   "  cache hit (exact)        : \($hit)",
   "  branch predicted (fuzzy) : \($bp)   avg match \($avg)%",
-  "  inline draft (miss)      : \($md)",
+  "  inline draft, easy (miss): \($md)",
+  "  hard — left to big model : \($mh)",
+  "  long — inline skipped    : \($ms)",
   "  no draft  (miss)         : \($mn)",
   "  offline   (server down)  : \($off)",
   "────────────────────────────────────────────",

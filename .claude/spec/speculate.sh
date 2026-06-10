@@ -24,15 +24,20 @@ if [ "${1:-}" = "--worker" ]; then
   transcript="$(jq -r '.transcript_path // empty' "$in_file" 2>/dev/null)"
   [ -n "$transcript" ] && [ -f "$transcript" ] || exit 0
 
-  # Best-effort: pull the last user turn and last assistant turn as plain text.
+  # Best-effort: pull the last REAL user turn and assistant turn as plain text.
+  # In Claude Code transcripts tool results also arrive as type=="user" entries
+  # (content blocks of type "tool_result"), so "last user entry" is usually NOT the
+  # user's prompt — take the last entry that yields non-empty TEXT instead.
   last_user="$(jq -rs '
-      [ .[] | select(.type=="user") | .message.content ] | last
-      | if type=="array" then [ .[]? | select(.type=="text") | .text ] | join("\n")
-        elif type=="string" then . else "" end' "$transcript" 2>/dev/null)"
+      [ .[] | select(.type=="user") | .message.content
+        | if type=="array" then [ .[]? | select(.type=="text") | .text ] | join("\n")
+          elif type=="string" then . else "" end
+        | select(length > 0) ] | last // ""' "$transcript" 2>/dev/null)"
   last_asst="$(jq -rs '
-      [ .[] | select(.type=="assistant") | .message.content ] | last
-      | if type=="array" then [ .[]? | select(.type=="text") | .text ] | join("\n")
-        elif type=="string" then . else "" end' "$transcript" 2>/dev/null)"
+      [ .[] | select(.type=="assistant") | .message.content
+        | if type=="array" then [ .[]? | select(.type=="text") | .text ] | join("\n")
+          elif type=="string" then . else "" end
+        | select(length > 0) ] | last // ""' "$transcript" 2>/dev/null)"
   [ -n "$last_user$last_asst" ] || exit 0
 
   # 1) Predict the next user request (one short line).
@@ -48,9 +53,16 @@ ${last_asst:0:1200}"
   [ -n "$predicted" ] || exit 0
 
   # 2) Speculatively draft an answer to that predicted request (read-only; safe to discard).
-  DSYS='You are the fast draft tier. Draft a concise first answer/plan for the request. If it would
-need to inspect files or run commands, say which (do NOT assume their contents). Be brief.'
-  draft="$(SPEC_MAX_TOKENS="${SPEC_SPEC_MAX:-256}" "$SPEC_DIR/gemma.sh" --system "$DSYS" --temp 0.2 "$predicted" 2>/dev/null)"
+  # The draft is consumed by a coding AGENT with full file/shell access — never plead lack
+  # of access (that draft is pure token waste); give the concrete answer or exact steps.
+  DSYS='You draft for a coding agent that CAN read files and run commands. For the request, give
+either the direct answer or the exact commands/steps the agent should run. 2-4 lines, no preamble,
+never say you lack access or ask for files.'
+  draft="$(SPEC_MAX_TOKENS="${SPEC_SPEC_MAX:-256}" "$SPEC_DIR/gemma.sh" --system "$DSYS" --temp 0.2 \
+           "Context of the session:
+$ctx
+
+Draft for this likely next request: $predicted" 2>/dev/null)"
   [ -n "$draft" ] || exit 0
 
   # 3) Store: a fuzzy-match record (last_prediction) + an exact-hash cache entry.

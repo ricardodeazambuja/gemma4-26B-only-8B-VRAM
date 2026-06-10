@@ -9,7 +9,7 @@
 |---|---|
 | **Branch** | `feat/spec-exec-branch-prediction` |
 | **Owner** | ricardodeazambuja |
-| **Status** | 🟢 v1 complete + verified live (M0–M5, MI, MA) — server auto-starts |
+| **Status** | 🟢 v1 complete + token-efficiency review pass (M0–M5, MI, MA, MO) |
 | **Last updated** | 2026-06-10 |
 | **Live-verified** | Auto-start (cuda/65536/NCMOE=22/--image, 38s, non-blocking 113ms); predict draft 3.7s; image OCR exact; branch-prediction hit 85% in 186ms. |
 | **Host surface** | Claude Code (hooks → plugin) |
@@ -134,9 +134,13 @@ gemma-spec-plugin/
   `message.content` comes back EMPTY → every draft was a no-op. Fixed in `gemma.sh` by sending
   `chat_template_kwargs:{enable_thinking:false}` by default (re-enable with `--think`/`SPEC_THINK=1`),
   plus a `reasoning_content` fallback. `reasoning_effort:none` does NOT work for this template.
-- **R7 — Inline draft latency (measured ~3.7s).** The synchronous `predict.sh` draft adds real latency
-  to every prompt when the server is up. Levers: lower `SPEC_PREDICT_MAX`, or switch to classify-only
-  inline and rely on background pre-drafts for content. *(open: tune after real-world use.)*
+- **R7 — Inline draft latency (mitigated in MO).** Was ~3.7s on every prompt; now: long prompts skip
+  the call (instant), hard prompts ~0.8s (no draft body), easy prompts ~2s (and those inject a usable
+  answer). Lever remains `SPEC_PREDICT_MAX` / `SPEC_INLINE_MAXCHARS`.
+- **R8 — Injection is a COST, not a free win (found live, fixed in MO).** Everything the hooks print
+  becomes the big model's input tokens. A wrong draft (Gemma's "hard" guesses, "I can't access files"
+  pleas) is worse than nothing. Rules: inject only easy drafts / verified cache hits, terse wrappers,
+  drafts written for an agent with tool access, consume-once + TTL so stale content can't recur.
 - **Q1** — Should `predict.sh` ever short-circuit trivial prompts entirely (Gemma answers, Opus skipped)?
   Default v1: no (N1). Revisit after measuring.
 - **Q2** — How to measure "accept vs misprediction" objectively without a human label? *(open)*
@@ -201,6 +205,18 @@ Legend: `TODO` · `DOING` · `DONE` · `BLOCKED` · `DROPPED`
 - [x] `DONE` `mamba` PATH fallback for stripped hook env; truncates `$SPEC_SERVER_LOG` on fresh launch; logs `autostart` stat
 - [x] `DONE` LIVE: a prompt with the server down auto-launched cuda/65536/NCMOE=22/--image; healthy in 38s; prompt returned in 113ms
 
+### Milestone MO — Token-efficiency review pass  ✅ DONE + live-verified
+Driven by a live failure: the hook injected a wrong "hard" draft into the big model's context —
+costing tokens instead of saving them. The big tier is now **Fable 5** ("Opus" elsewhere in this
+doc = "the big Claude model"); every injected token must earn its place.
+- [x] `DONE` Inject inline drafts ONLY when Gemma classifies `easy` (wrong hard drafts = pure cost, R8); hard → log `miss_hard`, no injection. Side-benefit: hard path 3.7s → ~0.8s (no draft body generated)
+- [x] `DONE` Length gate: prompts > `SPEC_INLINE_MAXCHARS` (240) skip the inline call entirely (`miss_skipped_long`)
+- [x] `DONE` Consume-once: exact-cache entries and `last_prediction.json` are deleted on use — a hit can't re-fire stale content or inflate the hit rate
+- [x] `DONE` TTL: cache entries expire after `SPEC_CACHE_TTL_MIN` (120 min) — speculative results go stale (R3)
+- [x] `DONE` Fix transcript parsing: last `type=="user"` entry is often a tool_result, not the user's prompt — now takes the last entry with non-empty TEXT
+- [x] `DONE` Draft quality: speculation drafts are written FOR a coding agent with tool access (never "I can't access files") and get the session context — live: "Run the benchmark tests" → "`pytest tests/test_bench.py`"
+- [x] `DONE` Terse injection wrappers (~60 → ~20 boilerplate tokens per injection)
+
 ### Orthogonal (not blocking v1)
 - [ ] `TODO` (§8) Token-level llama.cpp `--model-draft` speculative decoding in `start.sh`
 
@@ -240,6 +256,7 @@ To run it live: just use Claude Code in this repo — the first prompt auto-star
 
 Newest first. One line per meaningful change; reference commits/tags.
 
+- `2026-06-10` — MO done (token-efficiency review, prompted by a live wrong-draft injection). Easy-only + length-gated injection, consume-once + TTL caches, transcript-parse fix, agent-aware context-fed speculation drafts, terse wrappers. Hard path 3.7s→0.8s. New R8 (injection cost). Big tier now Fable 5.
 - `2026-06-10` — MA done + everything verified LIVE. `ensure-server.sh` auto-launches the optimal server (single-flight lock, setsid-detached, non-blocking) reusing `.gemma4-tuning` (cuda/65536/NCMOE=22) + `--image`; triggered from predict.sh/speculate.sh; kill switch + dry-run. Live: auto-start healthy in 38s (prompt returned 113ms); image OCR exact; branch-prediction hit 85% in 186ms. Fixed R6 (Gemma thinking ate the token budget → empty drafts; now `enable_thinking:false` by default) and measured R7 (inline draft ~3.7s).
 - `2026-06-10` — M5 done + v1 feature-complete. `review.sh` PostToolUse second-opinion hook (off unless `SPEC_REVIEW=1`); `gemma-draft` skill for deliberate use; added §9 Usage. Plugin repackaging deferred by decision (committed `.claude/` already ships the behavior). Remaining: live-server smoke tests only.
 - `2026-06-10` — M4 done. `stats.sh` summarizes predictor accuracy (overall + online hit rate, avg fuzzy-match %, background speculations, image KB saved) from stats.jsonl; `/spec-stats` slash command wraps it. Verified on synthetic stream. Next: M5 (review.sh + plugin graduation).

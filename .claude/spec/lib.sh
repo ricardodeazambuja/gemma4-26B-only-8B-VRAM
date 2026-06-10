@@ -53,6 +53,13 @@ spec_cache_path() {
 # Where speculate.sh records its single most-recent next-turn prediction.
 LAST_PREDICTION="$CACHE_DIR/last_prediction.json"
 
+# Speculative results go stale fast (the repo moves on). Drop cache entries older
+# than this many minutes (R3). Cheap: one find per prompt.
+SPEC_CACHE_TTL_MIN="${SPEC_CACHE_TTL_MIN:-120}"
+spec_expire_cache() {
+  find "$CACHE_DIR" -maxdepth 1 -name '*.json' -mmin "+$SPEC_CACHE_TTL_MIN" -delete 2>/dev/null || true
+}
+
 # Branch-prediction match threshold (% word overlap to count actual≈predicted as a HIT).
 SPEC_MATCH_MIN="${SPEC_MATCH_MIN:-34}"
 
