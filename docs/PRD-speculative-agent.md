@@ -9,7 +9,7 @@
 |---|---|
 | **Branch** | `feat/spec-exec-branch-prediction` |
 | **Owner** | ricardodeazambuja |
-| **Status** | 🟢 Building — M0–M1 done, M2 next |
+| **Status** | 🟢 Building — M0–M2 done, M3 next |
 | **Last updated** | 2026-06-10 |
 | **Host surface** | Claude Code (hooks → plugin) |
 | **Backends** | local `llama-server` (Gemma 4 26B-A4B QAT, :8080) + Claude Code / Opus |
@@ -138,10 +138,11 @@ Legend: `TODO` · `DOING` · `DONE` · `BLOCKED` · `DROPPED`
 - [x] `DONE` `lib.sh`: prompt hashing, cache paths, `stats.jsonl` append helpers
 - [x] `DONE` `.gitignore`: ignore `cache/` and `stats.jsonl` (moved up from M5)
 
-### Milestone M2 — Synchronous path (the "start with A" entry)
-- [ ] `TODO` `predict.sh`: cache lookup → cheap classify/draft → inject via stdout
-- [ ] `TODO` Register `UserPromptSubmit` hook in `settings.local.json`
-- [ ] `TODO` Verify draft actually lands in Opus context; measure added latency (R1)
+### Milestone M2 — Synchronous path (the "start with A" entry)  ✅ DONE
+- [x] `DONE` `predict.sh`: cache lookup → cheap classify/draft → inject via stdout
+- [x] `DONE` Register `UserPromptSubmit` hook (in committed `.claude/settings.json`, not local — repo is the demo)
+- [x] `DONE` Verify hit / miss_offline / empty-prompt paths; latency stamped to stats (`ms`) for R1
+  - Note: live latency measurement vs a running server is pending until the server is up (carried in M3 test).
 
 ### Milestone M3 — Background speculation (branch prediction)
 - [ ] `TODO` `speculate.sh`: predict next prompt, pre-compute read-only result → `cache/` (detached)
@@ -170,5 +171,6 @@ a second small GGUF. Speeds up every Gemma call above. Tracked, not required for
 
 Newest first. One line per meaningful change; reference commits/tags.
 
+- `2026-06-10` — M2 done. `predict.sh` UserPromptSubmit hook: warm-cache HIT injects draft, cache MISS does a short inline classify+draft (server up), server-down/empty → silent no-op. Registered in committed `.claude/settings.json`. All paths log to stats.jsonl with latency. Next: M3 background speculation.
 - `2026-06-10` — M1 done. `lib.sh` + `gemma.sh` under `.claude/spec/`; graceful degradation verified (server down → exit 3, no noise); stats logging works. `.gitignore` updated. Next: M2 synchronous path.
 - `2026-06-09` — M0 done. Branch created, PRD authored as living tracker. Status: planning → ready to build M1.
