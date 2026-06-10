@@ -144,10 +144,13 @@ gemma-spec-plugin/
 - **R9 — Log digests must stay lossless-reachable.** The digest keeps exact head/tail + grep'd error
   lines, and any Read with offset/limit bypasses the offload entirely — exact bytes are always one
   call away. Never extend this pattern to code/source files (quality constraint, see MX rejections).
-- **R10 — Pre-executed commands are read-only by construction.** Gemma-suggested commands run only if
-  they pass a strict allowlist (git status/log/diff/show/branch/ls-files, ls, grep, head, tail, wc),
-  contain no shell metacharacters or globs, and exec directly (no shell) under a 5s timeout. Anything
-  else is silently dropped. Observations are labeled with a staleness warning in the draft.
+- **R10 — Pre-executed commands are a FIXED hard-coded set (security review fix).** The first version let
+  Gemma propose commands from an allowlist; that was a prompt-injection → arbitrary-file-disclosure vector
+  (`head /etc/passwd` passes a naive allowlist, output lands in Claude's context). **Now the model chooses
+  nothing**: the worker runs exactly `git status --short --branch`, `git diff --stat`, `git log --oneline -8`
+  (only inside a git work tree), by direct exec (no shell), 5s timeout, 1200-char cap. No transcript-derived
+  text ever reaches a shell, so there is no injection surface. Verified: a transcript instructing
+  `head /etc/passwd` / `cat ~/.ssh/id_rsa` produced only git output, no leakage.
 - **Q1** — Should `predict.sh` ever short-circuit trivial prompts entirely (Gemma answers, Opus skipped)?
   Default v1: no (N1). Revisit after measuring.
 - **Q2** — How to measure "accept vs misprediction" objectively without a human label? *(open)*
@@ -236,11 +239,12 @@ doc = "the big Claude model"); every injected token must earn its place.
 ### Milestone MX — Creative leverage (extended goal)  ✅ DONE + live-verified
 Constraint: save big-model tokens **without reducing output quality** — every offload keeps either
 exact data (head/tail/grep), a drill-down escape hatch, or is advisory-only.
-- [x] `DONE` **Speculative read-only pre-execution** (true speculative execution): idle-time worker derives
-  ≤2 safe read-only commands for the predicted request (strict allowlist, metachar rejection, direct exec
-  no-shell, 5s timeout, 1200-char cap), runs them, embeds fresh observations in the cached draft.
-  Live: after an implement-turn it predicted "Commit the changes" and pre-ran `git status` + `git diff` —
-  a hit injects real repo state with zero tool round trips. Allowlist unit-tested (rm/;/|/$()/glob/push all denied).
+- [x] `DONE` **Speculative read-only pre-execution** (true speculative execution): idle-time worker runs a
+  FIXED set of repo-status commands (`git status --short --branch`, `git diff --stat`, `git log --oneline -8`),
+  direct exec no-shell, 5s timeout, 1200-char cap, and embeds the output in the cached draft — a hit injects
+  real repo state with zero tool round trips. **Security:** the model does NOT choose commands (an earlier
+  allowlist version was a prompt-injection → file-disclosure vector; removed — see R10). Verified a malicious
+  transcript cannot exfiltrate files.
 - [x] `DONE` **Large-log offload**: Read of `*.log`/`*.out` ≥ `SPEC_LOG_MINKB` (64 KB) → instant deterministic
   digest (exact first/last 30 lines + `grep -in` error/warn lines + sizes) instead of a raw dump
   (347 KB ≈ 86K tokens → ~1K). Gemma pattern summary is computed in the **background** and appears on
@@ -299,6 +303,7 @@ To run it live: just use Claude Code in this repo — the first prompt auto-star
 
 Newest first. One line per meaningful change; reference commits/tags.
 
+- `2026-06-10` — SECURITY FIX (automated commit review, HIGH): the MX pre-execution let Gemma propose commands from an allowlist → prompt-injection arbitrary-file-disclosure (`head /etc/passwd` passed). Replaced with a FIXED hard-coded git-status command set; the model now chooses nothing and no transcript text reaches a shell. Verified a malicious transcript leaks nothing. R10 updated.
 - `2026-06-10` — MX done (creative leverage, extended goal). Speculative read-only pre-execution (predicted "Commit the changes" → pre-ran git status+diff; allowlist unit-tested), large-log offload (347 KB → ~1K-token digest in 161ms, async Gemma summary, offset/limit escape hatch), token-savings estimator in /spec-stats. Evaluated-and-deferred ideas recorded so they aren't re-litigated. New R9/R10.
 - `2026-06-10` — MM done (async multimodal, per user request). Background image pre-OCR (path+mtime cache): prompt-mention + recent-files triggers; interception now instant on prewarmed images (162ms); image-mention prompts skip the inline draft (6.3s→110ms).
 - `2026-06-10` — MO done (token-efficiency review, prompted by a live wrong-draft injection). Easy-only + length-gated injection, consume-once + TTL caches, transcript-parse fix, agent-aware context-fed speculation drafts, terse wrappers. Hard path 3.7s→0.8s. New R8 (injection cost). Big tier now Fable 5.
