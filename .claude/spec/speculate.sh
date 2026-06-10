@@ -66,6 +66,8 @@ fi
 # Hook mode: stash stdin, detach the worker, return instantly.
 # ----------------------------------------------------------------------------
 input="$(cat)"
+# Warm the optimal server if it's down (non-blocking, single-flight; shared with predict.sh).
+"$(dirname -- "$SELF")/ensure-server.sh" >/dev/null 2>&1 || true
 tmp="$(mktemp 2>/dev/null)" || exit 0
 printf '%s' "$input" > "$tmp"
 setsid bash "$SELF" --worker "$tmp" >/dev/null 2>&1 < /dev/null &

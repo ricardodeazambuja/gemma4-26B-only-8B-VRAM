@@ -19,6 +19,11 @@ MAX="${SPEC_MAX_TOKENS:-64}"
 TEMP="${SPEC_TEMP:-0.2}"
 RAW_JSON=0
 IMAGE=""
+# Gemma 4 QAT ships with reasoning ON (--jinja, thinking=1). For the cheap draft tier
+# that just burns tokens/latency and leaves message.content empty under small budgets,
+# so we disable it by default via chat_template_kwargs.enable_thinking=false. Re-enable
+# with --think or SPEC_THINK=1.
+THINK="${SPEC_THINK:-0}"
 USER=""
 
 while [ $# -gt 0 ]; do
@@ -27,11 +32,13 @@ while [ $# -gt 0 ]; do
     --max)    MAX="$2";    shift 2 ;;
     --temp)   TEMP="$2";   shift 2 ;;
     --image)  IMAGE="$2";  shift 2 ;;
+    --think)  THINK=1;     shift ;;
     --json)   RAW_JSON=1;  shift ;;
     --)       shift; USER="$*"; break ;;
     *)        USER="$1";   shift ;;
   esac
 done
+[ "$THINK" = "1" ] && THINK_JSON=true || THINK_JSON=false
 
 # Allow the user prompt on stdin (when not a tty and none given as arg).
 if [ -z "$USER" ] && [ ! -t 0 ]; then
@@ -72,7 +79,9 @@ payload="$(jq -cn \
   --argjson messages "$messages" \
   --argjson max "$MAX" \
   --argjson temp "$TEMP" \
-  '{model:$model, messages:$messages, max_tokens:$max, temperature:$temp, stream:false}')"
+  --argjson think "$THINK_JSON" \
+  '{model:$model, messages:$messages, max_tokens:$max, temperature:$temp, stream:false}
+   + (if $think then {} else {chat_template_kwargs:{enable_thinking:false}} end)')"
 
 resp="$(curl -fsS -m "$SPEC_TIMEOUT" \
   -H 'Content-Type: application/json' \
@@ -87,5 +96,8 @@ if [ "$RAW_JSON" -eq 1 ]; then
 fi
 
 content="$(printf '%s' "$resp" | jq -r '.choices[0].message.content // empty' 2>/dev/null)"
+# Fallback: if content is empty (e.g. thinking was on and ate the budget), use the
+# reasoning text rather than returning nothing.
+[ -n "$content" ] || content="$(printf '%s' "$resp" | jq -r '.choices[0].message.reasoning_content // empty' 2>/dev/null)"
 [ -n "$content" ] || exit 4
 printf '%s\n' "$content"

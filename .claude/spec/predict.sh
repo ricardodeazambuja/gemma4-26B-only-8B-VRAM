@@ -21,6 +21,10 @@ input="$(cat)"
 prompt="$(printf '%s' "$input" | jq -r '.prompt // empty' 2>/dev/null)"
 [ -n "$prompt" ] || exit 0
 
+# Bring up the optimal server in the background if it's down (non-blocking, single-flight).
+# This turn still degrades; subsequent prompts get drafts once it's warm.
+"$SPEC_DIR/ensure-server.sh" >/dev/null 2>&1 || true
+
 key="$(spec_hash "$prompt")"
 cache_file="$(spec_cache_path "$key")"
 

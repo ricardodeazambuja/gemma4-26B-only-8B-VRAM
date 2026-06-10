@@ -9,9 +9,9 @@
 |---|---|
 | **Branch** | `feat/spec-exec-branch-prediction` |
 | **Owner** | ricardodeazambuja |
-| **Status** | 🟢 v1 feature-complete (M0–M5 + MI) — only live-server smoke tests remain |
+| **Status** | 🟢 v1 complete + verified live (M0–M5, MI, MA) — server auto-starts |
 | **Last updated** | 2026-06-10 |
-| **Pending live tests** | Need `llama-server` up: predict.sh latency (R1), image OCR (MI), background predict+draft hit (M3). |
+| **Live-verified** | Auto-start (cuda/65536/NCMOE=22/--image, 38s, non-blocking 113ms); predict draft 3.7s; image OCR exact; branch-prediction hit 85% in 186ms. |
 | **Host surface** | Claude Code (hooks → plugin) |
 | **Backends** | local `llama-server` (Gemma 4 26B-A4B QAT, :8080) + Claude Code / Opus |
 
@@ -129,6 +129,14 @@ gemma-spec-plugin/
   file isn't an image, the `PreToolUse(Read)` hook must **allow** the normal read. Only intercept when
   Gemma can actually return text. *(open: also offload tool-produced images, e.g. screenshots, via
   `PostToolUse` — deferred past v1.)*
+- **R6 — Reasoning must be OFF for the draft tier (solved).** Gemma 4 QAT ships with thinking on
+  (`--jinja`, `thinking=1`); under small token budgets the whole budget goes to `reasoning_content` and
+  `message.content` comes back EMPTY → every draft was a no-op. Fixed in `gemma.sh` by sending
+  `chat_template_kwargs:{enable_thinking:false}` by default (re-enable with `--think`/`SPEC_THINK=1`),
+  plus a `reasoning_content` fallback. `reasoning_effort:none` does NOT work for this template.
+- **R7 — Inline draft latency (measured ~3.7s).** The synchronous `predict.sh` draft adds real latency
+  to every prompt when the server is up. Levers: lower `SPEC_PREDICT_MAX`, or switch to classify-only
+  inline and rely on background pre-drafts for content. *(open: tune after real-world use.)*
 - **Q1** — Should `predict.sh` ever short-circuit trivial prompts entirely (Gemma answers, Opus skipped)?
   Default v1: no (N1). Revisit after measuring.
 - **Q2** — How to measure "accept vs misprediction" objectively without a human label? *(open)*
@@ -151,7 +159,7 @@ Legend: `TODO` · `DOING` · `DONE` · `BLOCKED` · `DROPPED`
 - [x] `DONE` `predict.sh`: cache lookup → cheap classify/draft → inject via stdout
 - [x] `DONE` Register `UserPromptSubmit` hook (in committed `.claude/settings.json`, not local — repo is the demo)
 - [x] `DONE` Verify hit / miss_offline / empty-prompt paths; latency stamped to stats (`ms`) for R1
-  - Note: live latency measurement vs a running server is pending until the server is up (carried in M3 test).
+- [x] `DONE` LIVE: inline draft correct (`DIFFICULTY: easy` + answer); measured **~3.7s** on the critical path (R1)
 
 ### Milestone MI — Multimodal image offload (MUST · G6)  ✅ DONE (live test pending server)
 - [x] `DONE` `gemma.sh --image <path>`: base64 + OpenAI vision content → Gemma returns OCR/description
@@ -159,14 +167,14 @@ Legend: `TODO` · `DOING` · `DONE` · `BLOCKED` · `DROPPED`
 - [x] `DONE` Safe degrade (R5): Gemma down / not an image / non-Read / encode fails → **allow** normal Read (verified)
 - [x] `DONE` Register the `PreToolUse(Read)` hook; `image_offload` stat logs path + bytes saved
 - [x] `DONE` Tested: degrade-to-allow paths + deny-JSON payload shape valid
-- [ ] `TODO` LIVE test (needs server up): real image → denied + correct OCR text reaches Opus; bytes logged
+- [x] `DONE` LIVE: PNG with text → read denied + exact OCR (`Invoice #42 Total: $128.50 / Status: PAID`) reached Opus as text
 
-### Milestone M3 — Background speculation (branch prediction)  ✅ DONE (live test pending server)
+### Milestone M3 — Background speculation (branch prediction)  ✅ DONE + live-verified
 - [x] `DONE` `speculate.sh`: predicts next prompt + drafts it → `cache/` + `last_prediction.json` (detached via setsid)
 - [x] `DONE` Register `Stop` hook; verified it returns instantly (~12ms) and never blocks the user
 - [x] `DONE` Wire **hit** detection into `predict.sh`: lexical-Jaccard match (`SPEC_MATCH_MIN`, default 34%) → `hit_predicted`
 - [x] `DONE` Tested: similarity 100/42/0, fuzzy-hit injection, no false hit on unrelated prompt
-- [ ] `TODO` LIVE test (needs server up): worker actually predicts + drafts next turn; real hit on a follow-up
+- [x] `DONE` LIVE: worker predicted+drafted next turn; near-identical follow-up scored an 85% hit in 186ms (no model call)
 
 ### Milestone M4 — Observability  ✅ DONE
 - [x] `DONE` `stats.jsonl` records predict/hit/miss + speculate + image_offload per turn (M1–M3)
@@ -185,6 +193,14 @@ Legend: `TODO` · `DOING` · `DONE` · `BLOCKED` · `DROPPED`
   `.claude/spec/*` → `plugin/scripts/`, translate `settings.json` hooks → `plugin/hooks/hooks.json`
   (use `${CLAUDE_PLUGIN_ROOT}`), move command + skill under the plugin, publish to a marketplace.
 
+### Milestone MA — Auto-start the optimal server from the hooks  ✅ DONE + live-verified
+- [x] `DONE` `ensure-server.sh`: single-flight (lock dir), detached (setsid) worker, **non-blocking** (hook returns instantly)
+- [x] `DONE` Reuse "optimal" config — backend via `resolve_backend`, CTX/NCMOE/KV from `.gemma4-tuning` via `_tuning.sh` (no reinvention)
+- [x] `DONE` Launch with `--image` when the mmproj exists, so the image offload (G6) works on the auto-started server
+- [x] `DONE` Triggered fire-and-forget from `predict.sh` + `speculate.sh`; kill switch `SPEC_AUTOSTART=0`; `SPEC_AUTOSTART_DRYRUN=1`
+- [x] `DONE` `mamba` PATH fallback for stripped hook env; truncates `$SPEC_SERVER_LOG` on fresh launch; logs `autostart` stat
+- [x] `DONE` LIVE: a prompt with the server down auto-launched cuda/65536/NCMOE=22/--image; healthy in 38s; prompt returned in 113ms
+
 ### Orthogonal (not blocking v1)
 - [ ] `TODO` (§8) Token-level llama.cpp `--model-draft` speculative decoding in `start.sh`
 
@@ -201,6 +217,7 @@ All surfaces live under `.claude/` and are committed, so they activate on a fres
 
 | Surface | Event | Effect | Toggle |
 |---|---|---|---|
+| `ensure-server.sh` | (called by hooks) | auto-launch optimal server if down (single-flight, non-blocking) | `SPEC_AUTOSTART=0` to disable |
 | `predict.sh` | UserPromptSubmit | inject cache-hit / branch-predicted / inline Gemma draft | always on (no-op when server down) |
 | `speculate.sh` | Stop | background: predict + pre-draft next turn | always on |
 | `describe.sh` | PreToolUse(Read) | image → Gemma OCR/text, deny raw read (0 image tokens) | always on |
@@ -210,15 +227,20 @@ All surfaces live under `.claude/` and are committed, so they activate on a fres
 
 Key env knobs (all optional): `SPEC_HOST`/`SPEC_PORT`/`SPEC_MODEL` (server),
 `SPEC_PREDICT_MAX` (inline draft tokens), `SPEC_MATCH_MIN` (hit threshold %),
-`SPEC_IMAGE_MAX`/`SPEC_IMAGE_TIMEOUT` (image OCR), `SPEC_REVIEW=1` (enable review).
+`SPEC_IMAGE_MAX`/`SPEC_IMAGE_TIMEOUT` (image OCR), `SPEC_REVIEW=1` (enable review),
+`SPEC_THINK=1` (re-enable Gemma reasoning; off by default), `SPEC_AUTOSTART=0` (disable
+auto-launch), `SPEC_AUTOSTART_DRYRUN=1` (show the resolved launch, don't launch),
+`CTX`/`NCMOE`/`KVQUANT`/`BACKEND` (override the tuned pick). The auto-started server uses
+your `.gemma4-tuning` optimal (e.g. cuda/65536/NCMOE=22) and loads the mmproj for images.
 
-To run it live: `bash scripts/start.sh` (brings up llama-server + pi), then use Claude Code
-in this repo; watch `/spec-stats` climb.
+To run it live: just use Claude Code in this repo — the first prompt auto-starts the server
+(or run `bash scripts/start.sh` yourself). Watch `/spec-stats` climb.
 
 ## 10. Progress log
 
 Newest first. One line per meaningful change; reference commits/tags.
 
+- `2026-06-10` — MA done + everything verified LIVE. `ensure-server.sh` auto-launches the optimal server (single-flight lock, setsid-detached, non-blocking) reusing `.gemma4-tuning` (cuda/65536/NCMOE=22) + `--image`; triggered from predict.sh/speculate.sh; kill switch + dry-run. Live: auto-start healthy in 38s (prompt returned 113ms); image OCR exact; branch-prediction hit 85% in 186ms. Fixed R6 (Gemma thinking ate the token budget → empty drafts; now `enable_thinking:false` by default) and measured R7 (inline draft ~3.7s).
 - `2026-06-10` — M5 done + v1 feature-complete. `review.sh` PostToolUse second-opinion hook (off unless `SPEC_REVIEW=1`); `gemma-draft` skill for deliberate use; added §9 Usage. Plugin repackaging deferred by decision (committed `.claude/` already ships the behavior). Remaining: live-server smoke tests only.
 - `2026-06-10` — M4 done. `stats.sh` summarizes predictor accuracy (overall + online hit rate, avg fuzzy-match %, background speculations, image KB saved) from stats.jsonl; `/spec-stats` slash command wraps it. Verified on synthetic stream. Next: M5 (review.sh + plugin graduation).
 - `2026-06-10` — M3 done. `speculate.sh` Stop hook detaches a setsid worker that predicts the next request and pre-drafts it into `cache/` + `last_prediction.json`; hook returns ~12ms (non-blocking). `predict.sh` matches the real next prompt via lexical Jaccard (`spec_similarity`, threshold `SPEC_MATCH_MIN`) → `hit_predicted` with score. Verified with mocks. Next: M4 observability.
