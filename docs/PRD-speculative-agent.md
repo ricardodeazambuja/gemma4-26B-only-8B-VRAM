@@ -217,6 +217,15 @@ doc = "the big Claude model"); every injected token must earn its place.
 - [x] `DONE` Draft quality: speculation drafts are written FOR a coding agent with tool access (never "I can't access files") and get the session context — live: "Run the benchmark tests" → "`pytest tests/test_bench.py`"
 - [x] `DONE` Terse injection wrappers (~60 → ~20 boilerplate tokens per injection)
 
+### Milestone MM — Async multimodal: Gemma consumes images while Claude works  ✅ DONE + live-verified
+- [x] `DONE` OCR cache keyed by `path+mtime` (`cache/img_*.json`) — an edited image re-OCRs naturally
+- [x] `DONE` `describe.sh --prewarm <path>`: background OCR into the cache (no hook output)
+- [x] `DONE` Hook mode is cache-first: prewarmed image → **instant** deny+text (162ms vs 10–60s synchronous)
+- [x] `DONE` Trigger 1: image paths mentioned in the prompt → fire-and-forget prewarm (`predict.sh`)
+- [x] `DONE` Trigger 2: recently-modified images in the project (≤30 min, ≤8 MB, max 2) → prewarm during idle (`speculate.sh` worker)
+- [x] `DONE` Image-mention prompts skip the inline text draft (useless + GPU contention with the prewarm): 6.3s → 110ms
+- [x] `DONE` LIVE: prewarm 4.9s in background → interception `cached:true` in 162ms; stats show prewarm/instant counts
+
 ### Orthogonal (not blocking v1)
 - [ ] `TODO` (§8) Token-level llama.cpp `--model-draft` speculative decoding in `start.sh`
 
@@ -256,6 +265,7 @@ To run it live: just use Claude Code in this repo — the first prompt auto-star
 
 Newest first. One line per meaningful change; reference commits/tags.
 
+- `2026-06-10` — MM done (async multimodal, per user request). Background image pre-OCR (path+mtime cache): prompt-mention + recent-files triggers; interception now instant on prewarmed images (162ms); image-mention prompts skip the inline draft (6.3s→110ms).
 - `2026-06-10` — MO done (token-efficiency review, prompted by a live wrong-draft injection). Easy-only + length-gated injection, consume-once + TTL caches, transcript-parse fix, agent-aware context-fed speculation drafts, terse wrappers. Hard path 3.7s→0.8s. New R8 (injection cost). Big tier now Fable 5.
 - `2026-06-10` — MA done + everything verified LIVE. `ensure-server.sh` auto-launches the optimal server (single-flight lock, setsid-detached, non-blocking) reusing `.gemma4-tuning` (cuda/65536/NCMOE=22) + `--image`; triggered from predict.sh/speculate.sh; kill switch + dry-run. Live: auto-start healthy in 38s (prompt returned 113ms); image OCR exact; branch-prediction hit 85% in 186ms. Fixed R6 (Gemma thinking ate the token budget → empty drafts; now `enable_thinking:false` by default) and measured R7 (inline draft ~3.7s).
 - `2026-06-10` — M5 done + v1 feature-complete. `review.sh` PostToolUse second-opinion hook (off unless `SPEC_REVIEW=1`); `gemma-draft` skill for deliberate use; added §9 Usage. Plugin repackaging deferred by decision (committed `.claude/` already ships the behavior). Remaining: live-server smoke tests only.

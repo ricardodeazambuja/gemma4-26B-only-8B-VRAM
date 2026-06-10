@@ -65,6 +65,14 @@ $ctx
 Draft for this likely next request: $predicted" 2>/dev/null)"
   [ -n "$draft" ] || exit 0
 
+  # 2b) Async multimodal: pre-OCR recently-touched images in the project while the
+  # user is idle, so a future Read interception is instant (cache keyed path+mtime;
+  # --prewarm exits early when already warm).
+  find . -maxdepth 3 \( -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' -o -name '*.webp' \) \
+       -mmin -30 -size -8M 2>/dev/null | head -2 | while IFS= read -r img; do
+    bash "$SPEC_DIR/describe.sh" --prewarm "$img"
+  done
+
   # 3) Store: a fuzzy-match record (last_prediction) + an exact-hash cache entry.
   key="$(spec_hash "$predicted")"
   jq -n --arg p "$predicted" --arg d "$draft" --arg k "$key" \

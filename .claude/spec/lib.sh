@@ -60,6 +60,18 @@ spec_expire_cache() {
   find "$CACHE_DIR" -maxdepth 1 -name '*.json' -mmin "+$SPEC_CACHE_TTL_MIN" -delete 2>/dev/null || true
 }
 
+# Image-OCR cache (async multimodal): keyed by path+mtime so an edited image
+# invalidates naturally. Filled in the background by describe.sh --prewarm while
+# the big model works; read instantly by the PreToolUse hook.
+spec_image_key() {
+  local p="$1" mt
+  mt="$(stat -c %Y "$p" 2>/dev/null || echo 0)"
+  spec_hash "img:$p:$mt"
+}
+spec_is_image() {
+  case "${1,,}" in *.png|*.jpg|*.jpeg|*.gif|*.webp|*.bmp) return 0 ;; *) return 1 ;; esac
+}
+
 # Branch-prediction match threshold (% word overlap to count actual≈predicted as a HIT).
 SPEC_MATCH_MIN="${SPEC_MATCH_MIN:-34}"
 

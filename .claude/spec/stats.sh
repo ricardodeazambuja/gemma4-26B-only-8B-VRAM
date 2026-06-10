@@ -25,9 +25,12 @@ jq -rs '
   | ($tot - $off)                                                   as $online
   | ([ $p[] | select(.result=="hit_predicted") | .score ])          as $scores
   | (if ($scores|length)>0 then ($scores|add/(($scores|length))|floor) else 0 end) as $avg
+  | ($p | c(.result=="miss_image_prewarm"))                         as $mi
   | (map(select(.event=="speculate")) | length)                     as $spec
   | (map(select(.event=="image_offload")))                          as $imgs
   | ($imgs | length)                                                as $nimg
+  | ($imgs | map(select(.cached==true)) | length)                   as $nimgc
+  | (map(select(.event=="image_prewarm")) | length)                 as $npre
   | ($imgs | map(.bytes // 0) | add // 0)                           as $ibytes
   | def pct($n;$d): if $d>0 then (($n*1000/$d|floor)/10) else 0 end;
   "speculative-agent stats  (\($tot) prompts seen)",
@@ -37,6 +40,7 @@ jq -rs '
   "  inline draft, easy (miss): \($md)",
   "  hard — left to big model : \($mh)",
   "  long — inline skipped    : \($ms)",
+  "  image — prewarm instead  : \($mi)",
   "  no draft  (miss)         : \($mn)",
   "  offline   (server down)  : \($off)",
   "────────────────────────────────────────────",
@@ -44,5 +48,6 @@ jq -rs '
   "    overall : \($hits)/\($tot) = \(pct($hits;$tot))%",
   "    online  : \($hits)/\($online) = \(pct($hits;$online))%   (excludes offline turns)",
   "  background speculations  : \($spec)",
-  "  image offloads           : \($nimg)   (~\(($ibytes/1024)|floor) KB kept off Opus)"
+  "  image offloads           : \($nimg) (\($nimgc) instant from prewarm) · prewarms: \($npre)",
+  "  image bytes kept off the big model: ~\(($ibytes/1024)|floor) KB"
 ' "$STATS_FILE"

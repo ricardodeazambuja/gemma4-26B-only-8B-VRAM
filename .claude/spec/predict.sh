@@ -34,6 +34,17 @@ cache_file="$(spec_cache_path "$key")"
 
 now_ms() { date +%s%3N 2>/dev/null || echo 0; }
 
+# Async multimodal (G6): if the prompt mentions image paths, have Gemma OCR them in
+# the background NOW — by the time Claude Reads one, the interception is instant.
+mentions_image=0
+while IFS= read -r img; do
+  img="${img/#\~/$HOME}"
+  if [ -f "$img" ]; then
+    mentions_image=1
+    setsid "$SPEC_DIR/describe.sh" --prewarm "$img" >/dev/null 2>&1 < /dev/null &
+  fi
+done < <(printf '%s\n' "$prompt" | grep -oE '(~|\.{1,2})?/?[A-Za-z0-9._/-]+\.(png|jpe?g|gif|webp|bmp)' | head -3)
+
 # Speculative results are one-shot: expire stale files so an old draft can't
 # masquerade as fresh work (R3), and consume entries on use so a hit can't re-fire.
 spec_expire_cache
@@ -84,6 +95,13 @@ fi
 if [ "${#prompt}" -gt "${SPEC_INLINE_MAXCHARS:-240}" ]; then
   spec_log "$(jq -cn --arg k "$key" --argjson n "${#prompt}" \
     '{event:"predict",result:"miss_skipped_long",key:$k,chars:$n}')"
+  exit 0
+fi
+
+# Image-mention prompts: the work IS looking at the image — a text draft can't help,
+# and it would fight the prewarm OCR for the GPU. The prewarm is the speculation here.
+if [ "$mentions_image" = 1 ]; then
+  spec_log "$(jq -cn --arg k "$key" '{event:"predict",result:"miss_image_prewarm",key:$k}')"
   exit 0
 fi
 
