@@ -21,6 +21,10 @@ if [ "${1:-}" = "--worker" ]; then
   trap 'rm -f "$in_file"' EXIT
   spec_server_up || exit 0                      # nothing to speculate with
 
+  # Run where the session runs (hooks pass cwd) — keeps find/pre-exec project-scoped.
+  hook_cwd="$(jq -r '.cwd // empty' "$in_file" 2>/dev/null)"
+  [ -n "$hook_cwd" ] && [ -d "$hook_cwd" ] && cd "$hook_cwd" 2>/dev/null
+
   transcript="$(jq -r '.transcript_path // empty' "$in_file" 2>/dev/null)"
   [ -n "$transcript" ] && [ -f "$transcript" ] || exit 0
 
@@ -64,6 +68,43 @@ $ctx
 
 Draft for this likely next request: $predicted" 2>/dev/null)"
   [ -n "$draft" ] || exit 0
+
+  # 2a) SPECULATIVE PRE-EXECUTION: derive up to 2 safe READ-ONLY commands for the
+  # predicted request, run them now (idle time), and embed the fresh observations in
+  # the cached draft. On a branch-prediction hit Claude receives real data without
+  # spending tool-call round trips. Safety: strict allowlist, no shell metacharacters,
+  # direct exec (no shell), 5s timeout, truncated output.
+  spec_safe_cmd() {
+    case "$1" in *[\;\|\&\<\>\`\$\(\)\'\"\\\*\?]*) return 1 ;; esac   # no metachars/globs
+    case "$1" in
+      "git status"*|"git log"*|"git diff"*|"git show"*|"git branch"*|"git ls-files"*) return 0 ;;
+      "ls"|"ls "*|"wc "*|"head "*|"tail "*|"grep "*) return 0 ;;
+      *) return 1 ;;
+    esac
+  }
+  CSYS='You suggest shell commands for a coding agent. Given the context and the predicted next
+request, output up to 2 READ-ONLY inspection commands (git status/log/diff, ls, grep, head, wc),
+one per line, nothing else. Only commands whose output would help answer the request.'
+  cmds="$(SPEC_MAX_TOKENS=48 "$SPEC_DIR/gemma.sh" --system "$CSYS" --temp 0.1 \
+          "$ctx
+
+Predicted next request: $predicted" 2>/dev/null | sed 's/^[`$ ]*//;s/`$//' | head -2)"
+  obs=""
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    spec_safe_cmd "$c" || continue
+    read -ra words <<< "$c"
+    out_c="$(timeout 5 "${words[@]}" 2>&1 | head -c 1200)" || true
+    [ -n "$out_c" ] && obs="${obs}\$ ${c}
+${out_c}
+"
+  done <<< "$cmds"
+  if [ -n "$obs" ]; then
+    draft="${draft}
+
+[pre-executed while idle — re-run only if staleness matters:]
+${obs}"
+  fi
 
   # 2b) Async multimodal: pre-OCR recently-touched images in the project while the
   # user is idle, so a future Read interception is instant (cache keyed path+mtime;

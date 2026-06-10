@@ -9,8 +9,8 @@
 |---|---|
 | **Branch** | `feat/spec-exec-branch-prediction` |
 | **Owner** | ricardodeazambuja |
-| **Status** | 🟢 v1 complete + token-efficiency review pass (M0–M5, MI, MA, MO) |
-| **Last updated** | 2026-06-10 |
+| **Status** | 🟢 v2: M0–M5, MI, MA, MO, MM, MX — all live-verified |
+| **Last updated** | 2026-06-10 (overnight session) |
 | **Live-verified** | Auto-start (cuda/65536/NCMOE=22/--image, 38s, non-blocking 113ms); predict draft 3.7s; image OCR exact; branch-prediction hit 85% in 186ms. |
 | **Host surface** | Claude Code (hooks → plugin) |
 | **Backends** | local `llama-server` (Gemma 4 26B-A4B QAT, :8080) + Claude Code / Opus |
@@ -141,6 +141,13 @@ gemma-spec-plugin/
   becomes the big model's input tokens. A wrong draft (Gemma's "hard" guesses, "I can't access files"
   pleas) is worse than nothing. Rules: inject only easy drafts / verified cache hits, terse wrappers,
   drafts written for an agent with tool access, consume-once + TTL so stale content can't recur.
+- **R9 — Log digests must stay lossless-reachable.** The digest keeps exact head/tail + grep'd error
+  lines, and any Read with offset/limit bypasses the offload entirely — exact bytes are always one
+  call away. Never extend this pattern to code/source files (quality constraint, see MX rejections).
+- **R10 — Pre-executed commands are read-only by construction.** Gemma-suggested commands run only if
+  they pass a strict allowlist (git status/log/diff/show/branch/ls-files, ls, grep, head, tail, wc),
+  contain no shell metacharacters or globs, and exec directly (no shell) under a 5s timeout. Anything
+  else is silently dropped. Observations are labeled with a staleness warning in the draft.
 - **Q1** — Should `predict.sh` ever short-circuit trivial prompts entirely (Gemma answers, Opus skipped)?
   Default v1: no (N1). Revisit after measuring.
 - **Q2** — How to measure "accept vs misprediction" objectively without a human label? *(open)*
@@ -226,6 +233,32 @@ doc = "the big Claude model"); every injected token must earn its place.
 - [x] `DONE` Image-mention prompts skip the inline text draft (useless + GPU contention with the prewarm): 6.3s → 110ms
 - [x] `DONE` LIVE: prewarm 4.9s in background → interception `cached:true` in 162ms; stats show prewarm/instant counts
 
+### Milestone MX — Creative leverage (extended goal)  ✅ DONE + live-verified
+Constraint: save big-model tokens **without reducing output quality** — every offload keeps either
+exact data (head/tail/grep), a drill-down escape hatch, or is advisory-only.
+- [x] `DONE` **Speculative read-only pre-execution** (true speculative execution): idle-time worker derives
+  ≤2 safe read-only commands for the predicted request (strict allowlist, metachar rejection, direct exec
+  no-shell, 5s timeout, 1200-char cap), runs them, embeds fresh observations in the cached draft.
+  Live: after an implement-turn it predicted "Commit the changes" and pre-ran `git status` + `git diff` —
+  a hit injects real repo state with zero tool round trips. Allowlist unit-tested (rm/;/|/$()/glob/push all denied).
+- [x] `DONE` **Large-log offload**: Read of `*.log`/`*.out` ≥ `SPEC_LOG_MINKB` (64 KB) → instant deterministic
+  digest (exact first/last 30 lines + `grep -in` error/warn lines + sizes) instead of a raw dump
+  (347 KB ≈ 86K tokens → ~1K). Gemma pattern summary is computed in the **background** and appears on
+  subsequent reads (async-first, 161–186ms). **Escape hatch:** Read with offset/limit passes through raw;
+  small logs untouched; `SPEC_LOG_OFFLOAD=0` disables. Works even with Gemma down (digest is deterministic).
+- [x] `DONE` **Token-savings estimator** in `/spec-stats` (clearly-labeled rough heuristics: logs bytes/4,
+  ~1K/image, ~200/prediction hit).
+
+#### Evaluated and deliberately deferred (so they aren't re-litigated)
+- **PDF offload** (rasterize + per-page OCR): real savings but heavy latency on this GPU and quality risk
+  on dense documents; the `pdf-to-markdown` skill already covers the heavy case. Revisit if PDFs recur.
+- **Generic large-text-file summarization on Read**: REJECTED — Claude needs exact code/text; violates the
+  quality constraint. (Logs are the exception: repetitive + escape hatch.)
+- **Tool-output (Bash) compression**: not feasible via hooks — PostToolUse can only ADD context, it cannot
+  shrink the tool result the big model already receives.
+- **Session-start git brief**: redundant — Claude Code already injects gitStatus at session start.
+- **Commit-message drafting by Gemma**: negligible savings, style risk.
+
 ### Orthogonal (not blocking v1)
 - [ ] `TODO` (§8) Token-level llama.cpp `--model-draft` speculative decoding in `start.sh`
 
@@ -243,8 +276,9 @@ All surfaces live under `.claude/` and are committed, so they activate on a fres
 | Surface | Event | Effect | Toggle |
 |---|---|---|---|
 | `ensure-server.sh` | (called by hooks) | auto-launch optimal server if down (single-flight, non-blocking) | `SPEC_AUTOSTART=0` to disable |
-| `predict.sh` | UserPromptSubmit | inject cache-hit / branch-predicted / inline Gemma draft | always on (no-op when server down) |
-| `speculate.sh` | Stop | background: predict + pre-draft next turn | always on |
+| `predict.sh` | UserPromptSubmit | inject cache-hit / branch-predicted / easy-only inline draft; prewarm images named in the prompt | always on (no-op when server down) |
+| `speculate.sh` | Stop | background: predict + pre-draft next turn, **pre-execute safe read-only commands**, pre-OCR recent images | always on |
+| log offload | PreToolUse(Read) | `*.log`/`*.out` ≥64 KB → instant digest (exact head/tail + error-grep + async Gemma summary); offset/limit Reads pass raw | `SPEC_LOG_OFFLOAD=0` to disable |
 | `describe.sh` | PreToolUse(Read) | image → Gemma OCR/text, deny raw read (0 image tokens) | always on |
 | `review.sh` | PostToolUse(Write\|Edit) | Gemma second opinion on edited files | **off** — `export SPEC_REVIEW=1` |
 | `gemma-draft` skill | manual | deliberately ask Gemma (draft / OCR) | invoke by intent |
@@ -265,6 +299,7 @@ To run it live: just use Claude Code in this repo — the first prompt auto-star
 
 Newest first. One line per meaningful change; reference commits/tags.
 
+- `2026-06-10` — MX done (creative leverage, extended goal). Speculative read-only pre-execution (predicted "Commit the changes" → pre-ran git status+diff; allowlist unit-tested), large-log offload (347 KB → ~1K-token digest in 161ms, async Gemma summary, offset/limit escape hatch), token-savings estimator in /spec-stats. Evaluated-and-deferred ideas recorded so they aren't re-litigated. New R9/R10.
 - `2026-06-10` — MM done (async multimodal, per user request). Background image pre-OCR (path+mtime cache): prompt-mention + recent-files triggers; interception now instant on prewarmed images (162ms); image-mention prompts skip the inline draft (6.3s→110ms).
 - `2026-06-10` — MO done (token-efficiency review, prompted by a live wrong-draft injection). Easy-only + length-gated injection, consume-once + TTL caches, transcript-parse fix, agent-aware context-fed speculation drafts, terse wrappers. Hard path 3.7s→0.8s. New R8 (injection cost). Big tier now Fable 5.
 - `2026-06-10` — MA done + everything verified LIVE. `ensure-server.sh` auto-launches the optimal server (single-flight lock, setsid-detached, non-blocking) reusing `.gemma4-tuning` (cuda/65536/NCMOE=22) + `--image`; triggered from predict.sh/speculate.sh; kill switch + dry-run. Live: auto-start healthy in 38s (prompt returned 113ms); image OCR exact; branch-prediction hit 85% in 186ms. Fixed R6 (Gemma thinking ate the token budget → empty drafts; now `enable_thinking:false` by default) and measured R7 (inline draft ~3.7s).

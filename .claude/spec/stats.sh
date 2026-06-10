@@ -32,6 +32,12 @@ jq -rs '
   | ($imgs | map(select(.cached==true)) | length)                   as $nimgc
   | (map(select(.event=="image_prewarm")) | length)                 as $npre
   | ($imgs | map(.bytes // 0) | add // 0)                           as $ibytes
+  | (map(select(.event=="log_offload")))                            as $logs
+  | ($logs | length)                                                as $nlog
+  | ($logs | map(((.bytes // 0)/4 - 1000) | if . < 0 then 0 else . end) | add // 0 | floor) as $logsave
+  | ($nimg * 1000)                                                  as $imgsave
+  | (($hit + $bp) * 200)                                            as $hitsave
+  | ($logsave + $imgsave + $hitsave)                                as $totsave
   | def pct($n;$d): if $d>0 then (($n*1000/$d|floor)/10) else 0 end;
   "speculative-agent stats  (\($tot) prompts seen)",
   "────────────────────────────────────────────",
@@ -49,5 +55,8 @@ jq -rs '
   "    online  : \($hits)/\($online) = \(pct($hits;$online))%   (excludes offline turns)",
   "  background speculations  : \($spec)",
   "  image offloads           : \($nimg) (\($nimgc) instant from prewarm) · prewarms: \($npre)",
-  "  image bytes kept off the big model: ~\(($ibytes/1024)|floor) KB"
+  "  log digests              : \($nlog)",
+  "────────────────────────────────────────────",
+  "  est. big-model tokens kept off the bill: ~\($totsave)",
+  "    logs ~\($logsave) · images ~\($imgsave) · prediction hits ~\($hitsave)   (rough heuristics)"
 ' "$STATS_FILE"

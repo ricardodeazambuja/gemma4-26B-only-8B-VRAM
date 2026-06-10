@@ -28,6 +28,23 @@ do_ocr() {
 # ocr_cache_file <path> -> cache file path for this image at its current mtime.
 ocr_cache_file() { printf '%s/img_%s.json' "$CACHE_DIR" "$(spec_image_key "$1")"; }
 
+# --- prewarm-log mode: compute the Gemma log summary in the background -------
+if [ "${1:-}" = "--prewarm-log" ]; then
+  path="${2:-}"
+  [ -n "$path" ] && [ -f "$path" ] || exit 0
+  cfile="$CACHE_DIR/log_$(spec_image_key "$path").json"   # same path+mtime keying
+  [ -f "$cfile" ] && exit 0
+  spec_server_up || exit 0
+  sample="$(head -c 3000 "$path"; echo; echo '...[middle omitted]...'; tail -c 3000 "$path")"
+  LSYS='You summarize logs for a debugging agent. From this sample, state in <=6 terse
+bullets: what process/run this is, recurring patterns, and any anomalies. No restating raw lines.'
+  summary="$(SPEC_MAX_TOKENS=140 SPEC_TIMEOUT=45 "$SPEC_DIR/gemma.sh" --system "$LSYS" --temp 0.1 "$sample" 2>/dev/null || true)"
+  [ -n "$summary" ] || exit 0
+  jq -n --arg p "$path" --arg t "$summary" '{path:$p, text:$t}' > "$cfile" 2>/dev/null || true
+  spec_log "$(jq -cn --arg p "$path" '{event:"log_prewarm",path:$p}')"
+  exit 0
+fi
+
 # --- prewarm mode: fill the OCR cache in the background ----------------------
 if [ "${1:-}" = "--prewarm" ]; then
   path="${2:-}"
@@ -51,6 +68,50 @@ tool="$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null)"
 
 path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty' 2>/dev/null)"
 [ -n "$path" ] && [ -f "$path" ] || allow
+
+# --- Large-log offload: digest instead of raw dump --------------------------
+# A 1 MB log is ~250K input tokens for the big model, mostly repetition. Serve a
+# lossless-leaning digest instead: exact head/tail + deterministic error-grep
+# (+ a Gemma pattern summary when the server is up). ESCAPE HATCH: a Read with
+# offset/limit passes through untouched, so exact ranges are always reachable.
+if [ "${SPEC_LOG_OFFLOAD:-1}" = "1" ]; then
+  case "${path,,}" in
+    *.log|*.out)
+      has_range="$(printf '%s' "$input" | jq -r '(.tool_input.offset // .tool_input.limit // empty)' 2>/dev/null)"
+      sz="$(wc -c < "$path" 2>/dev/null || echo 0)"
+      if [ -z "$has_range" ] && [ "${sz:-0}" -ge $(( ${SPEC_LOG_MINKB:-64} * 1024 )) ]; then
+        nlines="$(wc -l < "$path" 2>/dev/null || echo '?')"
+        head_v="$(head -30 "$path")"
+        tail_v="$(tail -30 "$path")"
+        errs="$(grep -inE 'error|fail|exception|fatal|panic|traceback|warn' "$path" 2>/dev/null | head -40)"
+        # Async-first: use a cached Gemma summary if one exists; otherwise serve the
+        # deterministic digest NOW and compute the summary in the background for the
+        # next read (same pattern as image prewarm — never stall the Read on the GPU).
+        summary=""
+        lfile="$CACHE_DIR/log_$(spec_image_key "$path").json"
+        if [ -f "$lfile" ]; then
+          summary="$(jq -r '.text // empty' "$lfile" 2>/dev/null)"
+        else
+          setsid "$SPEC_DIR/describe.sh" --prewarm-log "$path" >/dev/null 2>&1 < /dev/null &
+        fi
+        spec_log "$(jq -cn --arg p "$path" --argjson b "$sz" '{event:"log_offload",path:$p,bytes:$b}')"
+        reason="[Large log digested locally (${sz} bytes, ${nlines} lines) — raw dump would burn ~$(( sz / 4 / 1000 ))K tokens. For exact ranges, Read again with offset/limit (passes through raw).]
+--- first 30 lines (verbatim) ---
+$head_v
+--- last 30 lines (verbatim) ---
+$tail_v
+--- error/warn lines (grep -in, first 40) ---
+${errs:-(none matched)}
+${summary:+--- Gemma pattern summary ---
+$summary}"
+        jq -cn --arg r "$reason" \
+          '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
+        exit 0
+      fi
+      ;;
+  esac
+fi
+
 spec_is_image "$path" || allow               # PDFs/notebooks/text stay with Claude
 
 # 1) Cache hit (prewarmed in the background) -> instant, no model call.
