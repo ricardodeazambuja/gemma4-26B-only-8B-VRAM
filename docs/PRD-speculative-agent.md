@@ -9,8 +9,9 @@
 |---|---|
 | **Branch** | `feat/spec-exec-branch-prediction` |
 | **Owner** | ricardodeazambuja |
-| **Status** | 🟢 Building — M0–M2 done, M3 next |
+| **Status** | 🟢 Building — M0–M2 + MI(images) done, M3 next |
 | **Last updated** | 2026-06-10 |
+| **Pending live tests** | Need `llama-server` up: predict.sh latency (R1), image offload OCR (MI). Tracked in board. |
 | **Host surface** | Claude Code (hooks → plugin) |
 | **Backends** | local `llama-server` (Gemma 4 26B-A4B QAT, :8080) + Claude Code / Opus |
 
@@ -44,6 +45,7 @@ turn an expensive Opus **generate** into a cheap Opus **accept/reject**.
 | Misprediction flush | Wrong guess → discard cached speculative result |
 | "Accept the draft" (the win) | Opus does a cheap **verify** instead of a full **generate** |
 | Predictor accuracy | **Hit rate** logged to `stats.jsonl`, viewed via `/spec-stats` |
+| Cheap pre-processing before the expensive unit | **Image → text** by Gemma so Opus pays no image tokens (G6) |
 
 ## 3. Goals / Non-goals
 
@@ -53,6 +55,9 @@ turn an expensive Opus **generate** into a cheap Opus **accept/reject**.
 - G3. Mispredictions are cheap and safe: discard-on-miss, never auto-apply destructive work.
 - G4. The branch-predictor **hit rate is measurable** and visible (`/spec-stats`).
 - G5. Ships first as raw hooks (fast iteration), then graduates to a distributable **plugin**.
+- **G6. (MUST) Multimodal image offload.** Gemma 4 is multimodal; any image is OCR'd/described by
+  the *local* tier and only the resulting **text** reaches Opus, so Opus never spends image tokens.
+  Enforced automatically; degrades safely (Gemma down → normal read, image not stranded).
 
 ### Non-goals
 - N1. Replacing Opus from a hook (impossible — hooks feed/​gate the turn, they don't pre-empt it).
@@ -120,6 +125,10 @@ gemma-spec-plugin/
   Never auto-apply writes. *(open: cache key — prompt hash only, or hash+cwd+git-HEAD?)*
 - **R4 — Server availability.** Hooks must degrade gracefully when `llama-server` is down (no draft,
   no error spam — just fall through to normal Opus).
+- **R5 — Image offload must never strand an image (G6).** If Gemma is down, the encode fails, or the
+  file isn't an image, the `PreToolUse(Read)` hook must **allow** the normal read. Only intercept when
+  Gemma can actually return text. *(open: also offload tool-produced images, e.g. screenshots, via
+  `PostToolUse` — deferred past v1.)*
 - **Q1** — Should `predict.sh` ever short-circuit trivial prompts entirely (Gemma answers, Opus skipped)?
   Default v1: no (N1). Revisit after measuring.
 - **Q2** — How to measure "accept vs misprediction" objectively without a human label? *(open)*
@@ -143,6 +152,14 @@ Legend: `TODO` · `DOING` · `DONE` · `BLOCKED` · `DROPPED`
 - [x] `DONE` Register `UserPromptSubmit` hook (in committed `.claude/settings.json`, not local — repo is the demo)
 - [x] `DONE` Verify hit / miss_offline / empty-prompt paths; latency stamped to stats (`ms`) for R1
   - Note: live latency measurement vs a running server is pending until the server is up (carried in M3 test).
+
+### Milestone MI — Multimodal image offload (MUST · G6)  ✅ DONE (live test pending server)
+- [x] `DONE` `gemma.sh --image <path>`: base64 + OpenAI vision content → Gemma returns OCR/description
+- [x] `DONE` `describe.sh` `PreToolUse(Read)` hook: image + Gemma up → **deny raw read**, hand Opus the text
+- [x] `DONE` Safe degrade (R5): Gemma down / not an image / non-Read / encode fails → **allow** normal Read (verified)
+- [x] `DONE` Register the `PreToolUse(Read)` hook; `image_offload` stat logs path + bytes saved
+- [x] `DONE` Tested: degrade-to-allow paths + deny-JSON payload shape valid
+- [ ] `TODO` LIVE test (needs server up): real image → denied + correct OCR text reaches Opus; bytes logged
 
 ### Milestone M3 — Background speculation (branch prediction)
 - [ ] `TODO` `speculate.sh`: predict next prompt, pre-compute read-only result → `cache/` (detached)
@@ -171,6 +188,7 @@ a second small GGUF. Speeds up every Gemma call above. Tracked, not required for
 
 Newest first. One line per meaningful change; reference commits/tags.
 
+- `2026-06-10` — MI done (multimodal image offload, MUST/G6, added per user request). `gemma.sh --image` (OpenAI vision), `describe.sh` PreToolUse(Read) hook denies image reads and hands Opus Gemma's OCR/text so Opus pays 0 image tokens. Safe-degrade (R5) verified for server-down/non-image/non-Read; deny-JSON shape verified. Live OCR test pending server. Next: M3.
 - `2026-06-10` — M2 done. `predict.sh` UserPromptSubmit hook: warm-cache HIT injects draft, cache MISS does a short inline classify+draft (server up), server-down/empty → silent no-op. Registered in committed `.claude/settings.json`. All paths log to stats.jsonl with latency. Next: M3 background speculation.
 - `2026-06-10` — M1 done. `lib.sh` + `gemma.sh` under `.claude/spec/`; graceful degradation verified (server down → exit 3, no noise); stats logging works. `.gitignore` updated. Next: M2 synchronous path.
 - `2026-06-09` — M0 done. Branch created, PRD authored as living tracker. Status: planning → ready to build M1.
