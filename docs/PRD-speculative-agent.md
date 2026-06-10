@@ -9,7 +9,7 @@
 |---|---|
 | **Branch** | `feat/spec-exec-branch-prediction` |
 | **Owner** | ricardodeazambuja |
-| **Status** | 🟢 Building — M0–M4 + MI(images) done, M5 next |
+| **Status** | 🟢 v1 feature-complete (M0–M5 + MI) — only live-server smoke tests remain |
 | **Last updated** | 2026-06-10 |
 | **Pending live tests** | Need `llama-server` up: predict.sh latency (R1), image OCR (MI), background predict+draft hit (M3). |
 | **Host surface** | Claude Code (hooks → plugin) |
@@ -174,10 +174,16 @@ Legend: `TODO` · `DOING` · `DONE` · `BLOCKED` · `DROPPED`
 - [x] `DONE` `/spec-stats` slash command (`.claude/commands/spec-stats.md`) runs it
 - [x] `DONE` Tested on empty + synthetic stream (3/5 overall, 3/4 online, 768 KB saved)
 
-### Milestone M5 — Optional helper & graduation
-- [ ] `TODO` `review.sh` `PostToolUse` hook (Gemma reviews Opus output)
-- [ ] `TODO` Graduate hooks → `gemma-spec-plugin/` and a deliberate `gemma-draft` skill
-- [ ] `TODO` Add `.gitignore` entries for `cache/` and `stats.jsonl`
+### Milestone M5 — Optional helper & graduation  ✅ DONE (packaging deferred by decision)
+- [x] `DONE` `review.sh` `PostToolUse(Write|Edit|MultiEdit)` hook (Gemma second opinion); OFF unless `SPEC_REVIEW=1`
+- [x] `DONE` Deliberate `gemma-draft` skill (`.claude/skills/gemma-draft/SKILL.md`) — manual "ask Gemma first" / OCR
+- [x] `DONE` `.gitignore` entries for `cache/` and `stats.jsonl` (landed in M1)
+- [x] `DROPPED→DEFERRED` Repackage into a standalone `gemma-spec-plugin/`. **Decision:** the committed
+  `.claude/` hooks+skill+command already provide all behavior and ship with the repo; a separate plugin
+  would only duplicate the 5 scripts to gain marketplace install. Revisit if we want to distribute it.
+  *Graduation steps when needed:* create `gemma-spec-plugin/.claude-plugin/plugin.json`, move
+  `.claude/spec/*` → `plugin/scripts/`, translate `settings.json` hooks → `plugin/hooks/hooks.json`
+  (use `${CLAUDE_PLUGIN_ROOT}`), move command + skill under the plugin, publish to a marketplace.
 
 ### Orthogonal (not blocking v1)
 - [ ] `TODO` (§8) Token-level llama.cpp `--model-draft` speculative decoding in `start.sh`
@@ -188,10 +194,32 @@ Independent of the agent harness: llama.cpp can run a small **draft GGUF** (`--m
 `--draft-max`) to speed up Gemma itself (draft+verify at the *token* level). One server-flag +
 a second small GGUF. Speeds up every Gemma call above. Tracked, not required for v1.
 
-## 9. Progress log
+## 9. Usage / enabling
+
+All surfaces live under `.claude/` and are committed, so they activate on a fresh clone
+(hooks reload at session start). They are **inert until `llama-server` is up** (R4/R5).
+
+| Surface | Event | Effect | Toggle |
+|---|---|---|---|
+| `predict.sh` | UserPromptSubmit | inject cache-hit / branch-predicted / inline Gemma draft | always on (no-op when server down) |
+| `speculate.sh` | Stop | background: predict + pre-draft next turn | always on |
+| `describe.sh` | PreToolUse(Read) | image → Gemma OCR/text, deny raw read (0 image tokens) | always on |
+| `review.sh` | PostToolUse(Write\|Edit) | Gemma second opinion on edited files | **off** — `export SPEC_REVIEW=1` |
+| `gemma-draft` skill | manual | deliberately ask Gemma (draft / OCR) | invoke by intent |
+| `/spec-stats` | command | branch-prediction hit rate + image KB saved | run on demand |
+
+Key env knobs (all optional): `SPEC_HOST`/`SPEC_PORT`/`SPEC_MODEL` (server),
+`SPEC_PREDICT_MAX` (inline draft tokens), `SPEC_MATCH_MIN` (hit threshold %),
+`SPEC_IMAGE_MAX`/`SPEC_IMAGE_TIMEOUT` (image OCR), `SPEC_REVIEW=1` (enable review).
+
+To run it live: `bash scripts/start.sh` (brings up llama-server + pi), then use Claude Code
+in this repo; watch `/spec-stats` climb.
+
+## 10. Progress log
 
 Newest first. One line per meaningful change; reference commits/tags.
 
+- `2026-06-10` — M5 done + v1 feature-complete. `review.sh` PostToolUse second-opinion hook (off unless `SPEC_REVIEW=1`); `gemma-draft` skill for deliberate use; added §9 Usage. Plugin repackaging deferred by decision (committed `.claude/` already ships the behavior). Remaining: live-server smoke tests only.
 - `2026-06-10` — M4 done. `stats.sh` summarizes predictor accuracy (overall + online hit rate, avg fuzzy-match %, background speculations, image KB saved) from stats.jsonl; `/spec-stats` slash command wraps it. Verified on synthetic stream. Next: M5 (review.sh + plugin graduation).
 - `2026-06-10` — M3 done. `speculate.sh` Stop hook detaches a setsid worker that predicts the next request and pre-drafts it into `cache/` + `last_prediction.json`; hook returns ~12ms (non-blocking). `predict.sh` matches the real next prompt via lexical Jaccard (`spec_similarity`, threshold `SPEC_MATCH_MIN`) → `hit_predicted` with score. Verified with mocks. Next: M4 observability.
 - `2026-06-10` — MI done (multimodal image offload, MUST/G6, added per user request). `gemma.sh --image` (OpenAI vision), `describe.sh` PreToolUse(Read) hook denies image reads and hands Opus Gemma's OCR/text so Opus pays 0 image tokens. Safe-degrade (R5) verified for server-down/non-image/non-Read; deny-JSON shape verified. Live OCR test pending server. Next: M3.
