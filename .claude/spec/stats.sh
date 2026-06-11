@@ -26,6 +26,10 @@ jq -rs '
   | ([ $p[] | select(.result=="hit_predicted") | .score ])          as $scores
   | (if ($scores|length)>0 then ($scores|add/(($scores|length))|floor) else 0 end) as $avg
   | ($p | c(.result=="miss_image_prewarm"))                         as $mi
+  | ($p | c(.result=="miss_verb_gate"))                             as $vg
+  | (map(select(.event=="outcome")))                                as $o
+  | ($o | c(.verdict=="accepted"))                                  as $acc
+  | ($o | c(.verdict=="superseded"))                                as $sup
   | (map(select(.event=="speculate")) | length)                     as $spec
   | (map(select(.event=="image_offload")))                          as $imgs
   | ($imgs | length)                                                as $nimg
@@ -47,12 +51,16 @@ jq -rs '
   "  hard — left to big model : \($mh)",
   "  long — inline skipped    : \($ms)",
   "  image — prewarm instead  : \($mi)",
+  "  verb-gated (overlap, ≠verb): \($vg)",
   "  no draft  (miss)         : \($mn)",
   "  offline   (server down)  : \($off)",
   "────────────────────────────────────────────",
   "  BRANCH-PREDICTION HIT RATE",
   "    overall : \($hits)/\($tot) = \(pct($hits;$tot))%",
   "    online  : \($hits)/\($online) = \(pct($hits;$online))%   (excludes offline turns)",
+  "  DRAFT OUTCOMES (containment heuristic)",
+  "    accepted : \($acc) · superseded : \($sup)" +
+    (if ($acc+$sup)>0 then "   (\(pct($acc;$acc+$sup))% accepted)" else "   (none judged yet)" end),
   "  background speculations  : \($spec)",
   "  image offloads           : \($nimg) (\($nimgc) instant from prewarm) · prewarms: \($npre)",
   "  log digests              : \($nlog)",

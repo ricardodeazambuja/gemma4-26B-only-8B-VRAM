@@ -19,7 +19,6 @@ source "$(dirname -- "$SELF")/lib.sh"
 if [ "${1:-}" = "--worker" ]; then
   in_file="$2"
   trap 'rm -f "$in_file"' EXIT
-  spec_server_up || exit 0                      # nothing to speculate with
 
   # Run where the session runs (hooks pass cwd) — keeps find/pre-exec project-scoped.
   hook_cwd="$(jq -r '.cwd // empty' "$in_file" 2>/dev/null)"
@@ -43,6 +42,27 @@ if [ "${1:-}" = "--worker" ]; then
           elif type=="string" then . else "" end
         | select(length > 0) ] | last // ""' "$transcript" 2>/dev/null)"
   [ -n "$last_user$last_asst" ] || exit 0
+
+  # 0) Outcome of the draft injected THIS turn (PRD Q2): did the big model accept it
+  # (its answer reuses most of the draft's words — crude containment heuristic) or
+  # supersede it? No model call, no server needed. Consume-once via mv.
+  if [ -f "$PENDING_OUTCOME" ]; then
+    po_tmp="$(mktemp 2>/dev/null)" || po_tmp=""
+    if [ -n "$po_tmp" ] && mv -f "$PENDING_OUTCOME" "$po_tmp" 2>/dev/null; then
+      po_draft="$(jq -r '.draft // empty' "$po_tmp" 2>/dev/null)"
+      po_key="$(jq -r '.key   // empty' "$po_tmp" 2>/dev/null)"
+      po_src="$(jq -r '.src   // empty' "$po_tmp" 2>/dev/null)"
+      if [ -n "$po_draft" ] && [ -n "$last_asst" ]; then
+        cont="$(spec_containment "$po_draft" "$last_asst")"
+        if [ "${cont:-0}" -ge "${SPEC_ACCEPT_MIN:-60}" ]; then verdict=accepted; else verdict=superseded; fi
+        spec_log "$(jq -cn --arg k "$po_key" --arg s "$po_src" --argjson c "${cont:-0}" --arg v "$verdict" \
+          '{event:"outcome",key:$k,src:$s,containment:$c,verdict:$v}')"
+      fi
+      rm -f "$po_tmp"
+    fi
+  fi
+
+  spec_server_up || exit 0                      # nothing to speculate with
 
   # 1) Predict the next user request (one short line).
   PSYS='Given the last exchange in a coding session, predict the user'\''s single most likely NEXT
@@ -91,10 +111,10 @@ ${out_c}
               "git diff --stat" \
               "git log --oneline -8")
   fi
+  # Kept SEPARATE from the draft (predict.sh injects both): the outcome heuristic
+  # measures draft-word containment, and git output in the draft would skew it.
   if [ -n "$obs" ]; then
-    draft="${draft}
-
-[repo state, pre-fetched while idle — re-run if staleness matters:]
+    obs="[repo state, pre-fetched while idle — re-run if staleness matters:]
 ${obs}"
   fi
 
@@ -108,9 +128,10 @@ ${obs}"
 
   # 3) Store: a fuzzy-match record (last_prediction) + an exact-hash cache entry.
   key="$(spec_hash "$predicted")"
-  jq -n --arg p "$predicted" --arg d "$draft" --arg k "$key" \
-    '{predicted:$p, draft:$d, key:$k, kind:"next-turn draft"}' > "$LAST_PREDICTION" 2>/dev/null || true
-  jq -n --arg d "$draft" '{draft:$d, kind:"next-turn draft"}' > "$(spec_cache_path "$key")" 2>/dev/null || true
+  jq -n --arg p "$predicted" --arg d "$draft" --arg o "$obs" --arg k "$key" \
+    '{predicted:$p, draft:$d, obs:$o, key:$k, kind:"next-turn draft"}' > "$LAST_PREDICTION" 2>/dev/null || true
+  jq -n --arg d "$draft" --arg o "$obs" \
+    '{draft:$d, obs:$o, kind:"next-turn draft"}' > "$(spec_cache_path "$key")" 2>/dev/null || true
   spec_log "$(jq -cn --arg p "$predicted" --arg k "$key" '{event:"speculate",predicted:$p,key:$k}')"
   exit 0
 fi

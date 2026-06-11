@@ -49,17 +49,34 @@ done < <(printf '%s\n' "$prompt" | grep -oE '(~|\.{1,2})?/?[A-Za-z0-9._/-]+\.(pn
 # masquerade as fresh work (R3), and consume entries on use so a hit can't re-fire.
 spec_expire_cache
 
+# record_outcome <src> <draft> — stash what we injected so the Stop worker can
+# judge accepted-vs-superseded against the assistant's actual answer (PRD Q2).
+record_outcome() {
+  jq -n --arg k "$key" --arg src "$1" --arg d "$2" \
+    '{key:$k, src:$src, draft:$d}' > "$PENDING_OUTCOME" 2>/dev/null || true
+}
+
 # --- 1. Warm-cache hit (branch prediction paid off) ------------------------
 if [ -f "$cache_file" ]; then
   draft="$(jq -r '.draft // empty' "$cache_file" 2>/dev/null)"
+  obs="$(jq -r '.obs   // empty' "$cache_file" 2>/dev/null)"
   kind="$(jq -r '.kind  // "draft"' "$cache_file" 2>/dev/null)"
   rm -f "$cache_file"                          # consume-once
+  # The fuzzy record holds the SAME draft when its key matches — clear it too, or a
+  # later vaguely-similar prompt would re-inject (and re-count) this consumed hit.
+  if [ -f "$LAST_PREDICTION" ] && \
+     [ "$(jq -r '.key // empty' "$LAST_PREDICTION" 2>/dev/null)" = "$key" ]; then
+    rm -f "$LAST_PREDICTION"
+  fi
   if [ -n "$draft" ]; then
     spec_log "$(jq -cn --arg k "$key" --arg kind "$kind" \
       '{event:"predict",result:"hit",key:$k,kind:$kind}')"
+    record_outcome "hit" "$draft"
     cat <<EOF
 [Gemma pre-computed this ($kind) — verify, use what's right, supersede the rest:]
-$draft
+$draft${obs:+
+
+$obs}
 EOF
     exit 0
   fi
@@ -69,17 +86,29 @@ fi
 if [ -f "$LAST_PREDICTION" ]; then
   predicted="$(jq -r '.predicted // empty' "$LAST_PREDICTION" 2>/dev/null)"
   pdraft="$(jq -r '.draft // empty' "$LAST_PREDICTION" 2>/dev/null)"
+  pobs="$(jq -r '.obs    // empty' "$LAST_PREDICTION" 2>/dev/null)"
   if [ -n "$predicted" ] && [ -n "$pdraft" ]; then
     score="$(spec_similarity "$prompt" "$predicted")"
     if [ "${score:-0}" -ge "$SPEC_MATCH_MIN" ]; then
-      rm -f "$LAST_PREDICTION" "$(spec_cache_path "$(spec_hash "$predicted")")"   # consume-once
-      spec_log "$(jq -cn --arg k "$key" --argjson s "${score:-0}" --arg p "$predicted" \
-        '{event:"predict",result:"hit_predicted",key:$k,score:$s,predicted:$p}')"
-      cat <<EOF
+      # Verb gate: word-set overlap can't tell "delete X" from "show X" (both ≥34%
+      # on the same X). Require the lead word to match too, unless disabled.
+      lw_a="$(spec_lead_word "$prompt")"; lw_b="$(spec_lead_word "$predicted")"
+      if [ "${SPEC_MATCH_VERB:-1}" = "1" ] && [ -n "$lw_a" ] && [ -n "$lw_b" ] && [ "$lw_a" != "$lw_b" ]; then
+        spec_log "$(jq -cn --arg k "$key" --argjson s "${score:-0}" --arg a "$lw_a" --arg b "$lw_b" \
+          '{event:"predict",result:"miss_verb_gate",key:$k,score:$s,prompt_verb:$a,predicted_verb:$b}')"
+      else
+        rm -f "$LAST_PREDICTION" "$(spec_cache_path "$(spec_hash "$predicted")")"   # consume-once
+        spec_log "$(jq -cn --arg k "$key" --argjson s "${score:-0}" --arg p "$predicted" \
+          '{event:"predict",result:"hit_predicted",key:$k,score:$s,predicted:$p}')"
+        record_outcome "hit_predicted" "$pdraft"
+        cat <<EOF
 [Gemma predicted this request (${score}% match) and pre-drafted — verify, supersede if wrong:]
-$pdraft
+$pdraft${pobs:+
+
+$pobs}
 EOF
-      exit 0
+        exit 0
+      fi
     fi
   fi
 fi
@@ -130,6 +159,7 @@ draft_line="$(printf '%s' "$out" | sed -n 's/^DRAFT:[[:space:]]*//Ip' | head -c 
 if [ "${diff_line%%[ |]*}" = "easy" ] && [ -n "$draft_line" ]; then
   spec_log "$(jq -cn --arg k "$key" --argjson ms "$elapsed" \
     '{event:"predict",result:"miss_drafted",key:$k,difficulty:"easy",ms:$ms}')"
+  record_outcome "miss_drafted" "$draft_line"
   cat <<EOF
 [Gemma judged this easy and drafted (${elapsed}ms) — if correct, confirm it instead of redoing the work:]
 $draft_line

@@ -9,7 +9,7 @@
 |---|---|
 | **Branch** | `feat/spec-exec-branch-prediction` |
 | **Owner** | ricardodeazambuja |
-| **Status** | 🟢 v2: M0–M5, MI, MA, MO, MM, MX — all live-verified |
+| **Status** | 🟢 v2: M0–M5, MI, MA, MO, MM, MX — all live-verified · MH (post-review hardening) done |
 | **Last updated** | 2026-06-10 (overnight session) |
 | **Live-verified** | Auto-start (cuda/65536/NCMOE=22/--image, 38s, non-blocking 113ms); predict draft 3.7s; image OCR exact; branch-prediction hit 85% in 186ms. |
 | **Host surface** | Claude Code (hooks → plugin) |
@@ -128,7 +128,10 @@ gemma-spec-plugin/
 - **R5 — Image offload must never strand an image (G6).** If Gemma is down, the encode fails, or the
   file isn't an image, the `PreToolUse(Read)` hook must **allow** the normal read. Only intercept when
   Gemma can actually return text. *(open: also offload tool-produced images, e.g. screenshots, via
-  `PostToolUse` — deferred past v1.)*
+  `PostToolUse` — deferred past v1.)* **MH addition:** "strand" also covers OCR that *succeeds but
+  is insufficient* (dense diagram, layout matters) — now a Read with offset/limit passes the raw image
+  through (same escape hatch as logs, advertised in the deny reason), and `SPEC_IMAGE_OFFLOAD=0` is a
+  kill switch. Offload stays the default (G6 unchanged).
 - **R6 — Reasoning must be OFF for the draft tier (solved).** Gemma 4 QAT ships with thinking on
   (`--jinja`, `thinking=1`); under small token budgets the whole budget goes to `reasoning_content` and
   `message.content` comes back EMPTY → every draft was a no-op. Fixed in `gemma.sh` by sending
@@ -153,7 +156,12 @@ gemma-spec-plugin/
   `head /etc/passwd` / `cat ~/.ssh/id_rsa` produced only git output, no leakage.
 - **Q1** — Should `predict.sh` ever short-circuit trivial prompts entirely (Gemma answers, Opus skipped)?
   Default v1: no (N1). Revisit after measuring.
-- **Q2** — How to measure "accept vs misprediction" objectively without a human label? *(open)*
+- **Q2** — How to measure "accept vs misprediction" objectively without a human label?
+  *(crudely answered in MH)*: the Stop worker compares the injected draft against the assistant's
+  final text with word **containment** (≥ `SPEC_ACCEPT_MIN`, default 60% → `accepted`, else
+  `superseded`) and logs an `outcome` event; `/spec-stats` reports the acceptance rate. Heuristic,
+  clearly labeled — a real signal would need the big model to self-report. Still open for a better
+  measure.
 
 ## 7. Status board
 
@@ -263,6 +271,27 @@ exact data (head/tail/grep), a drill-down escape hatch, or is advisory-only.
 - **Session-start git brief**: redundant — Claude Code already injects gitStatus at session start.
 - **Commit-message drafting by Gemma**: negligible savings, style risk.
 
+### Milestone MH — Post-review hardening (balanced code review, 2026-06-10)  ✅ DONE
+Five findings from a full-system review; all fixes respect the original goals (G2/G6/R1/R5/R9 patterns).
+- [x] `DONE` Consume-once gap closed: an EXACT cache hit now also clears `last_prediction.json` when its
+  key matches — the same draft can no longer re-inject via a later fuzzy match (or double-count as a hit)
+- [x] `DONE` Verb gate on fuzzy hits: Jaccard overlap is blind to WHICH word differs ("delete the tests" vs
+  "show the tests" = 66% ≥ 34% threshold — verified live). Now the lead word (the imperative verb, filler
+  skipped) must also match; logged as `miss_verb_gate`; `SPEC_MATCH_VERB=0` restores old behavior
+- [x] `DONE` Image offload kill switch + escape hatch (R5 parity with logs): `SPEC_IMAGE_OFFLOAD=0`
+  disables; a Read with offset/limit passes the raw image through; deny reason advertises the hatch.
+  Default unchanged (G6 still enforced automatically)
+- [x] `DONE` Binary guard on the log digest: `*.out` also matches compiled binaries — a NUL byte in the
+  first 4 KB now passes the read through untouched (text `.out` logs still digest)
+- [x] `DONE` Draft outcome tracking (Q2): `predict.sh` stashes each injected draft (`pending_outcome.json`);
+  the Stop worker (no server needed, off critical path per G2) judges accepted/superseded by word
+  containment vs the assistant's answer (`SPEC_ACCEPT_MIN`, default 60%); `/spec-stats` shows acceptance
+  rate. Repo-state pre-exec output now stored as a separate `obs` field so git noise can't skew the metric
+- [x] `DONE` Tested: lead-word/containment units; exact-hit consumes both records + writes pending; verb
+  gate blocks antonyms / passes same-verb / env-disableable; binary `.out` passes, 100 KB text `.out`
+  digests; `SPEC_IMAGE_OFFLOAD=0` + offset hatch + server-down degrade all allow; outcome accepted(100%)
+  / superseded(0%) logged; stats renders the new sections
+
 ### Orthogonal (not blocking v1)
 - [ ] `TODO` (§8) Token-level llama.cpp `--model-draft` speculative decoding in `start.sh`
 
@@ -290,6 +319,9 @@ All surfaces live under `.claude/` and are committed, so they activate on a fres
 
 Key env knobs (all optional): `SPEC_HOST`/`SPEC_PORT`/`SPEC_MODEL` (server),
 `SPEC_PREDICT_MAX` (inline draft tokens), `SPEC_MATCH_MIN` (hit threshold %),
+`SPEC_MATCH_VERB=0` (drop the lead-word gate on fuzzy hits), `SPEC_ACCEPT_MIN`
+(outcome containment %, default 60), `SPEC_IMAGE_OFFLOAD=0` (disable image offload;
+offset/limit Reads always pass raw),
 `SPEC_IMAGE_MAX`/`SPEC_IMAGE_TIMEOUT` (image OCR), `SPEC_REVIEW=1` (enable review),
 `SPEC_THINK=1` (re-enable Gemma reasoning; off by default), `SPEC_AUTOSTART=0` (disable
 auto-launch), `SPEC_AUTOSTART_DRYRUN=1` (show the resolved launch, don't launch),
@@ -303,6 +335,7 @@ To run it live: just use Claude Code in this repo — the first prompt auto-star
 
 Newest first. One line per meaningful change; reference commits/tags.
 
+- `2026-06-10` — MH done (post-review hardening from a balanced full-system review). Exact-hit now consumes the fuzzy record too (no double-injection); verb gate on fuzzy hits (antonym prompts scored 50–66% Jaccard — verified — and would have injected wrong-direction drafts); image offload gets `SPEC_IMAGE_OFFLOAD=0` + offset/limit raw-pixel escape hatch (G6 default unchanged); NUL-check stops `*.out` binaries reaching the log digest; accepted/superseded outcome tracking via word containment answers Q2 crudely (`/spec-stats` shows acceptance rate; repo-state obs stored separately so it can't skew the metric). All paths tested offline.
 - `2026-06-10` — SECURITY FIX (automated commit review, HIGH): the MX pre-execution let Gemma propose commands from an allowlist → prompt-injection arbitrary-file-disclosure (`head /etc/passwd` passed). Replaced with a FIXED hard-coded git-status command set; the model now chooses nothing and no transcript text reaches a shell. Verified a malicious transcript leaks nothing. R10 updated.
 - `2026-06-10` — MX done (creative leverage, extended goal). Speculative read-only pre-execution (predicted "Commit the changes" → pre-ran git status+diff; allowlist unit-tested), large-log offload (347 KB → ~1K-token digest in 161ms, async Gemma summary, offset/limit escape hatch), token-savings estimator in /spec-stats. Evaluated-and-deferred ideas recorded so they aren't re-litigated. New R9/R10.
 - `2026-06-10` — MM done (async multimodal, per user request). Background image pre-OCR (path+mtime cache): prompt-mention + recent-files triggers; interception now instant on prewarmed images (162ms); image-mention prompts skip the inline draft (6.3s→110ms).

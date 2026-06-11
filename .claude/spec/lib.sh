@@ -53,6 +53,10 @@ spec_cache_path() {
 # Where speculate.sh records its single most-recent next-turn prediction.
 LAST_PREDICTION="$CACHE_DIR/last_prediction.json"
 
+# Where predict.sh records the draft it injected this turn, so the Stop worker can
+# judge (crudely) whether the big model accepted or superseded it (PRD Q2).
+PENDING_OUTCOME="$CACHE_DIR/pending_outcome.json"
+
 # Speculative results go stale fast (the repo moves on). Drop cache entries older
 # than this many minutes (R3). Cheap: one find per prompt.
 SPEC_CACHE_TTL_MIN="${SPEC_CACHE_TTL_MIN:-120}"
@@ -87,5 +91,39 @@ spec_similarity() {
     u=0; for(k in uni)u++
     if(u==0){print 0; exit}
     printf "%d", (inter*100)/u
+  }'
+}
+
+# spec_lead_word <text> -> first meaningful word, lowercased (the verb in an
+# imperative request), skipping politeness/filler. Jaccard overlap is blind to
+# WHICH word differs — "delete the tests" vs "show the tests" scores 66% — so
+# predict.sh additionally requires the lead words to match (SPEC_MATCH_VERB=0
+# disables the gate).
+spec_lead_word() {
+  awk -v s="$1" 'BEGIN{
+    n=split(tolower(s), W, /[^a-z0-9]+/)
+    for(i=1;i<=n;i++){
+      w=W[i]
+      if(w=="" || w=="please" || w=="now" || w=="ok" || w=="okay" || w=="just" ||
+         w=="can" || w=="could" || w=="you" || w=="lets" || w=="let" || w=="us" ||
+         w=="then" || w=="next" || w=="also" || w=="and" || w=="go" || w=="ahead")
+        continue
+      print w; exit
+    }
+  }'
+}
+
+# spec_containment <needle> <haystack> -> integer 0..100: % of needle's words that
+# appear in haystack. Asymmetric on purpose — "did the long answer reuse the short
+# draft's content?" is containment, not Jaccard (the answer's extra words would
+# drown the union). Used by the outcome heuristic (accepted vs superseded).
+spec_containment() {
+  awk -v a="$1" -v b="$2" 'BEGIN{
+    n=split(tolower(a),A," "); m=split(tolower(b),B," ");
+    for(i=1;i<=n;i++){gsub(/[^a-z0-9]/,"",A[i]); if(A[i]!="")sa[A[i]]=1}
+    for(i=1;i<=m;i++){gsub(/[^a-z0-9]/,"",B[i]); if(B[i]!="")sb[B[i]]=1}
+    t=0; c=0; for(k in sa){t++; if(k in sb)c++}
+    if(t==0){print 0; exit}
+    printf "%d", (c*100)/t
   }'
 }

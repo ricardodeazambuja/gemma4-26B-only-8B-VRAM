@@ -77,6 +77,10 @@ path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty' 2>/dev/nul
 if [ "${SPEC_LOG_OFFLOAD:-1}" = "1" ]; then
   case "${path,,}" in
     *.log|*.out)
+      # *.out also matches compiled binaries (a.out style) — digesting one would
+      # serve garbage. NUL byte in the first 4 KB -> not a text log, pass through.
+      nul="$(head -c 4096 "$path" 2>/dev/null | tr -cd '\0' | wc -c)"
+      [ "${nul:-0}" -gt 0 ] && allow
       has_range="$(printf '%s' "$input" | jq -r '(.tool_input.offset // .tool_input.limit // empty)' 2>/dev/null)"
       sz="$(wc -c < "$path" 2>/dev/null || echo 0)"
       if [ -z "$has_range" ] && [ "${sz:-0}" -ge $(( ${SPEC_LOG_MINKB:-64} * 1024 )) ]; then
@@ -114,6 +118,15 @@ fi
 
 spec_is_image "$path" || allow               # PDFs/notebooks/text stay with Claude
 
+# Kill switch + escape hatch (parity with the log offload, R5): offload stays the
+# default (G6), but SPEC_IMAGE_OFFLOAD=0 disables it, and a Read with offset/limit
+# passes through raw — the way to see the actual pixels when the OCR text isn't
+# enough (e.g. a dense diagram). Without this, a poor OCR is cached by path+mtime
+# and the image is unreachable.
+[ "${SPEC_IMAGE_OFFLOAD:-1}" = "1" ] || allow
+img_range="$(printf '%s' "$input" | jq -r '(.tool_input.offset // .tool_input.limit // empty)' 2>/dev/null)"
+[ -n "$img_range" ] && allow
+
 # 1) Cache hit (prewarmed in the background) -> instant, no model call.
 cfile="$(ocr_cache_file "$path")"
 cached=false
@@ -134,7 +147,7 @@ bytes="$(wc -c < "$path" 2>/dev/null || echo 0)"
 spec_log "$(jq -cn --arg p "$path" --argjson b "${bytes:-0}" --argjson c "$cached" \
   '{event:"image_offload",path:$p,bytes:$b,cached:$c}')"
 
-reason="[Gemma read this image locally (cached: $cached) — use this text as its contents; no image tokens spent.]
+reason="[Gemma read this image locally (cached: $cached) — use this text as its contents; no image tokens spent. If the text is insufficient (dense diagram, layout matters), Read again with any offset/limit to get the actual image.]
 File: $path
 $desc"
 
