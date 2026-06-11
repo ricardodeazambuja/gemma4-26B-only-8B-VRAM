@@ -157,3 +157,25 @@ interesting again.
 (`patches/diffusion-cli-jsonl-mode.patch`, upstreamable), the shim pattern
 (any future diffusion arch with server-less support can reuse it), the
 OOM-abort finding worth reporting on PR #24423, and these measurements.
+
+## Lessons Learned & System Integration Updates (June 2026)
+
+During active deployment and testing on the RTX 2070 8 GB VRAM GPU, we discovered critical bottlenecks and resolved them as follows:
+
+### 1. The Double-OOM Buffering Wall
+* **Graph Compute Buffer OOM:** When generating at the default canvas size `-n 1024`, `llama-diffusion-cli` allocates a massive **3.14 GB** compute buffer for parallel denoising. When combined with offloaded experts (e.g. `NCMOE=22`), the static model plus this buffer instantly overflows 8 GB cards. 
+  * **Fix:** We reduced the default canvas size parameter from `-n 1024` to **`-n 512`** in [run-diffusion-shim.sh](file:///home/ricardodeazambuja/backup/GitStuff/Gemma4-diffusion/scripts/run-diffusion-shim.sh). This halves the compute buffer to **~1.5 GB**, reclaiming over **1.6 GB of VRAM** and allowing several expert layers (`NCMOE=27` or `28`) to fit on the GPU.
+* **Inference-Time Lazy Allocation OOM:** The CLI allocates a **256 MiB** self-conditioning buffer (`sc_dev_buf`) on the *first turn*. This means a model can load successfully but crash with a hard assertion (`GGML_ASSERT(m.sc_dev_buf != nullptr)`) as soon as the first prompt is sent.
+  * **Fix:** Keep NCMOE at **`28`** or higher to leave at least 400+ MiB of VRAM headroom, or run with `--diffusion-gpu-sampling off` (disabling device-resident self-conditioning).
+
+### 2. Process Management & VRAM Leaks
+* **Orphaned CLI Processes:** When the Node HTTP shim server exits or crashes, the child `llama-diffusion-cli` can sometimes be orphaned. Since the child doesn't listen on a network port, port-based checks did not detect it, leaving a stale model process consuming **7.7 GB of VRAM**.
+  * **Fix:** Adapted [stop-server.sh](file:///home/ricardodeazambuja/backup/GitStuff/Gemma4-diffusion/scripts/stop-server.sh) to automatically run a process-reaping command (`pkill -f "llama-diffusion-cli"`) whenever you stop the diffusion server.
+
+### 3. Worktree Resource Sharing
+* **Binary & Model Paths:** As a separate Git worktree, the `Gemma4-diffusion` directory lacked the compiled `vendor/llama.cpp` CUDA backend and the `models/` weight directories, causing the script to default to Vulkan and fail to find the GGUF models.
+  * **Fix:** Symlinked the main checkout's `models/` and `vendor/llama.cpp/` folders to the worktree to share models and CUDA build outputs seamlessly without duplicating disk storage.
+
+### 4. Client Context Compaction Loop
+* **Models Sync:** If `pi`’s local `models.json` context window is smaller than the prompt, it goes into an infinite compaction loop.
+  * **Fix:** Adapted [configure-pi.sh](file:///home/ricardodeazambuja/backup/GitStuff/Gemma4-diffusion/scripts/configure-pi.sh) to support updating the context window for any provider via `PROVIDER=diffusion`, and wired `start.sh` to sync the window automatically during startup.

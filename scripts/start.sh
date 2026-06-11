@@ -13,6 +13,7 @@
 #   CTX=32768 bash scripts/start.sh
 #   bash scripts/start.sh --image                     # forwarded to the server
 #   CTX=131072 KVQUANT=q8_0 bash scripts/start.sh      # quantized KV for long context
+#   bash scripts/start.sh --diffusion                 # run the experimental block-diffusion model
 #   bash scripts/start.sh -p "summarize @README.md"   # other args go to pi
 #
 # Prefer a guided walk-through over remembering env vars?
@@ -158,13 +159,19 @@ _menu_yesno() {
 
 # Ask for a context size; export CTX (suggests common values; defaults to 32768).
 _menu_ask_ctx() {
+  local default_ctx=32768
+  local common_suggestions="16384   32768   65536   131072 (128K)"
+  if [ "${DIFFUSION:-0}" = 1 ]; then
+    default_ctx=4096
+    common_suggestions="1024    2048    4096"
+  fi
   echo "   Context size, in tokens — bigger = more room for history, but more VRAM."
-  echo "     common: 16384   32768   65536   131072 (128K)"
-  _menu_text "   CTX [default 32768]: " 32768
+  echo "     common: $common_suggestions"
+  _menu_text "   CTX [default $default_ctx]: " "$default_ctx"
   if [[ "$MENU_REPLY" =~ ^[0-9]+$ ]]; then
     export CTX="$MENU_REPLY"
   else
-    echo "   ↳ not a whole number — using 32768."; export CTX=32768
+    echo "   ↳ not a whole number — using $default_ctx."; export CTX="$default_ctx"
   fi
 }
 
@@ -174,9 +181,22 @@ configure_menu() {
   echo
   local _menu_strategy
 
-  # 1) Backend ---------------------------------------------------------------
+  # 1) Model Type (Standard vs Diffusion) ------------------------------------
+  echo "1) Model Type  —  autoregressive vs block-diffusion"
+  echo "     1) standard   Gemma 4 26B-A4B QAT (autoregressive, default)"
+  echo "     2) diffusion  DiffusionGemma 26B-A4B (experimental block-diffusion)"
+  _menu_choice "   choice [1-2, default 1]: " 1 2
+  if [ "$MENU_REPLY" = 2 ]; then
+    export DIFFUSION=1
+    export PORT=8082
+  else
+    export DIFFUSION=0
+  fi
+
+  # 2) Backend ---------------------------------------------------------------
+  echo
   local detected; detected="$(resolve_backend)"
-  echo "1) Backend  —  the compute path  (auto-detected: $detected)"
+  echo "2) Backend  —  the compute path  (auto-detected: $detected)"
   echo "     1) auto    use the detected backend ($detected)"
   echo "     2) cuda    NVIDIA GPU, fast path (needs the CUDA build)"
   echo "     3) vulkan  any GPU, slower MoE path"
@@ -190,48 +210,57 @@ configure_menu() {
   esac
   local BE; BE="$(resolve_backend)"
 
-  # 2) Context & expert split: automatic vs manual ---------------------------
-  echo
-  echo "2) Context & expert split  —  how to size context and place experts"
-  echo "     1) auto-tune  measure the fastest split that fits on YOUR GPU (recommended)"
-  echo "     2) manual     I'll pick the context and expert split myself"
-  _menu_choice "   choice [1-2, default 1]: " 1 2
-  if [ "$MENU_REPLY" = 2 ]; then _menu_strategy=manual; else _menu_strategy=auto; fi
-
-  if [ "$_menu_strategy" = auto ]; then
-    # Reuse a saved tuned result if present, else MEASURE. The user explicitly
-    # opted into auto-tuning here, so TUNE_YES tells the block below to skip its
-    # "Run auto-tuning now? [y/N]" prompt (whose default-No would otherwise be a
-    # sticky 'declined' on the no-cache path — e.g. the recommended q8_0 one).
-    unset AUTOTUNE || true
-    TUNE_YES=1
+  # 3) Context & expert split ------------------------------------------------
+  if [ "${DIFFUSION:-0}" = 1 ]; then
+    _menu_strategy=manual
     echo
-    echo "   ⏳ Heads-up: the FIRST time, auto-tuning launches the server several"
-    echo "      times to measure what fits — a few minutes (longer for a sweep)."
-    echo "      The result is saved, so every later launch is instant."
-    echo "     1) sweep several contexts, then let me pick which to launch (default)"
-    echo "     2) auto-tune the expert split for ONE context I choose"
-    _menu_choice "   choice [1-2, default 1]: " 1 2
-    if [ "$MENU_REPLY" = 2 ]; then
-      _menu_ask_ctx; CTX_EXPLICIT=1
-    else
-      CTX_EXPLICIT=0                        # CTX stays the default; the sweep picks
-    fi
-  else
-    _menu_ask_ctx; CTX_EXPLICIT=1
+    echo "3) Context & expert split  —  how to size context and place experts"
+    _menu_ask_ctx
     echo
     echo "   Expert split (NCMOE) — how many of the 30 layers keep experts on CPU."
-    echo "     lower  = more experts on GPU = faster, but more VRAM (can OOM)"
-    echo "     higher = gentler on VRAM, slower    ·    blank = all on CPU (safest)"
-    echo "     typical on an 8 GB card: 20-27."
+    echo "     typical on an 8 GB card for diffusion: 26-28"
     _menu_text "   NCMOE [blank = all on CPU]: " ""
     if [[ "$MENU_REPLY" =~ ^[0-9]+$ ]]; then export NCMOE="$MENU_REPLY"; else unset NCMOE || true; fi
-    export AUTOTUNE=0                        # manual choice: never tune
+    export AUTOTUNE=0
+  else
+    echo
+    echo "3) Context & expert split  —  how to size context and place experts"
+    echo "     1) auto-tune  measure the fastest split that fits on YOUR GPU (recommended)"
+    echo "     2) manual     I'll pick the context and expert split myself"
+    _menu_choice "   choice [1-2, default 1]: " 1 2
+    if [ "$MENU_REPLY" = 2 ]; then _menu_strategy=manual; else _menu_strategy=auto; fi
+
+    if [ "$_menu_strategy" = auto ]; then
+      unset AUTOTUNE || true
+      TUNE_YES=1
+      echo
+      echo "   ⏳ Heads-up: the FIRST time, auto-tuning launches the server several"
+      echo "      times to measure what fits — a few minutes (longer for a sweep)."
+      echo "      The result is saved, so every later launch is instant."
+      echo "     1) sweep several contexts, then let me pick which to launch (default)"
+      echo "     2) auto-tune the expert split for ONE context I choose"
+      _menu_choice "   choice [1-2, default 1]: " 1 2
+      if [ "$MENU_REPLY" = 2 ]; then
+        _menu_ask_ctx; CTX_EXPLICIT=1
+      else
+        CTX_EXPLICIT=0                        # CTX stays the default; the sweep picks
+      fi
+    else
+      _menu_ask_ctx; CTX_EXPLICIT=1
+      echo
+      echo "   Expert split (NCMOE) — how many of the 30 layers keep experts on CPU."
+      echo "     lower  = more experts on GPU = faster, but more VRAM (can OOM)"
+      echo "     higher = gentler on VRAM, slower    ·    blank = all on CPU (safest)"
+      echo "     typical on an 8 GB card: 20-27."
+      _menu_text "   NCMOE [blank = all on CPU]: " ""
+      if [[ "$MENU_REPLY" =~ ^[0-9]+$ ]]; then export NCMOE="$MENU_REPLY"; else unset NCMOE || true; fi
+      export AUTOTUNE=0                        # manual choice: never tune
+    fi
   fi
 
-  # 3) KV-cache quantization -------------------------------------------------
+  # 4) KV-cache quantization -------------------------------------------------
   echo
-  echo "3) KV-cache quantization  —  frees VRAM; mainly a long-context lever"
+  echo "4) KV-cache quantization  —  frees VRAM; mainly a long-context lever"
   echo "     1) f16   off, full precision (default)"
   echo "     2) q8_0  near-lossless; recommended for 64K+ context"
   echo "     3) q4_0  aggressive: most VRAM saved, some quality cost"
@@ -245,9 +274,9 @@ configure_menu() {
     *) export KVQUANT="" ;;
   esac
 
-  # 4) Sampling --------------------------------------------------------------
+  # 5) Sampling --------------------------------------------------------------
   echo
-  echo "4) Sampling  —  generation randomness (server-wide default)"
+  echo "5) Sampling  —  generation randomness (server-wide default)"
   echo "     1) unsloth defaults — temp=1.0  top-p=0.95  top-k=64 (recommended)"
   echo "     2) custom — enter your own"
   _menu_choice "   choice [1-2, default 1]: " 1 2
@@ -257,26 +286,33 @@ configure_menu() {
     _menu_text "   top-k (integer)  [64]:   " ""; [ -n "$MENU_REPLY" ] && export TOP_K="$MENU_REPLY"
   fi
 
-  # 5) Image input -----------------------------------------------------------
-  echo
-  echo "5) Image input  —  load the vision projector so the server accepts images"
-  echo "     (~1.2 GB on CPU; leave off for text-only, the common case)"
-  _menu_yesno "   enable images? [y/N] " no
-  if [ "$MENU_REPLY" = yes ]; then
-    case " ${SERVER_ARGS[*]} " in *" --image "*) : ;; *) SERVER_ARGS+=(--image) ;; esac
+  # 6) Image input -----------------------------------------------------------
+  if [ "${DIFFUSION:-0}" = 0 ]; then
+    echo
+    echo "6) Image input  —  load the vision projector so the server accepts images"
+    echo "     (~1.2 GB on CPU; leave off for text-only, the common case)"
+    _menu_yesno "   enable images? [y/N] " no
+    if [ "$MENU_REPLY" = yes ]; then
+      case " ${SERVER_ARGS[*]} " in *" --image "*) : ;; *) SERVER_ARGS+=(--image) ;; esac
+    fi
   fi
 
   # Summary + confirm --------------------------------------------------------
   local img=off; case " ${SERVER_ARGS[*]} " in *" --image "*) img=on ;; esac
   echo
   echo "── Summary ──────────────────────────────────────────────"
+  printf "   model   : %s\n"                 "$([ "${DIFFUSION:-0}" = 1 ] && echo "DiffusionGemma" || echo "Gemma 4 Standard")"
   printf "   backend : %s\n"                 "$BE"
-  printf "   strategy: %s\n"                 "$_menu_strategy"
-  printf "   context : %s\n"                 "$([ "$CTX_EXPLICIT" = 1 ] && echo "$CTX" || echo 'auto (sweep & pick)')"
+  if [ "${DIFFUSION:-0}" = 0 ]; then
+    printf "   strategy: %s\n"                 "$_menu_strategy"
+  fi
+  printf "   context : %s\n"                 "$([ "${DIFFUSION:-0}" = 1 ] && echo "$CTX" || { [ "$CTX_EXPLICIT" = 1 ] && echo "$CTX" || echo 'auto (sweep & pick)'; })"
   printf "   NCMOE   : %s\n"                 "${NCMOE:-$([ "$_menu_strategy" = manual ] && echo 'all on CPU' || echo 'auto')}"
   printf "   KV quant: %s\n"                 "${KVQUANT:-f16 (off)}"
   printf "   sampling: temp=%s top-p=%s top-k=%s\n" "${TEMP:-1.0}" "${TOP_P:-0.95}" "${TOP_K:-64}"
-  printf "   image   : %s\n"                 "$img"
+  if [ "${DIFFUSION:-0}" = 0 ]; then
+    printf "   image   : %s\n"                 "$img"
+  fi
   echo "─────────────────────────────────────────────────────────"
   _menu_yesno ">> Launch with these settings? [Y/n]  (q cancels) " yes
   [ "$MENU_REPLY" = yes ] || _menu_cancel
@@ -284,30 +320,40 @@ configure_menu() {
 }
 
 HOST="${HOST:-127.0.0.1}"
-PORT="${PORT:-8080}"
-# Did the user pin a context, or are we on the default? Auto-tuning behaves
-# differently: an explicit CTX tunes only NCMOE for it; no CTX offers a sweep
-# across context sizes and lets you pick which to launch.
-if [ -n "${CTX:-}" ]; then CTX_EXPLICIT=1; else CTX_EXPLICIT=0; fi
-export CTX="${CTX:-32768}"         # effective context (also the auto-tune cache key); export so run-server.sh sees the same value
-export KVQUANT="${KVQUANT:-}"      # KV-cache quant; a tuning-cache dimension too. export so run-server.sh + benchmark see it
-SERVER_LOG="${SERVER_LOG:-/tmp/gemma4-server.log}"
-STOP_ON_EXIT="${STOP_ON_EXIT:-}"   # unset = ask, 1 = always, 0 = never
-STARTED_SERVER=0                   # set to 1 only if we launch it below
 
 # Split args: server flags (--image) go to run-server.sh, --menu is consumed
 # here (interactive setup), the rest go to pi. Without this split, --image/--menu
 # would be sent to pi and silently ignored.
 MENU=0
+DIFFUSION=0
 SERVER_ARGS=()
 PI_ARGS=()
 for a in "$@"; do
   case "$a" in
     --image) SERVER_ARGS+=("$a") ;;
     --menu)  MENU=1 ;;
+    --diffusion) DIFFUSION=1 ;;
     *) PI_ARGS+=("$a") ;;
   esac
 done
+
+if [ "$DIFFUSION" = 1 ]; then
+  PORT="${PORT:-8082}"
+  export CTX="${CTX:-4096}"
+  export KVQUANT="${KVQUANT:-q8_0}"
+else
+  PORT="${PORT:-8080}"
+  export CTX="${CTX:-32768}"
+  export KVQUANT="${KVQUANT:-}"
+fi
+
+# Did the user pin a context, or are we on the default? Auto-tuning behaves
+# differently: an explicit CTX tunes only NCMOE for it; no CTX offers a sweep
+# across context sizes and lets you pick which to launch.
+if [ -n "${CTX:-}" ]; then CTX_EXPLICIT=1; else CTX_EXPLICIT=0; fi
+SERVER_LOG="${SERVER_LOG:-/tmp/gemma4-server.log}"
+STOP_ON_EXIT="${STOP_ON_EXIT:-}"   # unset = ask, 1 = always, 0 = never
+STARTED_SERVER=0                   # set to 1 only if we launch it below
 
 # First-run turnkey step: offer to link this repo's pi-extensions into pi before
 # we launch. Self-guards (already linked / declined / non-interactive), so it's a
@@ -353,7 +399,9 @@ else
   BE="$(resolve_backend)"
   KV="${KVQUANT:-f16}"             # tuning-cache dimension (f16 = unquantized KV)
   bench_port=8099; [ "$bench_port" = "$PORT" ] && bench_port=8100
-  if [ -n "${NCMOE:-}" ]; then
+  if [ "${DIFFUSION:-0}" = 1 ]; then
+    echo ">> DiffusionGemma model selected — skipping auto-tuning."
+  elif [ -n "${NCMOE:-}" ]; then
     echo ">> NCMOE=$NCMOE set explicitly — skipping auto-tuning."
   elif [ "${AUTOTUNE:-}" = "0" ]; then
     : # auto-tuning disabled
@@ -474,16 +522,23 @@ else
   # env-var launches are left untouched — there we only remind (see the sweep path).
   if [ "$MENU" = 1 ]; then
     echo ">> syncing pi's context window to $CTX (edits ~/.pi/agent/models.json) ..."
-    if CTX="$CTX" bash "$REPO_ROOT/scripts/configure-pi.sh" >/dev/null 2>&1; then
+    prov="llamacpp"
+    [ "${DIFFUSION:-0}" = 1 ] && prov="diffusion"
+    if CTX="$CTX" PROVIDER="$prov" bash "$REPO_ROOT/scripts/configure-pi.sh" >/dev/null 2>&1; then
       echo ">> pi context window set to $CTX."
     else
       echo ">> WARNING: could not sync pi automatically. Run it yourself:"
-      echo "            CTX=$CTX bash scripts/configure-pi.sh"
+      echo "            CTX=$CTX PROVIDER=$prov bash scripts/configure-pi.sh"
     fi
   fi
 
   echo ">> starting server in background (logs: $SERVER_LOG) ..."
-  nohup bash "$REPO_ROOT/scripts/run-server.sh" "${SERVER_ARGS[@]}" > "$SERVER_LOG" 2>&1 &
+  if [ "${DIFFUSION:-0}" = 1 ]; then
+    # Start the diffusion server shim
+    nohup bash "$REPO_ROOT/scripts/run-diffusion-shim.sh" > "$SERVER_LOG" 2>&1 &
+  else
+    nohup bash "$REPO_ROOT/scripts/run-server.sh" "${SERVER_ARGS[@]}" > "$SERVER_LOG" 2>&1 &
+  fi
   SRV_PID=$!
 
   # If the user aborts (Ctrl-C) while the model is still loading, don't leave the
@@ -540,6 +595,11 @@ echo ">> launching pi ..."
 # Run pi in the foreground (not exec) so control returns here when it exits.
 # `|| PI_RC=$?` keeps `set -e` from aborting on a non-zero pi exit (e.g. Ctrl-C).
 PI_RC=0
+if [ "${DIFFUSION:-0}" = 1 ]; then
+  export PROVIDER=diffusion
+  export MODEL_ID=diffusiongemma-26b-a4b
+  export PORT
+fi
 bash "$REPO_ROOT/scripts/run-pi.sh" "${PI_ARGS[@]}" || PI_RC=$?
 
 # --- offer to shut the server down ------------------------------------------

@@ -20,8 +20,28 @@ CTX="${CTX:-4096}"
 # mirroring run-server.sh tuning.
 if [ -n "${NCMOE:-}" ]; then
   SPLIT_ARGS="--n-cpu-moe $NCMOE"
+  echo ">> MoE: experts of first $NCMOE layers on CPU, the rest on GPU"
 else
   SPLIT_ARGS="--cpu-moe"
+  echo ">> MoE: all experts on CPU (RAM)"
+fi
+
+# --- Flash Attention and KV Cache Quantization ---
+KVQUANT="${KVQUANT:-}"
+FA="${FA:-on}"
+KV_ARGS=()
+
+if [ -n "$KVQUANT" ] && [ "$KVQUANT" != "f16" ]; then
+  KV_ARGS=(-ctk "$KVQUANT" -ctv "$KVQUANT")
+  FA="on"
+  echo ">> KV-cache: K and V quantized to $KVQUANT"
+fi
+
+if [ "$FA" = "on" ]; then
+  KV_ARGS+=(-fa on)
+  echo ">> Attention: Flash Attention ENABLED"
+else
+  KV_ARGS+=(-fa auto)
 fi
 
 [ -x "$BIN" ]   || { echo "ERROR: $BIN missing — build llama-diffusion-cli first." >&2; exit 1; }
@@ -29,9 +49,13 @@ fi
 
 export DGEMMA_BIN="$BIN"
 export DGEMMA_MODEL="$MODEL"
-# -n 1024: n_ubatch = n + 2048; at -n 2048 the compute buffers put VRAM at
-# 7.9/8.0 GiB and a long prompt OOM'd (the PR aborts on failed alloc).
-export DGEMMA_ARGS="${DGEMMA_ARGS:--ngl 99 $SPLIT_ARGS -c $CTX -n 1024 --temp 0.0}"
+
+# -n 512: n_ubatch = n + 2048; at -n 1024 the compute buffer is 3.14 GB,
+# which OOMs when combined with offloaded experts on an 8 GB card.
+# Dropping to -n 512 halves the compute buffer and enables NCMOE offloading.
+# Enable device-resident sampling and reduction for speed.
+EXTRA_ARGS="${KV_ARGS[*]} --diffusion-gpu-sampling on --diffusion-gpu-sample-reduce on"
+export DGEMMA_ARGS="${DGEMMA_ARGS:--ngl 99 $SPLIT_ARGS -c $CTX -n 512 --temp 0.0 $EXTRA_ARGS}"
 export DGEMMA_PORT="${DGEMMA_PORT:-8082}"
 
 echo ">> binary : $BIN"
