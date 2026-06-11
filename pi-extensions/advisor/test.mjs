@@ -27,7 +27,7 @@ const clearEnv = () => {
 clearEnv();
 process.env.PI_ADVISOR_CONFIG = join(tmp, "missing.json");
 let cfg = defaultConfig();
-ok("no file, no env → built-in defaults", cfg.command === "" && cfg.tuiDriver === "tui-driver" && cfg.timeoutSec === 600);
+ok("no file, no env → built-in defaults", cfg.command === "" && cfg.tuiDriver.endsWith("/.local/bin/tui-driver") && cfg.timeoutSec === 600);
 ok("default keepSession true, inline false", cfg.keepSession === true && cfg.inlineTranscript === false);
 ok("default template used", cfg.promptTemplate === DEFAULT_PROMPT_TEMPLATE);
 
@@ -105,6 +105,10 @@ const fakeRunner = (script) => {
 
 let r = await consult({ ...baseCfg, command: "" }, async () => ({ stdout: "", stderr: "", code: 0 }), [], "", "t0");
 ok("unconfigured → teaching error", r.isError && r.text.includes("advisor-config.json") && r.text.includes('"command"'));
+
+r = await consult({ ...baseCfg, tuiDriver: join(tmp, "nope", "tui-driver") },
+  async () => ({ stdout: "", stderr: "", code: 0 }), [], "", "t0b");
+ok("missing tui-driver → install instructions", r.isError && r.text.includes("not found") && r.text.includes("./tui-driver.sh install"));
 
 let f = fakeRunner({ status: { stdout: "stopped\n", code: 0, stderr: "" },
                      start: { stdout: "", code: 0, stderr: "" },

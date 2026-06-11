@@ -9,7 +9,7 @@ import { join } from "node:path";
 // advisor tool. Serializes the current session branch to a transcript file,
 // drives a user-configured TUI agent via tui-driver (tmux), and returns its
 // reply as the tool result. The advised agent is whatever the config says
-// (claude, gemini, aichat, ...) — Gemma never picks it.
+// (agy, claude, aichat, ...) — Gemma never picks it.
 
 // ---------------------------------------------------------------------------
 // Config: env > ~/.pi/agent/advisor-config.json > defaults (same precedence
@@ -55,7 +55,10 @@ export function defaultConfig(): AdvisorConfig {
     v === undefined ? fallback : v !== "0" && v.toLowerCase() !== "false";
   return {
     command: process.env.PI_ADVISOR_CMD || file.command || "",
-    tuiDriver: process.env.PI_ADVISOR_TUI_DRIVER || file.tuiDriver || "tui-driver",
+    tuiDriver:
+      process.env.PI_ADVISOR_TUI_DRIVER ||
+      file.tuiDriver ||
+      join(homedir(), ".local", "bin", "tui-driver"),
     timeoutSec: Number(process.env.PI_ADVISOR_TIMEOUT_SEC || file.timeoutSec || 600),
     keepSession: envBool(process.env.PI_ADVISOR_KEEP_SESSION, file.keepSession ?? true),
     inlineTranscript: envBool(process.env.PI_ADVISOR_INLINE, file.inlineTranscript ?? false),
@@ -67,7 +70,7 @@ export function defaultConfig(): AdvisorConfig {
 }
 
 export const EXAMPLE_CONFIG = `{
-  "command": "gemini",
+  "command": "agy",
   "tuiDriver": "tui-driver",
   "timeoutSec": 600,
   "keepSession": true,
@@ -217,6 +220,20 @@ export async function consult(
         `advisor is not configured: no external agent command set.\n` +
         `Create ${configPath()} with e.g.:\n${EXAMPLE_CONFIG}\n` +
         `(or set PI_ADVISOR_CMD). "command" is the TUI tui-driver should drive.`,
+    };
+  }
+
+  // tui-driver is a hard prerequisite. When configured as a path (the default
+  // is ~/.local/bin/tui-driver), verify it exists before driving tmux; a bare
+  // command name is left to PATH resolution at exec time.
+  if (cfg.tuiDriver.includes("/") && !existsSync(cfg.tuiDriver)) {
+    return {
+      isError: true,
+      text:
+        `advisor: tui-driver not found at ${cfg.tuiDriver}.\n` +
+        `Install it: from your tui-driver checkout run './tui-driver.sh install' ` +
+        `(copies it to ~/.local/bin/tui-driver; needs tmux), ` +
+        `or set "tuiDriver" in ${configPath()} to where the script lives.`,
     };
   }
 

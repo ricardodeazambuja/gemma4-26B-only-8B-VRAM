@@ -2,8 +2,8 @@
 
 Gives Gemma an `advisor` tool, modeled on Claude Code's advisor: a reviewer
 that sees the **whole session** and answers "is this approach sound, what was
-missed, what's next?". The reviewer is any TUI agent you choose (claude,
-gemini, aichat, another pi…), driven programmatically through
+missed, what's next?". The reviewer is any TUI agent you choose (agy, claude,
+aichat, another pi…), driven programmatically through
 [tui-driver](https://github.com/ricardodeazambuja/tui-driver) (tmux).
 
 ## How it works
@@ -41,8 +41,7 @@ semantic-memory's embed-config).
 
 ```json
 {
-  "command": "gemini",
-  "tuiDriver": "tui-driver",
+  "command": "agy",
   "timeoutSec": 600,
   "keepSession": true,
   "inlineTranscript": false
@@ -52,7 +51,7 @@ semantic-memory's embed-config).
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `command` | — (required) | TUI command tui-driver drives. Becomes part of tmux session/lock names — keep it a single word (use a wrapper script or shell alias for flags). |
-| `tuiDriver` | `tui-driver` | Path to the tui-driver executable. |
+| `tuiDriver` | `~/.local/bin/tui-driver` | Path to the tui-driver executable (where `./tui-driver.sh install` puts it). Checked before every call; a missing file returns install instructions. |
 | `timeoutSec` | `600` | Max wait for the reply (`TUI_TIMEOUT`). |
 | `keepSession` | `true` | Reuse the TUI across calls (faster; watchdog reaps it when idle). |
 | `inlineTranscript` | `false` | Paste transcript text into the prompt instead of a file path — for chat TUIs that cannot read files. Capped at `maxInlineChars` (60k). |
@@ -76,7 +75,10 @@ Env overrides: `PI_ADVISOR_CMD`, `PI_ADVISOR_TUI_DRIVER`,
 
 ## Caveats
 
-- Needs `tmux` and `tui-driver` installed (`tui-driver install`).
+- **Prerequisites:** `tmux` and tui-driver. tui-driver is expected at
+  `~/.local/bin/tui-driver` (run `./tui-driver.sh install` from its checkout);
+  the tool verifies this before every call and returns install instructions
+  if it's missing.
 - The advised TUI must not require interactive approval for reading the
   transcript file (e.g. run claude with permissions that allow reads in /tmp,
   or use `inlineTranscript: true`).
@@ -86,5 +88,5 @@ Env overrides: `PI_ADVISOR_CMD`, `PI_ADVISOR_TUI_DRIVER`,
 ## Test
 
 ```bash
-node --experimental-strip-types advisor/test.mjs   # 42 checks, no tmux needed
+node --experimental-strip-types advisor/test.mjs   # 43 checks, no tmux needed
 ```
