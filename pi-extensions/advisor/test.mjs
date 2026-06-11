@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import {
   configPath, loadFileConfig, defaultConfig, DEFAULT_PROMPT_TEMPLATE,
-  formatTranscript, buildPrompt, capReply, consult,
+  EXAMPLE_CONFIG, formatTranscript, buildPrompt, capReply, consult,
 } from "./index.ts";
 import factory from "./index.ts";
 
@@ -46,6 +46,14 @@ ok("env layer wins over file", cfg.command === "claude" && cfg.timeoutSec === 42
 writeFileSync(cfgFile, "not json {");
 ok("corrupt config file → {}", Object.keys(loadFileConfig(cfgFile)).length === 0);
 ok("configPath honors PI_ADVISOR_CONFIG", configPath() === cfgFile);
+
+const exampleFile = new URL("./advisor-config.example.json", import.meta.url).pathname;
+const example = JSON.parse(readFileSync(exampleFile, "utf8"));
+clearEnv();
+process.env.PI_ADVISOR_CONFIG = exampleFile;
+cfg = defaultConfig();
+ok("example file parses and configures a command", cfg.command === example.command && cfg.command.length > 0);
+ok("example file matches the in-code teaching error", JSON.stringify(example) === JSON.stringify(JSON.parse(EXAMPLE_CONFIG)));
 clearEnv();
 Object.assign(process.env, savedEnv);
 

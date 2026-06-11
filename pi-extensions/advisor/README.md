@@ -37,7 +37,11 @@ There is deliberately **no default agent** — consulting an external agent can
 cost money, so it must be an explicit choice. Until configured, the tool
 returns a teaching error showing this exact setup. Precedence:
 **env > `~/.pi/agent/advisor-config.json` > defaults** (same pattern as
-semantic-memory's embed-config).
+semantic-memory's embed-config). Quickest start:
+
+```bash
+cp advisor/advisor-config.example.json ~/.pi/agent/advisor-config.json
+```
 
 ```json
 {

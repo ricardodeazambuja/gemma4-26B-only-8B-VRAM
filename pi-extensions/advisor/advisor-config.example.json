@@ -1,0 +1,6 @@
+{
+  "command": "agy",
+  "timeoutSec": 600,
+  "keepSession": true,
+  "inlineTranscript": false
+}

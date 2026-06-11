@@ -69,9 +69,9 @@ export function defaultConfig(): AdvisorConfig {
   };
 }
 
+// Keep in sync with advisor-config.example.json (test.mjs enforces this).
 export const EXAMPLE_CONFIG = `{
   "command": "agy",
-  "tuiDriver": "tui-driver",
   "timeoutSec": 600,
   "keepSession": true,
   "inlineTranscript": false
