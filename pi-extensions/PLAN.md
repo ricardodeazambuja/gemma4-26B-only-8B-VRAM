@@ -161,7 +161,7 @@ continuation.
 - [x] 5. semantic-memory — done, 30 tests passing (needs llama-server --embeddings)
 - [x] 6. operating-manual — done, 19 tests passing
 - [x] 7. stats — done, 26 tests passing (RAPL energy_uj often root-only)
-- [ ] 8. fetch-page
+- [x] 8. fetch-page — done, 18 tests passing (live-verified google + wikipedia)
 
 Each item: one directory per extension under `~/.pi/agent/extensions/<name>/`
 (index.ts + package.json, like web-search). Update this checklist as items land.
