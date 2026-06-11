@@ -42,12 +42,12 @@ The full spec, build order, and rationale live in
 | 6 | [`operating-manual`](operating-manual/) | ✅ done | If-then rules in the system prefix + JIT nudges. |
 | 7 | [`stats`](stats/) | ✅ done | Per-session token/energy accounting. |
 | 8 | [`fetch-page`](fetch-page/) | ✅ done | Readable-text page fetcher (closes the search→read loop). |
+| + | [`thinking-router`](thinking-router/) | ✅ done | Routes the thinking budget per turn (engine-level energy lever, as pi code). |
 
 ## Layout & dependencies
 
 Each extension is a directory with `index.ts`, `test.mjs`, and `README.md`. A
-single shared `package.json`/`node_modules` at this level serves all of them —
-pi resolves `node_modules` up the directory tree.
+single shared `package.json`/`node_modules` at this level serves all of them.
 
 ```bash
 cd pi-extensions && npm install
@@ -59,7 +59,20 @@ cd pi-extensions && npm install
 ./install.sh          # symlinks each extension into ~/.pi/agent/extensions/
 ```
 
-Symlinks mean edits here are live in pi immediately (after a pi restart/reload).
+`install.sh` does two things: symlinks each extension dir into
+`~/.pi/agent/extensions/`, **and** symlinks a shared `node_modules` there too.
+
+> **Why the shared node_modules matters.** pi loads extensions with
+> `--preserve-symlinks`, so Node resolves each extension's `import`s from the
+> symlink's location (`~/.pi/agent/extensions/<name>/`), **not** the real repo path.
+> Without a `node_modules` at `~/.pi/agent/extensions/`, every import of
+> `playwright`/`typebox`/`@earendil-works/*` fails with "Cannot find module". The
+> shared symlink fixes all of them at once. (A real pi smoke test caught this — the
+> plain-`node` import test missed it because plain Node follows symlinks to realpath.)
+
+Symlinks mean edits here are live in pi immediately (after a pi restart/`/reload`).
+Extensions auto-discover **globally** (all projects); for Gemma-only scope, put them
+in a per-project `.pi/extensions/` instead.
 
 ## Testing
 

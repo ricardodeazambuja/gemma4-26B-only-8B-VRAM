@@ -135,13 +135,15 @@ continuation.
 
 ---
 
-## Engine-level (no pi code — manual, on the llama.cpp side)
+## Engine-level energy levers
 
-- **Speculative decoding:** `--model-draft` with small same-vocab Gemma4 QAT;
-  ~1.5–2.5× decode, identical output, ~2 GB RAM.
-- **Constrained tool calls:** check whether the custom build exposes GBNF/JSON-schema
-  enforcement for tool calls; if yes, wire pi to it (eliminates malformed tool JSON).
-- **Thinking-level routing:** pi `thinking_level_select` — low budget for easy turns.
+- **Thinking-level routing:** ✅ DONE as the `thinking-router` extension (it was
+  mis-filed here — pi exposes `setThinkingLevel()`, so it's pi code, not manual).
+  Routes off/low/medium per-turn by input difficulty; respects manual `/thinking`.
+- **Speculative decoding:** manual, llama.cpp side — `--model-draft` with a small
+  same-vocab Gemma4 QAT; ~1.5–2.5× decode, identical output, ~2 GB RAM.
+- **Constrained tool calls:** manual — check whether the custom build exposes
+  GBNF/JSON-schema enforcement for tool calls; if yes, wire pi to it.
 
 ## Rejected (do not revisit without new evidence)
 
@@ -162,6 +164,12 @@ continuation.
 - [x] 6. operating-manual — done, 19 tests passing
 - [x] 7. stats — done, 26 tests passing (RAPL energy_uj often root-only)
 - [x] 8. fetch-page — done, 18 tests passing (live-verified google + wikipedia)
+- [x] +. thinking-router — done, 14 tests passing (engine-level lever as pi code)
 
-Each item: one directory per extension under `~/.pi/agent/extensions/<name>/`
-(index.ts + package.json, like web-search). Update this checklist as items land.
+All items complete. 185 tests passing across the set (`./run-tests.sh`).
+Deployed via `install.sh`; extension loading verified in a real pi run (the
+model call itself OOM'd in CI's 1.7 GiB, but all extensions loaded cleanly).
+
+Each item is one directory under `pi-extensions/`, symlinked into
+`~/.pi/agent/extensions/<name>/` (plus a shared `node_modules` symlink there —
+see README, required because pi loads with --preserve-symlinks).

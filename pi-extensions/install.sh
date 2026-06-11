@@ -12,6 +12,15 @@ if [ ! -d "$SRC/node_modules" ]; then
   exit 1
 fi
 
+# pi loads extensions with --preserve-symlinks, so module resolution starts from
+# the symlink's location ($DEST/<name>), NOT the repo. Place a shared node_modules
+# at $DEST so every symlinked extension resolves its deps (playwright, typebox,
+# @earendil-works/*). One symlink back to the repo's install serves all of them.
+if [ ! -e "$DEST/node_modules" ]; then
+  ln -s "$SRC/node_modules" "$DEST/node_modules"
+  echo "linked shared node_modules -> $DEST/node_modules"
+fi
+
 for dir in "$SRC"/*/; do
   name="$(basename "$dir")"
   [ -f "$dir/index.ts" ] || continue          # only real extensions
