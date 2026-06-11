@@ -33,6 +33,11 @@ length and on-GPU experts share the 8 GB budget (see [tuning](#performance--tuni
 > 📖 For the full engineering story — architecture, the CUDA-version wall, the build, the
 > performance analysis, and every caveat — see **[docs/TECHNICAL.md](docs/TECHNICAL.md)**.
 
+> 🔮 **Bonus — the speculative agent:** this repo also ships Claude Code hooks that use the
+> local Gemma server as a *draft tier* in front of the big model (branch-predicts your next
+> prompt, pre-drafts answers, OCRs images locally so Claude pays zero image tokens, digests
+> huge logs). Step-by-step guide + how it works: **[.claude/spec/README.md](.claude/spec/README.md)**.
+
 ---
 
 ## TL;DR
@@ -424,8 +429,13 @@ There's also a built-in web UI at <http://127.0.0.1:8080>.
 │   └── inspect-gguf.py       #   (the implementation; .sh runs it in the env)
 ├── config/
 │   └── pi-provider.json      # pi provider definition
+├── .claude/
+│   ├── settings.json         # registers the speculative-agent hooks (auto-active in Claude Code)
+│   └── spec/                 # the speculative agent: Gemma drafts, Claude verifies
+│       └── README.md         #   step-by-step guide + technical explanation
 ├── docs/
 │   ├── TECHNICAL.md          # engineering write-up (architecture, perf, multimodal)
+│   ├── PRD-speculative-agent.md  # speculative agent: design history + decision log
 │   └── speed.svg             # backend speed comparison chart (in the README)
 ├── models/                   # downloaded GGUF lives here (gitignored)
 └── vendor/                   # llama.cpp source + CUDA build (gitignored)
