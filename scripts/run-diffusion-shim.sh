@@ -12,7 +12,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${DGEMMA_BIN:-$ROOT/vendor/llama.cpp-diffusion/build/bin/llama-diffusion-cli}"
 # Model lives in the MAIN checkout's models/ (shared across worktrees).
 MODEL="${DGEMMA_MODEL:-$(ls "$ROOT"/../Gemma4/models/diffusiongemma-26b-a4b/*Q4_K_M*.gguf 2>/dev/null | head -1)}"
-CTX="${CTX:-8192}"
+# 4096 default: this arch is MHA (16 heads x 512, no GQA), so full-attn KV is
+# 0.92 MiB/token-layer — ctx 8192 could cost up to 7.5 GiB KV worst-case.
+CTX="${CTX:-4096}"
 # --cpu-moe = all experts in host RAM (safe default for 8 GB VRAM).
 # Set NCMOE to a number to put (layers - NCMOE) expert layers on the GPU instead,
 # mirroring run-server.sh tuning.
@@ -27,7 +29,9 @@ fi
 
 export DGEMMA_BIN="$BIN"
 export DGEMMA_MODEL="$MODEL"
-export DGEMMA_ARGS="${DGEMMA_ARGS:--ngl 99 $SPLIT_ARGS -c $CTX -n 2048 --temp 0.0}"
+# -n 1024: n_ubatch = n + 2048; at -n 2048 the compute buffers put VRAM at
+# 7.9/8.0 GiB and a long prompt OOM'd (the PR aborts on failed alloc).
+export DGEMMA_ARGS="${DGEMMA_ARGS:--ngl 99 $SPLIT_ARGS -c $CTX -n 1024 --temp 0.0}"
 export DGEMMA_PORT="${DGEMMA_PORT:-8082}"
 
 echo ">> binary : $BIN"

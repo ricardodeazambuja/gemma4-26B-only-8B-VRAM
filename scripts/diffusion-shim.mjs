@@ -103,6 +103,12 @@ function normalize(messages) {
   return out;
 }
 
+// DiffusionGemma emits its reasoning in-band as <|channel>thought ... <channel|>;
+// strip it so pi sees only the visible reply.
+function stripThought(s) {
+  return s.replace(/<\|channel>thought[\s\S]*?<channel\|>/g, "").trim();
+}
+
 const estTok = (s) => Math.max(1, Math.round((s?.length ?? 0) / 4));
 
 function completionBody(content, promptChars) {
@@ -151,6 +157,7 @@ const server = createServer(async (req, res) => {
   const t0 = Date.now();
   const result = await generate(messages);
   if (result.error) return send(500, { error: { message: result.error } });
+  result.content = stripThought(result.content ?? "");
   console.error(`[shim] turn done in ${((Date.now() - t0) / 1000).toFixed(1)}s (model ${result.ms?.toFixed(0)}ms)`);
 
   if (parsed.stream) {

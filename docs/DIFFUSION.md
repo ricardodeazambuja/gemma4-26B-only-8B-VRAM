@@ -77,7 +77,49 @@ hf download unsloth/diffusiongemma-26B-A4B-it-GGUF --include "*Q4_K_M*" \
   model's QAT Q4_K_XL.
 - **Draft PR** — expect rebases; keep the patch additive.
 
-## Results
+## Results (RTX 2070 8 GB / 31 GB RAM, Q4_K_M, `-ngl 99 --cpu-moe -c 4096`)
 
-(to be filled after the smoke test: load success, RAM/VRAM split, effective
-tok/s vs the ~30 tok/s autoregressive baseline, J/token if stats allow)
+**It runs, and the bridge works.** JSONL mode + shim produced coherent chat
+through the OpenAI endpoint on the first try.
+
+Measured vs predicted memory:
+
+| | predicted | measured |
+|---|---|---|
+| Host RSS (experts on CPU + buffers) | ~16–17 GiB | **16.5 GiB** |
+| VRAM (`-n 2048`) | 3–4 GiB | **7.88 GiB** — MHA worst-case KV + ubatch buffers won |
+
+Architecture notes (from the GGUF): 30 layers, **MHA not GQA** (16 heads ×
+512-dim K/V on full-attn layers, 256-dim on SWA layers, window 1024,
+dual-RoPE 1M/10k, `attention.causal=false`, vocab 262144, ctx_train 256k).
+MHA makes KV ~0.92 MiB/token-layer on full layers — context is the VRAM
+budget's enemy here, not weights.
+
+Timing (first turn, all experts on CPU, greedy): 38.8 s/turn for a short
+prompt; entropy-bound sampler ran 17/48 steps before converging, ~2.0 s per
+denoising step → effective ~6 tok/s. Below the ~30 tok/s AR baseline, but
+untuned: `NCMOE=n` (experts partially on GPU) is unexplored, and per-step
+cost is dominated by the CPU expert forward, exactly like AR prefill.
+
+**Crash found:** with `-n 2048` (→ `n_ubatch` 4096) VRAM sat at 7.9/8.0 GiB;
+a long prompt (pi's full system prompt) needed one more 363 MiB compute
+buffer and the PR **aborts** on the failed alloc
+(`GGML_ASSERT(m.pkv_buf != nullptr)`, diffusion-gemma.cpp:726) instead of
+returning an error — taking the whole process down. Mitigated by `-n 1024`;
+worth reporting upstream (graceful failure), and the shim should auto-restart
+its child.
+
+**pi end-to-end: ✅** With `-n 1024` (VRAM 6.4 GiB idle / 7.0 GiB after a
+turn) and a slim system prompt:
+
+```
+$ pi -p --provider diffusion --model diffusiongemma-26b-a4b \
+     --system-prompt "You are a concise assistant." \
+     "what kind of language model are you?"
+I am Gemma 4, a large language model.
+```
+
+pi's *default* coding system prompt + tool schemas do not fit ctx 4096 —
+usable pi sessions need either a trimmed prompt or more context, which on
+8 GB VRAM means trading `-ngl` (CPU attention layers) for KV room. That
+sweep is the next experiment.
