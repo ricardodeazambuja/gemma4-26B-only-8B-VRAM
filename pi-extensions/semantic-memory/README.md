@@ -52,15 +52,26 @@ this extension's own `embed()`:
 ./setup-embeddings.sh          # ollama pull embeddinggemma + end-to-end verify
 ```
 
-Verified working: 768-dim vectors, related/unrelated cosine 0.79 / 0.34. Then set
-in pi's environment and `/reload`:
-
-```bash
-export PI_EMBED_URL=http://127.0.0.1:11434/v1/embeddings
-export PI_EMBED_MODEL=embeddinggemma
-```
+Verified working: 768-dim vectors, related/unrelated cosine 0.79 / 0.34. The script
+offers to **persist** the choice (prompt, or `--persist`), writing
+`~/.pi/agent/embed-config.json` — so the backend survives every pi launch with **no
+env vars and no `start.sh` edits**. Then `/reload` pi.
 
 Re-verify any time with `node --experimental-strip-types verify-embeddings.mjs`.
+
+### How the backend is resolved (precedence)
+
+`defaultConfig()` picks the embedding endpoint as **env var › config file › built-in
+default**:
+
+| Source | `url` |
+|--------|-------|
+| `PI_EMBED_URL` / `PI_EMBED_MODEL` env | highest priority (per-shell override) |
+| `~/.pi/agent/embed-config.json` (written by `setup-embeddings.sh --persist`) | persistent default |
+| built-in | `http://127.0.0.1:8081/v1/embeddings` (llama-server) |
+
+So a one-time `setup-embeddings.sh` makes it permanent; env vars still win for ad-hoc
+overrides; and with neither, it falls back to a llama-server on :8081.
 
 ### Alternative: a standalone llama-server
 

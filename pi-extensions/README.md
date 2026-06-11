@@ -56,7 +56,16 @@ cd pi-extensions && npm install
 ## Install into pi
 
 ```bash
-./install.sh          # symlinks each extension into ~/.pi/agent/extensions/
+./setup.sh            # one-shot: npm install → link into pi → (optional) embeddings
+```
+
+`setup.sh` is the single entry point — everything is installable from this repo. It
+installs deps, runs `install.sh`, and offers to pull + enable the embedding backend
+(prompts before each side-effect; `--yes` runs non-interactively). Or do the steps
+individually:
+
+```bash
+./install.sh          # just symlink each extension into ~/.pi/agent/extensions/
 ```
 
 `install.sh` does two things: symlinks each extension dir into

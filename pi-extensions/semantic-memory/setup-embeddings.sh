@@ -3,14 +3,21 @@
 # EmbeddingGemma into the already-running Ollama and verify the extension's own
 # embed() gets a real vector back. Idempotent — safe to re-run.
 #
-# Usage:  ./setup-embeddings.sh
+# Usage:  ./setup-embeddings.sh [--persist|--no-persist]
 # Env:    OLLAMA_HOST (default http://127.0.0.1:11434)
 #         EMBED_MODEL (default embeddinggemma)
+#         PI_EMBED_CONFIG (default ~/.pi/agent/embed-config.json)
 set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OLLAMA_HOST="${OLLAMA_HOST:-http://127.0.0.1:11434}"
 EMBED_MODEL="${EMBED_MODEL:-embeddinggemma}"
+CONFIG_PATH="${PI_EMBED_CONFIG:-$HOME/.pi/agent/embed-config.json}"
+PERSIST="ask"
+case "${1:-}" in
+  --persist) PERSIST="yes" ;;
+  --no-persist) PERSIST="no" ;;
+esac
 
 echo "== semantic-memory embedding setup =="
 
@@ -40,10 +47,28 @@ echo "Verifying via semantic-memory/embed()…"
 PI_EMBED_URL="$OLLAMA_HOST/v1/embeddings" PI_EMBED_MODEL="$EMBED_MODEL" \
   node --experimental-strip-types "$SRC/verify-embeddings.mjs"
 
-cat <<EOF
+# Persist so semantic-memory uses this backend on every pi launch — no env vars,
+# no start.sh edits. The extension reads this file (env still overrides it).
+EMBED_URL="$OLLAMA_HOST/v1/embeddings"
+if [ "$PERSIST" = "ask" ]; then
+  if [ -t 0 ]; then
+    printf "\nPersist as semantic-memory's default backend?\n  writes %s\n  [Y/n] " "$CONFIG_PATH"
+    read -r reply || reply=""
+    case "$reply" in [Nn]*) PERSIST="no" ;; *) PERSIST="yes" ;; esac
+  else
+    PERSIST="no"  # non-interactive with no flag → don't touch config silently
+    echo "(non-interactive: not persisting; pass --persist to write $CONFIG_PATH)"
+  fi
+fi
 
-== Done. To make pi use it, put these in pi's environment ==
-    export PI_EMBED_URL=$OLLAMA_HOST/v1/embeddings
+if [ "$PERSIST" = "yes" ]; then
+  mkdir -p "$(dirname "$CONFIG_PATH")"
+  printf '{\n  "url": "%s",\n  "model": "%s"\n}\n' "$EMBED_URL" "$EMBED_MODEL" > "$CONFIG_PATH"
+  echo "Persisted → $CONFIG_PATH  (semantic-memory will use it automatically; /reload pi)"
+else
+  cat <<EOF
+Not persisted. To use this backend, either re-run with --persist, or set in pi's env:
+    export PI_EMBED_URL=$EMBED_URL
     export PI_EMBED_MODEL=$EMBED_MODEL
-(e.g. add to your shell rc, or pi's settings env. Then /reload pi.)
 EOF
+fi

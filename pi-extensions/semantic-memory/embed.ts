@@ -3,17 +3,40 @@
 // to fail soft: any error returns null and the caller degrades to substring
 // search rather than erroring Gemma's turn. PLAN.md item 5.
 
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { readFileSync, existsSync } from "node:fs";
+
 export interface EmbedConfig {
   url: string;
   model?: string;
   timeoutMs: number;
 }
 
+// Persistent config written by setup-embeddings.sh, so the backend survives across
+// pi launches without env vars or start.sh edits. Precedence: env > file > default.
+export function configPath(): string {
+  return process.env.PI_EMBED_CONFIG || join(homedir(), ".pi", "agent", "embed-config.json");
+}
+
+export function loadFileConfig(path = configPath()): Partial<EmbedConfig> {
+  if (!existsSync(path)) return {};
+  try {
+    const c = JSON.parse(readFileSync(path, "utf8"));
+    const out: Partial<EmbedConfig> = {};
+    if (typeof c.url === "string") out.url = c.url;
+    if (typeof c.model === "string") out.model = c.model;
+    if (Number.isFinite(c.timeoutMs)) out.timeoutMs = c.timeoutMs;
+    return out;
+  } catch { return {}; }
+}
+
 export function defaultConfig(): EmbedConfig {
+  const file = loadFileConfig();
   return {
-    url: process.env.PI_EMBED_URL || "http://127.0.0.1:8081/v1/embeddings",
-    model: process.env.PI_EMBED_MODEL || "embeddinggemma",
-    timeoutMs: Number(process.env.PI_EMBED_TIMEOUT_MS || 4000),
+    url: process.env.PI_EMBED_URL || file.url || "http://127.0.0.1:8081/v1/embeddings",
+    model: process.env.PI_EMBED_MODEL || file.model || "embeddinggemma",
+    timeoutMs: Number(process.env.PI_EMBED_TIMEOUT_MS || file.timeoutMs || 4000),
   };
 }
 

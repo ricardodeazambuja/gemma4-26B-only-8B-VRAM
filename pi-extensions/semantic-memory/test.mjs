@@ -6,10 +6,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cosine, cosineSearch, substringSearch } from "./search.ts";
 import { encodeVector, decodeVector, appendChunk, loadChunks, removeChunks, appendMemoryLine, readMemoryMd, removeMemoryLine, memoryDir } from "./store.ts";
-import { parseEmbeddingResponse, embed } from "./embed.ts";
+import { parseEmbeddingResponse, embed, loadFileConfig, defaultConfig } from "./embed.ts";
 
 let pass = 0, fail = 0;
 const ok = (name, cond) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ ${name}`); } };
+
+// --- config file precedence (env > file > default) ---
+console.log("config precedence:");
+const cfgFile = join(mkdtempSync(join(tmpdir(), "ecfg-")), "embed-config.json");
+process.env.PI_EMBED_CONFIG = cfgFile;
+delete process.env.PI_EMBED_URL; delete process.env.PI_EMBED_MODEL;
+ok("no file → built-in default :8081", defaultConfig().url.includes(":8081"));
+ok("missing file → empty partial", Object.keys(loadFileConfig()).length === 0);
+writeFileSync(cfgFile, JSON.stringify({ url: "http://127.0.0.1:11434/v1/embeddings", model: "embeddinggemma" }));
+ok("file config is read", defaultConfig().url.includes(":11434") && defaultConfig().model === "embeddinggemma");
+process.env.PI_EMBED_URL = "http://env-wins:9/v1/embeddings";
+ok("env overrides file", defaultConfig().url.includes("env-wins"));
+delete process.env.PI_EMBED_URL; delete process.env.PI_EMBED_CONFIG;
+rmSync(cfgFile, { force: true });
 
 // --- search ---
 console.log("search:");
