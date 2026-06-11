@@ -430,7 +430,7 @@ There's also a built-in web UI at <http://127.0.0.1:8080>.
 │                             #   plan, semantic-memory, operating-manual, stats, fetch-page,
 │                             #   web-search, thinking-router, advisor (each: index.ts + tests)
 ├── docs/
-│   ├── TECHNICAL.md          # engineering write-up (architecture, perf, multimodal)
+│   ├── TECHNICAL.md          # engineering write-up (architecture, perf, multimodal, harness)
 │   └── speed.svg             # backend speed comparison chart (in the README)
 ├── models/                   # downloaded GGUF lives here (gitignored)
 └── vendor/                   # llama.cpp source + CUDA build (gitignored)

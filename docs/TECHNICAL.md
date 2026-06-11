@@ -885,3 +885,115 @@ a different/unified projector (the `gemma4ua`/`gemma4uv` path).
 OpenAI `image_url` format; the model returned all three shapes with correct colors and read "42".
 Decode held at ~30 tok/s with the image in context. (As always, give it enough `max_tokens` to finish
 its hidden reasoning before the visible answer — see §8.)
+
+## 15. The harness layer: `pi-extensions/`
+
+Everything above gets the model *running*; this section is about making it *useful*. The
+problem statement, what we built, why those shapes and not others, and what's still open.
+(Per-extension specs live in `pi-extensions/PLAN.md`; per-extension usage in each
+`pi-extensions/<name>/README.md`. This section is the engineering rationale.)
+
+### Problem statement
+
+A 4-bit 26B-A4B MoE on a 120k window is a competent but fallible coding agent, and its
+failure modes are *systematic*, not random:
+
+| Weakness (observed) | Consequence in real sessions |
+|---|---|
+| Weak self-verification | Ships syntactically broken edits, believes they're fine |
+| Perseveration | Repeats an identical failing tool call until the context fills with errors |
+| No working memory discipline | Re-reads 800-line files to find one signature; re-decides the task mid-way |
+| No cross-session memory | Every session restarts from zero |
+| Thin world knowledge | A 26B can't carry the long tail; needs search + read |
+| Prompt-rule blindness | Instructions in the system prompt decay; the model "knows" but doesn't *do* |
+| Capability ceiling | Some plans are just wrong, and no amount of self-review by the same model fixes that |
+
+Cloud harnesses paper over all of these with a bigger model. The constraint here is the
+opposite: **the local model is the only intelligence at runtime**, so every weakness must be
+covered by *deterministic code* around it. The second constraint is energy: prefill dominates
+laptop inference cost (§8), so every token the harness injects is a standing tax paid on
+every request.
+
+### Solution shape, and why
+
+One pi extension per weakness, all obeying six cross-cutting rules (R1–R6 in
+`pi-extensions/PLAN.md`). The two that drive most design decisions:
+
+- **Enforce > persuade (R4).** A prompt rule ("verify your edits") relies on exactly the
+  attention that a small model lacks — so the harness *does the thing* instead: verified-edits
+  runs the checker itself, symbols intercepts the oversized read, loop-breaker counts the
+  failures. Deterministic code does not get distracted.
+- **KV-cache discipline (R1).** llama.cpp reuses KV cache only for an unchanged prompt
+  *prefix*. So everything static (system prompt, tool schemas, MEMORY.md) is byte-stable for
+  the whole session, and everything dynamic (plan state, recalled memories, nudges) is
+  injected at the *tail*. This is the difference between paying prefill once and paying it
+  every turn.
+
+The full mapping:
+
+| Weakness | Extension | Mechanism (one line) |
+|---|---|---|
+| Weak self-verification | `verified-edits` | Auto-runs the cheapest checker after every edit; errors appended in-band |
+| Perseveration | `loop-breaker` | 3 identical failing calls → one tail nudge to change approach |
+| File re-reading | `symbols` | Outline tools + big-read interception |
+| Task drift | `plan` | External checklist re-injected at tail; survives compaction |
+| No cross-session memory | `semantic-memory` | Passive recall: embed the user turn, inject top matches at tail |
+| Rule blindness | `operating-manual` | If-then triggers in the stable prefix + JIT nudges |
+| Thin world knowledge | `web-search` + `fetch-page` | Stealth Playwright search → readable-text reads |
+| Unmeasured cost | `stats` | llama.cpp timings → per-session token/energy accounting |
+| Over-thinking | `thinking-router` | Per-turn thinking budget routed by input difficulty |
+| Capability ceiling | `advisor` | Escalate to a stronger external agent (below) |
+
+### The escalation path: `advisor`
+
+The last row is qualitatively different and deserves its own rationale. Nine of the ten
+extensions assume the model's plan is *recoverable* — verify it, nudge it, remind it. But a
+wrong plan executed carefully is still wrong, and a model cannot reliably review its own
+reasoning. Cloud harnesses solve this with a stronger reviewer model. The local equivalent:
+an `advisor` tool that serializes the whole session branch into a transcript and asks an
+**external agent of the user's choosing** for a verdict.
+
+**Solution chosen: drive an interactive TUI through tmux** (the existing `tui-driver`
+project: start a session, paste a prompt, wait for the screen to stabilize, scrape the
+reply). The transcript goes to a 0600 file in a per-process 0700 mkdtemp dir; the prompt
+hands the advisor the file path; the reply comes back as the tool result (capped, full text
+saved).
+
+**Why this over the alternatives considered:**
+
+- *Direct API call to a cloud model* — needs per-provider key management, billing wiring,
+  and request-format code inside the extension. The TUI route reuses agents the user has
+  **already installed, authenticated, and paid for** (agy, claude, …), at zero integration
+  cost per new agent. Configurability falls out for free: the agent is one string in a
+  config file.
+- *A second pi/Gemma instance as reviewer* — no capability lift; self-review by the same
+  weights is exactly the failure mode this exists to escape. (Still possible via config if
+  someone wants a fresh-context second opinion.)
+- *MCP or RPC integration per agent* — strictly more machinery for fewer supported agents;
+  tui-driver already handles approval prompts, throttling, orphan reaping, and works with
+  *any* TUI unmodified.
+- *No default agent, on purpose* — consulting an external agent can cost money, so an
+  unconfigured tool returns a teaching error (R2) with the exact config to write, instead
+  of silently picking a vendor.
+
+**Caveats** (also in the extension README): screen-scraping is inherently fragile — TUI
+chrome can leak into replies, and reply extraction anchors on the echoed prompt; the call
+is synchronous, so Gemma blocks for up to `timeoutSec` while the advisor thinks; the
+advised TUI must be able to read the transcript file without an interactive approval
+prompt (or use `inlineTranscript` to paste the text); a kept-alive session holds whatever
+resources the advised agent holds until tui-driver's idle watchdog reaps it.
+
+### Future work
+
+- **Async advisor.** tui-driver already has `send-async`/`poll`; the extension could return
+  immediately and inject the advisor's verdict at tail (`deliverAs: "steer"`) when it lands,
+  letting Gemma keep working instead of blocking.
+- **Auto-escalation.** loop-breaker and advisor are natural partners: after the nudge has
+  fired twice with no change in behavior, suggest (not force — cost) an `advisor` call.
+- **Structured verdicts (R6).** Today the advisor replies free-form; a fill-in template
+  (Sound?/Missed:/Next:) would make verdicts parseable and injectable as plan steps.
+- **Reply cleaning.** A per-TUI post-filter (strip spinners, box-drawing, status lines)
+  would harden the scraped replies.
+- **Engine levers** (tracked in PLAN.md): speculative decoding via `--model-draft`
+  (~1.5–2.5× decode, identical output), and GBNF/JSON-schema-constrained tool calls if the
+  custom build exposes them.

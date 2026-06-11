@@ -6,6 +6,13 @@ missed, what's next?". The reviewer is any TUI agent you choose (agy, claude,
 aichat, another pi…), driven programmatically through
 [tui-driver](https://github.com/ricardodeazambuja/tui-driver) (tmux).
 
+**Problem this solves.** Every other extension in this set assumes Gemma's plan
+is recoverable — verify it, nudge it, remind it. But a wrong plan executed
+carefully is still wrong, and a model cannot reliably review its own reasoning.
+This is the escalation path: a genuinely different (usually stronger) model
+judges the whole session arc. See `docs/TECHNICAL.md` §15 for the full design
+rationale.
+
 ## How it works
 
 On each `advisor` call the extension:
@@ -77,6 +84,23 @@ Env overrides: `PI_ADVISOR_CMD`, `PI_ADVISOR_TUI_DRIVER`,
 - **KV-cache** (#1): the schema is byte-stable; everything dynamic lives in
   the tool *result* (tail).
 
+## Why drive a TUI instead of an API?
+
+Alternatives considered and rejected:
+
+- **Direct cloud-API calls** — per-provider keys, billing wiring, and request
+  formats inside the extension. Driving a TUI reuses agents the user already
+  installed, authenticated, and paid for; supporting a new agent costs one
+  config string.
+- **A second Gemma/pi as reviewer** — no capability lift; self-review by the
+  same weights is the failure mode this escapes. (Still configurable if you
+  want a fresh-context second opinion.)
+- **MCP/RPC integration per agent** — more machinery, fewer supported agents.
+  tui-driver already handles throttling, approval prompts, orphan reaping,
+  and works with any TUI unmodified.
+- **A default agent** — rejected on cost grounds; the unconfigured tool
+  teaches the setup instead of silently picking a vendor.
+
 ## Caveats
 
 - **Prerequisites:** `tmux` and tui-driver. tui-driver is expected at
@@ -88,6 +112,18 @@ Env overrides: `PI_ADVISOR_CMD`, `PI_ADVISOR_TUI_DRIVER`,
   or use `inlineTranscript: true`).
 - Reply extraction is screen-scraping: tui-driver returns what appeared after
   the prompt on screen, so TUI chrome can leak into the reply.
+- The call is synchronous: Gemma blocks for up to `timeoutSec` while the
+  advisor thinks.
+
+## Future work
+
+- **Async mode** — tui-driver has `send-async`/`poll`; return immediately and
+  inject the verdict at tail (`deliverAs: "steer"`) when it lands.
+- **Auto-escalation** — after loop-breaker's nudge fires repeatedly with no
+  behavior change, suggest an `advisor` call (suggest, not force — it costs).
+- **Structured verdicts** — a fill-in template (Sound?/Missed:/Next:) per
+  design rule R6, so verdicts become parseable and plan-injectable.
+- **Reply cleaning** — per-TUI post-filters to strip spinners/box-drawing.
 
 ## Test
 
