@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # ensure-server.sh — idempotently bring up the OPTIMAL Gemma 4 llama.cpp server,
-# non-blocking, single-flight. Called fire-and-forget by the hooks so the first
-# prompt in a fresh session warms the server; later prompts then get drafts/offload.
+# non-blocking, single-flight. Called fire-and-forget by /gemma-draft (draft.sh) so a
+# first invocation in a fresh session warms the server; the next one gets a draft.
 #
 # Design constraints (see docs/PRD-speculative-agent.md):
-#   * NEVER block the user: hook-mode returns instantly; the slow model load runs in a
-#     detached (setsid) worker. The triggering prompt just degrades (no draft) this turn.
-#   * Single-flight: a lock dir stops every prompt from launching a second server.
+#   * NEVER block the user: caller-mode returns instantly; the slow model load runs in a
+#     detached (setsid) worker. The triggering invocation just degrades (no draft) this turn.
+#   * Single-flight: a lock dir stops every invocation from launching a second server.
 #   * Reuse, don't reinvent "optimal": backend via resolve_backend, CTX/NCMOE from the
 #     auto-tune cache (.gemma4-tuning) via _tuning.sh — exactly what start.sh would pick.
-#   * Launch with --image when the mmproj exists, so describe.sh's image offload works.
+#   * Launch with --image when the mmproj exists, so /gemma-draft image reads work.
 #
 # Env:
 #   SPEC_AUTOSTART=0          disable auto-launch entirely (kill switch; default on)

@@ -10,7 +10,7 @@
 #   3  server unreachable (R4: caller should degrade silently to a normal turn)
 #   4  request failed / empty completion
 #
-# Keep calls SHORT on the critical path (predict.sh): few tokens, low timeout.
+# Default budgets are small; callers raise SPEC_MAX_TOKENS / SPEC_TIMEOUT as needed.
 set -uo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/lib.sh"
 

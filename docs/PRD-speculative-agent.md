@@ -1,5 +1,12 @@
 # PRD — Speculative Execution & Branch Prediction for the Gemma↔Opus agent
 
+> ⚠️ **Superseded (2026-06-10, R11):** the always-on hook pipeline this PRD specifies was
+> **retired by user decision** in favour of a single explicit `/gemma-draft` slash command
+> (no hooks; drafts and local image OCR happen only on demand). Sections describing
+> `predict.sh`/`speculate.sh`/`describe.sh`/`review.sh` and the hook registrations are
+> **historical record**, kept as the design log. Current behavior:
+> [.claude/spec/README.md](../.claude/spec/README.md).
+
 > **Living document.** This is both the spec *and* the progress tracker. Update the
 > **Status board** (§7) and the **Progress log** (§9) as work happens. The first thing to do
 > when resuming is: read the Status board, find the first `TODO`/`DOING`/`BLOCKED` item, and
@@ -335,6 +342,7 @@ To run it live: just use Claude Code in this repo — the first prompt auto-star
 
 Newest first. One line per meaningful change; reference commits/tags.
 
+- `2026-06-10` — **R11 — pivot to explicit command (user decision).** All hooks removed from `.claude/settings.json`; `predict.sh`, `speculate.sh`, `describe.sh`, `review.sh`, and the `gemma-draft` skill deleted. New `/gemma-draft` slash command (`.claude/commands/gemma-draft.md` → `.claude/spec/draft.sh`): one-shot text draft or local image OCR, only when the user asks. Automatic injection, branch prediction, and Read interception are gone by design (they require hooks). `lib.sh` trimmed to the live helpers; `stats.sh`/`/spec-stats` now report `/gemma-draft` usage; `ensure-server.sh` retained (auto-launch on first use).
 - `2026-06-10` — MH done (post-review hardening from a balanced full-system review). Exact-hit now consumes the fuzzy record too (no double-injection); verb gate on fuzzy hits (antonym prompts scored 50–66% Jaccard — verified — and would have injected wrong-direction drafts); image offload gets `SPEC_IMAGE_OFFLOAD=0` + offset/limit raw-pixel escape hatch (G6 default unchanged); NUL-check stops `*.out` binaries reaching the log digest; accepted/superseded outcome tracking via word containment answers Q2 crudely (`/spec-stats` shows acceptance rate; repo-state obs stored separately so it can't skew the metric). All paths tested offline.
 - `2026-06-10` — SECURITY FIX (automated commit review, HIGH): the MX pre-execution let Gemma propose commands from an allowlist → prompt-injection arbitrary-file-disclosure (`head /etc/passwd` passed). Replaced with a FIXED hard-coded git-status command set; the model now chooses nothing and no transcript text reaches a shell. Verified a malicious transcript leaks nothing. R10 updated.
 - `2026-06-10` — MX done (creative leverage, extended goal). Speculative read-only pre-execution (predicted "Commit the changes" → pre-ran git status+diff; allowlist unit-tested), large-log offload (347 KB → ~1K-token digest in 161ms, async Gemma summary, offset/limit escape hatch), token-savings estimator in /spec-stats. Evaluated-and-deferred ideas recorded so they aren't re-litigated. New R9/R10.

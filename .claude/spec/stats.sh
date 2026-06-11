@@ -1,70 +1,41 @@
 #!/usr/bin/env bash
-# stats.sh — summarize the speculative agent's predictor accuracy from stats.jsonl.
+# stats.sh — summarize /gemma-draft usage from stats.jsonl.
 # Run directly or via the /spec-stats slash command.
 set -uo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/lib.sh"
 
 if [ ! -s "$STATS_FILE" ]; then
-  echo "speculative-agent: no events yet ($STATS_FILE empty)."
-  echo "Start llama-server (scripts/start.sh) and run a few prompts to populate it."
+  echo "gemma-draft: no events yet ($STATS_FILE empty)."
+  echo "Run /gemma-draft <task> a few times to populate it."
   exit 0
 fi
 
 jq -rs '
   def c(f): map(select(f)) | length;
-  (map(select(.event=="predict")))                                  as $p
-  | ($p | c(.result=="hit"))                                        as $hit
-  | ($p | c(.result=="hit_predicted"))                              as $bp
-  | ($p | c(.result=="miss_drafted"))                               as $md
-  | ($p | c(.result=="miss_hard"))                                  as $mh
-  | ($p | c(.result=="miss_skipped_long"))                          as $ms
-  | ($p | c(.result=="miss_nodraft"))                               as $mn
-  | ($p | c(.result=="miss_offline"))                               as $off
-  | ($p | length)                                                   as $tot
-  | ($hit + $bp)                                                    as $hits
-  | ($tot - $off)                                                   as $online
-  | ([ $p[] | select(.result=="hit_predicted") | .score ])          as $scores
-  | (if ($scores|length)>0 then ($scores|add/(($scores|length))|floor) else 0 end) as $avg
-  | ($p | c(.result=="miss_image_prewarm"))                         as $mi
-  | ($p | c(.result=="miss_verb_gate"))                             as $vg
-  | (map(select(.event=="outcome")))                                as $o
-  | ($o | c(.verdict=="accepted"))                                  as $acc
-  | ($o | c(.verdict=="superseded"))                                as $sup
-  | (map(select(.event=="speculate")) | length)                     as $spec
-  | (map(select(.event=="image_offload")))                          as $imgs
-  | ($imgs | length)                                                as $nimg
-  | ($imgs | map(select(.cached==true)) | length)                   as $nimgc
-  | (map(select(.event=="image_prewarm")) | length)                 as $npre
-  | ($imgs | map(.bytes // 0) | add // 0)                           as $ibytes
-  | (map(select(.event=="log_offload")))                            as $logs
-  | ($logs | length)                                                as $nlog
-  | ($logs | map(((.bytes // 0)/4 - 1000) | if . < 0 then 0 else . end) | add // 0 | floor) as $logsave
-  | ($nimg * 1000)                                                  as $imgsave
-  | (($hit + $bp) * 200)                                            as $hitsave
-  | ($logsave + $imgsave + $hitsave)                                as $totsave
-  | def pct($n;$d): if $d>0 then (($n*1000/$d|floor)/10) else 0 end;
-  "speculative-agent stats  (\($tot) prompts seen)",
+  (map(select(.event=="draft")))                                    as $d
+  | ($d | c(.mode=="text" and .result=="ok"))                       as $txt
+  | ($d | c(.mode=="text" and .result=="fail"))                     as $fail
+  | ($d | c(.result=="offline"))                                    as $off
+  | ($d | map(select(.mode=="image")))                              as $imgcalls
+  | ($imgcalls | length)                                            as $icall
+  | ($imgcalls | map(.ok // 0) | add // 0)                          as $iok
+  | ($d | length)                                                   as $tot
+  | ([ $d[] | select(.result=="ok" or .mode=="image") | .ms // empty ]) as $lat
+  | (if ($lat|length)>0 then ($lat|add/(($lat|length))/1000*10|floor/10) else 0 end) as $avgs
+  | (map(select(.event=="autostart")) | length)                     as $auto
+  | (map(select(.event != "draft" and .event != "autostart")) | length) as $legacy
+  | ($iok * 1000)                                                   as $imgsave
+  | "gemma-draft usage  (\($tot) invocations)",
   "────────────────────────────────────────────",
-  "  cache hit (exact)        : \($hit)",
-  "  branch predicted (fuzzy) : \($bp)   avg match \($avg)%",
-  "  inline draft, easy (miss): \($md)",
-  "  hard — left to big model : \($mh)",
-  "  long — inline skipped    : \($ms)",
-  "  image — prewarm instead  : \($mi)",
-  "  verb-gated (overlap, ≠verb): \($vg)",
-  "  no draft  (miss)         : \($mn)",
-  "  offline   (server down)  : \($off)",
+  "  text drafts            : \($txt)",
+  "  image reads (local OCR): \($iok) files across \($icall) calls",
+  "  draft failed / empty   : \($fail)",
+  "  server was down        : \($off)",
+  "  server auto-launches   : \($auto)",
+  "  avg draft latency      : \($avgs)s",
   "────────────────────────────────────────────",
-  "  BRANCH-PREDICTION HIT RATE",
-  "    overall : \($hits)/\($tot) = \(pct($hits;$tot))%",
-  "    online  : \($hits)/\($online) = \(pct($hits;$online))%   (excludes offline turns)",
-  "  DRAFT OUTCOMES (containment heuristic)",
-  "    accepted : \($acc) · superseded : \($sup)" +
-    (if ($acc+$sup)>0 then "   (\(pct($acc;$acc+$sup))% accepted)" else "   (none judged yet)" end),
-  "  background speculations  : \($spec)",
-  "  image offloads           : \($nimg) (\($nimgc) instant from prewarm) · prewarms: \($npre)",
-  "  log digests              : \($nlog)",
-  "────────────────────────────────────────────",
-  "  est. big-model tokens kept off the bill: ~\($totsave)",
-  "    logs ~\($logsave) · images ~\($imgsave) · prediction hits ~\($hitsave)   (rough heuristics)"
+  "  est. big-model image tokens kept off the bill: ~\($imgsave)   (rough heuristic)"
+  + (if $legacy > 0 then
+       "\n  (plus \($legacy) legacy hook-era events from before the /gemma-draft pivot)"
+     else "" end)
 ' "$STATS_FILE"
