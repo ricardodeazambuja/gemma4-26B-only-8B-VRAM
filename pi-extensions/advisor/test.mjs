@@ -2,9 +2,9 @@
 // prompt building, reply capping, and the consult() flow with a fake runner
 // (never touches tmux/tui-driver).
 // Run: node --experimental-strip-types advisor/test.mjs
-import { mkdtempSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import {
   configPath, loadFileConfig, defaultConfig, DEFAULT_PROMPT_TEMPLATE,
   formatTranscript, buildPrompt, capReply, consult,
@@ -114,9 +114,12 @@ ok("happy path: not an error", !r.isError);
 ok("reply surfaced with agent name", r.text.includes("ADVISOR (fakeagent)") && r.text.includes("Watch the lock file."));
 ok("stopped → status, start, send (no stop)", f.calls.map(c => c[1]).join(",") === "status,start,send");
 const sendPrompt = f.calls[2][2];
-ok("prompt has transcript path + focus", /Read \/.*pi-advisor-t1\.md\. Focus on: locking/.test(sendPrompt));
-const written = readFileSync(sendPrompt.match(/Read (\S+)\./)[1], "utf8");
+ok("prompt has transcript path + focus", /Read \/.*pi-advisor-.*t1\.md\. Focus on: locking/.test(sendPrompt));
+const transcriptFile = sendPrompt.match(/Read (\S+)\./)[1];
+const written = readFileSync(transcriptFile, "utf8");
 ok("transcript file written with session content", written.includes("fix the bug"));
+ok("transcript file is 0600", (statSync(transcriptFile).mode & 0o777) === 0o600);
+ok("transcript dir is 0700", (statSync(dirname(transcriptFile)).mode & 0o777) === 0o700);
 
 f = fakeRunner({ status: { stdout: "running\n", code: 0, stderr: "" },
                  send: { stdout: "ok\n", code: 0, stderr: "" } });
@@ -146,8 +149,10 @@ ok("inline mode pastes (clipped) transcript text", f.calls[1][2].includes("SESSI
 f = fakeRunner({ status: { stdout: "running\n", code: 0, stderr: "" },
                  send: { stdout: "y".repeat(20000), code: 0, stderr: "" } });
 r = await consult(baseCfg, f.run, [], "", "t7");
-ok("long reply capped with saved-file pointer", r.text.includes("reply truncated") && /pi-advisor-t7-reply\.md/.test(r.text));
-ok("full reply persisted", readFileSync(join(tmpdir(), "pi-advisor-t7-reply.md"), "utf8").length === 20000);
+ok("long reply capped with saved-file pointer", r.text.includes("reply truncated") && /pi-advisor-.*t7-reply\.md/.test(r.text));
+const replyFile = r.text.match(/saved at (\S+)\]/)[1];
+ok("full reply persisted", readFileSync(replyFile, "utf8").length === 20000);
+ok("reply file is 0600", (statSync(replyFile).mode & 0o777) === 0o600);
 
 // --- registration -------------------------------------------------------------
 console.log("registration:");

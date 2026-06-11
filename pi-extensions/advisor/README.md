@@ -14,7 +14,9 @@ On each `advisor` call the extension:
    into a readable transcript — user/assistant text, thinking (clipped),
    tool calls (args clipped to ~400 chars), tool results (clipped to
    `maxToolResultChars`), `!` bash runs, extension injections, compaction
-   summaries — and writes it to `/tmp/pi-advisor-<call>.md`.
+   summaries — and writes it to `<private tmp dir>/<call>.md`. The dir is a
+   per-process `mkdtemp` (0o700) and files are 0o600: transcripts can contain
+   anything the session saw, so they never go world-readable into /tmp.
 2. Brings up the configured TUI via `tui-driver <command> start` (only if
    `status` says stopped; the cmd+dir lock makes later calls reuse it). The
    TUI starts in pi's working directory, so an agentic advisor can also read
@@ -22,7 +24,7 @@ On each `advisor` call the extension:
 3. `tui-driver <command> send "<prompt>"` — blocking; tui-driver waits for the
    screen to stabilise and prints the extracted reply.
 4. Returns the reply as the tool result (capped at `maxReplyChars`, full text
-   saved to `/tmp/pi-advisor-<call>-reply.md`). With `keepSession: false` the
+   saved next to the transcript). With `keepSession: false` the
    TUI is stopped after each call; otherwise tui-driver's idle watchdog
    (default 10 min, `TUI_WATCHDOG`) reaps it eventually.
 
@@ -84,5 +86,5 @@ Env overrides: `PI_ADVISOR_CMD`, `PI_ADVISOR_TUI_DRIVER`,
 ## Test
 
 ```bash
-node --experimental-strip-types advisor/test.mjs   # 39 checks, no tmux needed
+node --experimental-strip-types advisor/test.mjs   # 42 checks, no tmux needed
 ```

@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -153,6 +153,17 @@ export function capReply(reply: string, max: number, fullPath: string): string {
   return reply.slice(0, max) + `\n…[reply truncated — full text saved at ${fullPath}]`;
 }
 
+// Transcripts can contain anything the session saw (including secrets that
+// leaked into tool output), so they never go into world-readable /tmp:
+// one private 0o700 dir per pi process, files written 0o600.
+let advisorDirCache: string | null = null;
+export function advisorDir(): string {
+  if (!advisorDirCache || !existsSync(advisorDirCache)) {
+    advisorDirCache = mkdtempSync(join(tmpdir(), "pi-advisor-"));
+  }
+  return advisorDirCache;
+}
+
 // ---------------------------------------------------------------------------
 // tui-driver invocations. Injectable so tests never touch tmux.
 // ---------------------------------------------------------------------------
@@ -210,8 +221,8 @@ export async function consult(
   }
 
   const transcript = formatTranscript(entries, cfg.maxToolResultChars);
-  const transcriptPath = join(tmpdir(), `pi-advisor-${tag}.md`);
-  writeFileSync(transcriptPath, transcript, "utf8");
+  const transcriptPath = join(advisorDir(), `${tag}.md`);
+  writeFileSync(transcriptPath, transcript, { encoding: "utf8", mode: 0o600 });
 
   const transcriptArg = cfg.inlineTranscript
     ? clip(transcript, cfg.maxInlineChars)
@@ -263,8 +274,8 @@ export async function consult(
     };
   }
 
-  const replyPath = join(tmpdir(), `pi-advisor-${tag}-reply.md`);
-  writeFileSync(replyPath, reply, "utf8");
+  const replyPath = join(advisorDir(), `${tag}-reply.md`);
+  writeFileSync(replyPath, reply, { encoding: "utf8", mode: 0o600 });
 
   const note = sent.code !== 0 ? "\n\n(note: advisor timed out — reply may be incomplete)" : "";
   return {
