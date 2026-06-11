@@ -43,6 +43,7 @@ The full spec, build order, and rationale live in
 | 7 | [`stats`](stats/) | ✅ done | Per-session token/energy accounting. |
 | 8 | [`fetch-page`](fetch-page/) | ✅ done | Readable-text page fetcher (closes the search→read loop). |
 | + | [`thinking-router`](thinking-router/) | ✅ done | Routes the thinking budget per turn (engine-level energy lever, as pi code). |
+| + | [`advisor`](advisor/) | ✅ done | On-demand review by an external agent (via tui-driver) that sees the whole session. |
 
 ## Layout & dependencies
 
