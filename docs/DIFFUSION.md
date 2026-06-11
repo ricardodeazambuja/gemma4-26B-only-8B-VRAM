@@ -121,5 +121,39 @@ I am Gemma 4, a large language model.
 
 pi's *default* coding system prompt + tool schemas do not fit ctx 4096 —
 usable pi sessions need either a trimmed prompt or more context, which on
-8 GB VRAM means trading `-ngl` (CPU attention layers) for KV room. That
-sweep is the next experiment.
+8 GB VRAM means trading `-ngl` (CPU attention layers) for KV room.
+
+## Speed verdict: loses to autoregressive on this hardware — decisively
+
+NCMOE sweep, fixed prompt, greedy (identical 162-token output everywhere, so
+times are directly comparable). AR baseline: ~30 tok/s decode (§8, NCMOE=22).
+
+| Config | s/step | effective tok/s | VRAM |
+|---|---|---|---|
+| all experts CPU, `-fa on` forced | ~4.4 | 1.5 | 6.4 GiB |
+| NCMOE 28 (2 expert layers GPU), `-fa on` | — | 3.2 | 7.4 GiB |
+| NCMOE 27 (3 layers GPU), `-fa on` | — | 3.6 | 7.9 GiB |
+| NCMOE 26 (4 layers GPU) | **OOM** (wanted +2.6 GiB) | — | — |
+| all experts CPU, `-fa auto` | 2.23 | 4.1 | — |
+| **NCMOE 27, `-fa auto` (best)** | **1.76** | **~5.2 (est)** | 7.9 GiB |
+
+- `-fa on` must NOT be forced: the FA tensor lands on CPU with CPU-resident
+  experts, and forced-on FA ran 2.7× slower than auto (which disables it).
+- Best tunable config is **~5.8× slower than the AR baseline**, and the
+  VRAM wall (MHA KV + canvas buffers) caps GPU experts at 3 of 30 layers.
+
+**Why it can't win here:** block diffusion spends ~10,750 token-forwards to
+emit 162 tokens (256-token canvas × ~21 steps × 2 blocks) — **~66× the
+per-token compute of AR decode**. Its bet is that compute is nearly free
+(whole model GPU-resident, massive parallelism). On 8 GB, 27/30 expert
+layers live on the CPU, so each canvas pass costs ~2 s and the 66×
+multiplier lands on the slowest path. The same split that gives AR 30 tok/s
+gives diffusion 5. The headline "1100 tok/s on H100 FP8" needs the weights
+in VRAM; on a 24 GB consumer card (Q4_K_M fully resident) this model would
+plausibly beat AR — that is the hardware where this experiment becomes
+interesting again.
+
+**What survives the negative result:** the JSONL stdio mode
+(`patches/diffusion-cli-jsonl-mode.patch`, upstreamable), the shim pattern
+(any future diffusion arch with server-less support can reuse it), the
+OOM-abort finding worth reporting on PR #24423, and these measurements.
