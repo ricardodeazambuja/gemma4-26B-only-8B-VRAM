@@ -22,3 +22,5 @@ MEMORY.md
 # Speculative-agent runtime state (warm speculative results + predictor hit/miss log)
 .claude/spec/cache/
 .claude/spec/stats.jsonl
+.claude/spec/stats.archive.jsonl
+.claude/spec/last-session

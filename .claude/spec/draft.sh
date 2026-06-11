@@ -20,6 +20,9 @@ if [ -z "${task// /}" ]; then
   exit 0
 fi
 
+# First real call of this session: archive older stats so /spec-stats is per-session.
+spec_session_rollover
+
 # Manual calls are off the critical path — allow a real generation, not the old
 # 8 s hook budget. ~23 tok/s means a 512-token draft can take ~30 s.
 export SPEC_TIMEOUT="${SPEC_DRAFT_TIMEOUT:-120}"

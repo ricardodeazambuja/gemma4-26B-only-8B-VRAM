@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # stats.sh — summarize /gemma-draft usage from stats.jsonl.
 # Run directly or via the /spec-stats slash command.
+# Counts cover the current Claude Code session only: the first /gemma-draft call of
+# each session rolls earlier events into stats.archive.jsonl (spec_session_rollover).
 set -uo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/lib.sh"
 
+ARCHIVE_FILE="$SPEC_DIR/stats.archive.jsonl"
+
 if [ ! -s "$STATS_FILE" ]; then
-  echo "gemma-draft: no events yet ($STATS_FILE empty)."
+  echo "gemma-draft: no events this session ($STATS_FILE empty)."
   echo "Run /gemma-draft <task> a few times to populate it."
+  [ -s "$ARCHIVE_FILE" ] && echo "(previous sessions: $(wc -l < "$ARCHIVE_FILE") events archived in stats.archive.jsonl)"
   exit 0
 fi
 
@@ -25,7 +30,7 @@ jq -rs '
   | (map(select(.event=="autostart")) | length)                     as $auto
   | (map(select(.event != "draft" and .event != "autostart")) | length) as $legacy
   | ($iok * 1000)                                                   as $imgsave
-  | "gemma-draft usage  (\($tot) invocations)",
+  | "gemma-draft usage — this session  (\($tot) invocations)",
   "────────────────────────────────────────────",
   "  text drafts            : \($txt)",
   "  image reads (local OCR): \($iok) files across \($icall) calls",
@@ -39,3 +44,6 @@ jq -rs '
        "\n  (plus \($legacy) legacy hook-era events from before the /gemma-draft pivot)"
      else "" end)
 ' "$STATS_FILE"
+
+[ -s "$ARCHIVE_FILE" ] && echo "  (previous sessions: $(wc -l < "$ARCHIVE_FILE") events archived in stats.archive.jsonl)"
+exit 0

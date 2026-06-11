@@ -32,6 +32,20 @@ spec_server_up() {
   curl -fsS -m "$SPEC_CONNECT_TIMEOUT" "$SPEC_BASE/health" >/dev/null 2>&1
 }
 
+# spec_session_rollover -> on the first /gemma-draft call of a Claude Code session,
+# archive the previous sessions' stats and start fresh, so /spec-stats reports the
+# current session only. Keyed on CLAUDE_CODE_SESSION_ID; outside Claude Code (var
+# unset) stats just keep accumulating. Best-effort like spec_log: never errors.
+spec_session_rollover() {
+  local sid="${CLAUDE_CODE_SESSION_ID:-}" marker="$SPEC_DIR/last-session"
+  [ -n "$sid" ] || return 0
+  [ "$(cat "$marker" 2>/dev/null)" = "$sid" ] && return 0
+  if [ -s "$STATS_FILE" ]; then
+    cat "$STATS_FILE" >> "$SPEC_DIR/stats.archive.jsonl" 2>/dev/null && : > "$STATS_FILE"
+  fi
+  printf '%s\n' "$sid" > "$marker" 2>/dev/null || true
+}
+
 # spec_log <json-object-string> -> append one event to stats.jsonl (best-effort).
 # Timestamp is added by jq from the shell's date (cheap, not in the model path).
 spec_log() {

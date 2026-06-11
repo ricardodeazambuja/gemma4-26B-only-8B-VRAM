@@ -39,7 +39,7 @@ the command**. No install step, no hooks.
 | Surface | Script | What it does |
 |---|---|---|
 | `/gemma-draft <task>` | `draft.sh` | Text task → one local Gemma draft, injected as advisory context for the big model to verify. Image path in the task → Gemma OCRs/describes it locally (**0 big-model image tokens**, up to 3 images) |
-| `/spec-stats` | `stats.sh` | Usage report: drafts, local image reads, failures, estimated savings |
+| `/spec-stats` | `stats.sh` | Usage report for the **current session**: drafts, local image reads, failures, estimated savings |
 | (internal) | `gemma.sh` | Minimal OpenAI-API client to llama-server on :8080 (`--image` for vision) |
 | (internal) | `ensure-server.sh` | Auto-launch the tuned-optimal server when down (single-flight, non-blocking) |
 
@@ -65,7 +65,10 @@ what's right, fix what's wrong** — nothing is ever applied blindly.
 | `SPEC_DRAFT_TIMEOUT` | `120` | Seconds to wait for a manual draft |
 | `SPEC_HOST` / `SPEC_PORT` / `SPEC_MODEL` | `127.0.0.1` / `8080` / gemma-4-26b-a4b-qat | Where the draft tier lives |
 
-Runtime state (`cache/`, `stats.jsonl`) is gitignored.
+Runtime state (`cache/`, `stats.jsonl`, `stats.archive.jsonl`, `last-session`) is
+gitignored. Stats are **per-session**: the first `/gemma-draft` call of each Claude Code
+session (detected via `CLAUDE_CODE_SESSION_ID`) rolls the previous sessions' events into
+`stats.archive.jsonl`, so `/spec-stats` reflects only what the current session used.
 
 ## Troubleshooting
 
