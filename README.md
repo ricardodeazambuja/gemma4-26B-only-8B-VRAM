@@ -424,6 +424,11 @@ There's also a built-in web UI at <http://127.0.0.1:8080>.
 │   └── inspect-gguf.py       #   (the implementation; .sh runs it in the env)
 ├── config/
 │   └── pi-provider.json      # pi provider definition
+├── pi-extensions/            # pi extensions tuned for local Gemma (own README + PLAN)
+│   ├── setup.sh              # one-shot: npm install + link into ~/.pi/agent/extensions
+│   └── <name>/               # one dir per extension: verified-edits, symbols, loop-breaker,
+│                             #   plan, semantic-memory, operating-manual, stats, fetch-page,
+│                             #   web-search, thinking-router, advisor (each: index.ts + tests)
 ├── docs/
 │   ├── TECHNICAL.md          # engineering write-up (architecture, perf, multimodal)
 │   └── speed.svg             # backend speed comparison chart (in the README)

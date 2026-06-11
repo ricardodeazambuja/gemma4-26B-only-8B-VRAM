@@ -160,13 +160,14 @@ continuation.
 - [x] 2. symbols — done, 30 tests passing (regex extractor; tree-sitter swap deferred)
 - [x] 3. loop-breaker — done, 15 tests passing
 - [x] 4. plan — done, 22 tests passing
-- [x] 5. semantic-memory — done, 30 tests passing (needs llama-server --embeddings)
+- [x] 5. semantic-memory — done, 34 tests passing (needs llama-server --embeddings)
 - [x] 6. operating-manual — done, 19 tests passing
 - [x] 7. stats — done, 26 tests passing (RAPL energy_uj often root-only)
 - [x] 8. fetch-page — done, 18 tests passing (live-verified google + wikipedia)
 - [x] +. thinking-router — done, 14 tests passing (engine-level lever as pi code)
+- [x] +. advisor — done, 45 tests passing (external reviewer agent via tui-driver; sees the whole session)
 
-All items complete. 185 tests passing across the set (`./run-tests.sh`).
+All items complete. 234 tests passing across the set (`./run-tests.sh`).
 Deployed via `install.sh`; extension loading verified in a real pi run (the
 model call itself OOM'd in CI's 1.7 GiB, but all extensions loaded cleanly).
 

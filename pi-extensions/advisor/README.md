@@ -92,5 +92,5 @@ Env overrides: `PI_ADVISOR_CMD`, `PI_ADVISOR_TUI_DRIVER`,
 ## Test
 
 ```bash
-node --experimental-strip-types advisor/test.mjs   # 43 checks, no tmux needed
+node --experimental-strip-types advisor/test.mjs   # 45 checks, no tmux needed
 ```
