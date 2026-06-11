@@ -159,7 +159,7 @@ continuation.
 - [x] 3. loop-breaker — done, 15 tests passing
 - [x] 4. plan — done, 22 tests passing
 - [x] 5. semantic-memory — done, 30 tests passing (needs llama-server --embeddings)
-- [ ] 6. operating-manual
+- [x] 6. operating-manual — done, 19 tests passing
 - [ ] 7. stats
 - [ ] 8. fetch-page
 
