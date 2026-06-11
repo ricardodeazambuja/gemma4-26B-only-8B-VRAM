@@ -158,7 +158,7 @@ continuation.
 - [x] 2. symbols — done, 30 tests passing (regex extractor; tree-sitter swap deferred)
 - [x] 3. loop-breaker — done, 15 tests passing
 - [x] 4. plan — done, 22 tests passing
-- [ ] 5. semantic-memory
+- [x] 5. semantic-memory — done, 30 tests passing (needs llama-server --embeddings)
 - [ ] 6. operating-manual
 - [ ] 7. stats
 - [ ] 8. fetch-page

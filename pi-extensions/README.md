@@ -38,7 +38,7 @@ The full spec, build order, and rationale live in
 | 2 | [`symbols`](symbols/) | ✅ done | `get_symbols`/`find_symbol` outlines instead of whole-file reads. |
 | 3 | [`loop-breaker`](loop-breaker/) | ✅ done | Nudge after 3 identical failing tool calls. |
 | 4 | [`plan`](plan/) | ✅ done | External task-state checklist, re-injected at tail. |
-| 5 | `semantic-memory` | ⬜ planned | Cross-session memory with automatic recall. |
+| 5 | [`semantic-memory`](semantic-memory/) | ✅ done | Cross-session memory with automatic recall. |
 | 6 | `operating-manual` | ⬜ planned | If-then rules in the system prefix + JIT nudges. |
 | 7 | `stats` | ⬜ planned | Per-session token/energy accounting. |
 | 8 | `fetch-page` | ⬜ planned | Readable-text page fetcher (closes the search→read loop). |
