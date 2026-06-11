@@ -1,0 +1,59 @@
+diff --git a/examples/diffusion/diffusion-cli.cpp b/examples/diffusion/diffusion-cli.cpp
+index 3d20635..862e040 100644
+--- a/examples/diffusion/diffusion-cli.cpp
++++ b/examples/diffusion/diffusion-cli.cpp
+@@ -1,5 +1,7 @@
+ #include "arg.h"
+ #include "chat.h"
++
++#include <nlohmann/json.hpp>
+ #include "common.h"
+ #include "diffusion.h"
+ #include "ggml-backend.h"
+@@ -558,6 +560,46 @@ int main(int argc, char ** argv) {
+             return 1;
+         }
+ 
++        // JSONL stdio mode for programmatic frontends (e.g. an OpenAI-compatible shim).
++        // One request per stdin line:  {"messages":[{"role":"user","content":"..."},...]}
++        // One response per stdout line: {"content":"...","ms":...} or {"error":"..."}
++        // Stateless: every request carries the full history (matches how agent
++        // frontends resend context). Don't combine with --diffusion-visual.
++        if (const char * jsonl_env = getenv("LLAMA_DIFFUSION_JSONL"); jsonl_env && jsonl_env[0] == '1') {
++            common_log_flush(common_log_main());
++            fprintf(stdout, "{\"ready\":true}\n");
++            fflush(stdout);
++            std::string line;
++            while (std::getline(std::cin, line)) {
++                if (line.empty()) {
++                    continue;
++                }
++                nlohmann::ordered_json out;
++                try {
++                    const auto req = nlohmann::json::parse(line);
++                    std::vector<common_chat_msg> msgs;
++                    if (!params.system_prompt.empty()) {
++                        msgs.push_back(make_msg("system", params.system_prompt));
++                    }
++                    for (const auto & m : req.at("messages")) {
++                        msgs.push_back(make_msg(m.at("role").get<std::string>(), m.at("content").get<std::string>()));
++                    }
++                    const int64_t t0 = ggml_time_us();
++                    out["content"]   = run_turn(apply_template(msgs));
++                    out["ms"]        = (ggml_time_us() - t0) / 1000.0;
++                } catch (const std::exception & e) {
++                    out["error"] = e.what();
++                }
++                common_log_flush(common_log_main());
++                fprintf(stdout, "%s\n", out.dump().c_str());
++                fflush(stdout);
++            }
++            llama_free(ctx);
++            llama_model_free(model);
++            llama_backend_free();
++            return 0;
++        }
++
+         // Multi-turn: each turn re-applies the template to the full history and denoises a fresh canvas
+         // (no state is kept across turns). History is bounded by the ubatch cap (run_turn reports overflow).
+         std::vector<common_chat_msg> messages;
