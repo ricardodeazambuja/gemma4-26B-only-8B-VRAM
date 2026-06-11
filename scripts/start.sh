@@ -61,6 +61,17 @@ source "$REPO_ROOT/scripts/_banner.sh"
 # Shared auto-tuning cache (tune_get/tune_set) — see scripts/_tuning.sh.
 source "$REPO_ROOT/scripts/_tuning.sh"
 
+# Actionable hints printed after a server fails to start (OOM / missing build /
+# port clash). Called from both startup-failure paths in the launch block below.
+server_start_hints() {
+  echo ">> Common causes & fixes:"
+  echo "   • out of GPU memory — smaller context (CTX=32768), push more experts to CPU"
+  echo "     (raise NCMOE, e.g. NCMOE=27), or quantize the KV cache (KVQUANT=q8_0)."
+  echo "   • CUDA build missing — build it once:  bash scripts/build-llama-cuda.sh"
+  echo "   • port $PORT already in use — stop a stale server:  bash scripts/stop-server.sh"
+  echo "   • full log:  $SERVER_LOG"
+}
+
 # --- interactive setup (--menu) ---------------------------------------------
 # A guided walk-through of every knob and the auto-tune-vs-manual fork. It sets
 # the SAME env vars the equivalent command line would (BACKEND/CTX/NCMOE/KVQUANT/
@@ -433,19 +444,54 @@ else
   echo ">> starting server in background (logs: $SERVER_LOG) ..."
   nohup bash "$REPO_ROOT/scripts/run-server.sh" "${SERVER_ARGS[@]}" > "$SERVER_LOG" 2>&1 &
   SRV_PID=$!
-  printf ">> waiting for the model to load"
-  for _ in $(seq 1 150); do          # up to ~5 min
-    if curl -fsS "http://$HOST:$PORT/health" >/dev/null 2>&1; then printf " ready.\n"; break; fi
-    if ! kill -0 "$SRV_PID" 2>/dev/null; then
-      printf "\nERROR: server exited while starting. Last log lines:\n"
-      tail -20 "$SERVER_LOG"; exit 1
+
+  # If the user aborts (Ctrl-C) while the model is still loading, don't leave the
+  # background server orphaned and silent — say it's still coming up and how to stop it.
+  _abort_during_load() {
+    printf '\n>> aborted while the model was loading.\n'
+    if kill -0 "$SRV_PID" 2>/dev/null; then
+      echo "   The server is still starting in the background (PID $SRV_PID)."
+      echo "   Watch:  tail -f $SERVER_LOG     Stop:  bash scripts/stop-server.sh"
     fi
-    printf "."; sleep 2
+    exit 130
+  }
+  trap _abort_during_load INT TERM
+
+  # Live progress (elapsed seconds + the latest server log line) instead of a blank
+  # wall of dots, so a multi-minute first load visibly advances rather than looking
+  # hung. Falls back to plain dots when stdout isn't a terminal (e.g. piped/-p runs).
+  echo ">> waiting for the model to load — first load can take a few minutes (Ctrl-C aborts)"
+  _t0=$SECONDS; _tty=0; [ -t 1 ] && _tty=1
+  for _ in $(seq 1 150); do          # up to ~5 min
+    if curl -fsS "http://$HOST:$PORT/health" >/dev/null 2>&1; then
+      [ "$_tty" = 1 ] && printf '\r\033[K'
+      echo ">> model ready in $((SECONDS - _t0))s."
+      break
+    fi
+    if ! kill -0 "$SRV_PID" 2>/dev/null; then
+      [ "$_tty" = 1 ] && printf '\r\033[K'
+      echo "ERROR: the server exited while starting. Last log lines:"
+      tail -20 "$SERVER_LOG"
+      server_start_hints
+      exit 1
+    fi
+    if [ "$_tty" = 1 ]; then
+      _last="$(grep -av '^[[:space:]]*$' "$SERVER_LOG" 2>/dev/null | tail -1 || true)"
+      printf '\r\033[K>> loading… %3ds  %s' "$((SECONDS - _t0))" "$(printf '%.68s' "$_last")"
+    else
+      printf '.'
+    fi
+    sleep 2
   done
+  trap - INT TERM
   if ! curl -fsS "http://$HOST:$PORT/health" >/dev/null 2>&1; then
-    echo; echo "ERROR: server did not become healthy in time. See $SERVER_LOG"; exit 1
+    [ "$_tty" = 1 ] || echo
+    echo "ERROR: the server did not become healthy within ~5 min. Last log lines:"
+    tail -20 "$SERVER_LOG"
+    server_start_hints
+    exit 1
   fi
-  echo ">> server up (PID $SRV_PID). Stop it later with: bash scripts/stop-server.sh"
+  echo ">> server up at http://$HOST:$PORT  (PID $SRV_PID · backend $(resolve_backend) · CTX=$CTX). Stop later: bash scripts/stop-server.sh"
   STARTED_SERVER=1
 fi
 
