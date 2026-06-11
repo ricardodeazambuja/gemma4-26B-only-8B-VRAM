@@ -18,6 +18,8 @@ and the **caveats** discovered along the way. It is the engineering companion to
 - [12. Reproducibility](#12-reproducibility)
 - [13. Running bigger models](#13-running-bigger-models)
 - [14. Multimodal: images via the mmproj](#14-multimodal-images-via-the-mmproj)
+- [15. The harness layer: `pi-extensions/`](#15-the-harness-layer-pi-extensions)
+- [16. Experimental: DiffusionGemma Block-Diffusion](#16-experimental-diffusiongemma-block-diffusion)
 
 ---
 
@@ -997,3 +999,48 @@ resources the advised agent holds until tui-driver's idle watchdog reaps it.
 - **Engine levers** (tracked in PLAN.md): speculative decoding via `--model-draft`
   (~1.5–2.5× decode, identical output), and GBNF/JSON-schema-constrained tool calls if the
   custom build exposes them.
+
+## 16. Experimental: DiffusionGemma Block-Diffusion
+
+This section outlines the engineering efforts, performance analyses, and lessons learned from integrating [unsloth/diffusiongemma-26B-A4B-it-GGUF](https://huggingface.co/unsloth/diffusiongemma-26B-A4B-it-GGUF) (a block-diffusion variant of Gemma 4) into the `pi` local coding agent workflow.
+
+### 16.1 Integration Architecture
+
+DiffusionGemma operates on a different paradigm than standard autoregressive (AR) models: instead of generating one token per forward pass, it parallel-denoises a 256-token canvas.
+
+Because the upstream draft PR [#24423](https://github.com/ggml-org/llama.cpp/pull/24423) only ships a CLI tool (`llama-diffusion-cli`) and lacks `llama-server` integration, we filled the gap with a Node-based HTTP server shim (`scripts/diffusion-shim.mjs`). This shim keeps one persistent `llama-diffusion-cli` child process alive and exposes an OpenAI-compatible endpoint (`/v1/chat/completions`) for `pi`.
+
+```
+[pi] ◄──openai-completions──► [HTTP Shim (:8082)] ◄──jsonl stdio──► [llama-diffusion-cli] (model resident)
+```
+
+The child process is run in JSONL stdio mode via `patches/diffusion-cli-jsonl-mode.patch`, enabling stateless request processing (sending the full message history on each turn) while keeping weights resident in memory.
+
+### 16.2 Memory Optimization & The Double-OOM Problem
+
+On an 8 GB VRAM rig, running a 26B parameter model (even with `--cpu-moe` offloading most experts to RAM) pushes VRAM boundaries to their absolute limit. We encountered two distinct memory ceilings:
+
+1. **Compute Buffer OOM**: By default, `llama-diffusion-cli` targets a canvas size of `-n 1024`, which allocates a massive **3.14 GB** graph compute buffer. This left less than 4.5 GB of VRAM for model weights, attention layers, and the KV cache.
+   - **Fix**: We changed the default canvas size from `-n 1024` to **`-n 512`** in `scripts/run-diffusion-shim.sh`. This halved the graph buffer to **~1.5 GB**, saving over **1.6 GB of VRAM** and allowing expert offloading configurations (like `NCMOE=27` or `NCMOE=28`) to fit on the GPU.
+2. **Lazy Allocation OOM**: The CLI allocates a **256 MiB** self-conditioning buffer (`sc_dev_buf`) on the *first inference turn*. If the system is run with too many experts on the GPU (e.g. `NCMOE=22`), the model will load successfully but crash immediately on the first prompt with a hard assertion failure (`GGML_ASSERT(m.sc_dev_buf != nullptr)`).
+   - **Fix**: We ensure at least 400+ MiB of VRAM headroom remains by setting `NCMOE=28` or using `--diffusion-gpu-sampling off` to disable device-resident self-conditioning.
+
+### 16.3 Process Cleanup & Resource Reclamation
+
+Standard network port checks do not detect the `llama-diffusion-cli` child because it communicates entirely via `stdin` and `stdout` pipes. When the parent Node.js shim exited or crashed, the child CLI process was frequently orphaned, leaking **7.7 GB of VRAM**.
+- **Fix**: We updated `scripts/stop-server.sh` to explicitly search for and reap any active `llama-diffusion-cli` processes using `pkill -f llama-diffusion-cli`, ensuring VRAM is cleanly reclaimed.
+
+### 16.4 Client Context Synchronization
+
+If `pi` is unaware of the server's context boundaries, it may try to send prompts that exceed the server's limit or attempt to compact the context in an infinite loop.
+- **Fix**: We adapted `scripts/configure-pi.sh` to update `models.json` for the `diffusion` provider, and configured `scripts/start.sh` to automatically sync the client and server context windows.
+
+### 16.5 Performance Verdict
+
+While DiffusionGemma is a fascinating engineering experiment, our benchmark sweeps show that **it is decisively slower than standard autoregressive (AR) models on offloaded (8 GB VRAM) hardware**:
+
+* **Autoregressive Baseline**: ~30 tok/s decode (`NCMOE=22`).
+* **DiffusionGemma (Best Config)**: ~5.2 effective tok/s (`NCMOE=27`, `-fa auto`).
+
+**Why?** Block diffusion requires about 10,750 token-forwards to emit a 162-token response (256-token canvas &times; ~21 steps &times; 2 blocks)—roughly **66&times; the per-token compute of AR decode**. On high-end hardware (e.g. H100 or a 24 GB consumer card) where the entire model fits in VRAM and parallel compute is cheap, this trade-off makes sense. However, on an 8 GB rig where 27 of the 30 expert layers live in system RAM, the 66&times; compute multiplier lands on our slowest hardware path (the CPU-RAM bus), resulting in a ~5.8&times; slowdown.
+

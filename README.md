@@ -368,6 +368,30 @@ usable context at its previously configured window (32768 by default).
 
 ---
 
+## Experimental: DiffusionGemma Block-Diffusion
+
+This branch (`feat/diffusiongemma`) includes an experimental integration for the DiffusionGemma block-diffusion model ([unsloth/diffusiongemma-26B-A4B-it-GGUF](https://huggingface.co/unsloth/diffusiongemma-26B-A4B-it-GGUF)). Rather than generating one token per forward pass, it parallel-denoises a 256-token canvas.
+
+### How to Run
+To run in diffusion mode, you can use the interactive menu:
+```bash
+./scripts/start.sh --menu
+```
+Or start the server and shim directly:
+```bash
+./scripts/start.sh --diffusion
+```
+This launches a custom Node HTTP shim on port `8082` that acts as an OpenAI-compatible bridge to a single persistent `llama-diffusion-cli` instance.
+
+### Key Lessons & Work Done
+1. **Memory Optimization**: By default, `llama-diffusion-cli` allocates a massive **3.14 GB** compute buffer when generating at canvas size `-n 1024`. On an 8 GB VRAM GPU, this immediately triggers Out-of-Memory (OOM) errors. We reduced the default canvas size to **`-n 512`**, shrinking the buffer to **~1.5 GB** and freeing enough VRAM to allow expert layers to be offloaded to the GPU (`NCMOE=27` or `28`).
+2. **Process Management**: The HTTP shim did not automatically kill the child CLI on shutdown. We updated `stop-server.sh` to forcefully reap orphaned `llama-diffusion-cli` instances using `pkill`, preventing VRAM leaks.
+3. **Context Sync**: To prevent `pi` from entering an infinite context compaction loop, we automated syncing `pi`'s context window settings in `models.json` with the server's context window.
+
+For a full breakdown of the architecture, memory calculations, performance sweeps, and limitations (such as prefill cost every turn), see the detailed guide in **[docs/DIFFUSION.md](docs/DIFFUSION.md)** and the technical analysis in **[docs/TECHNICAL.md](docs/TECHNICAL.md)**.
+
+---
+
 ## Using it without pi
 
 `llama-server` exposes a standard OpenAI API, so any client works:

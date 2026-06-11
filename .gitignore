@@ -1,4 +1,5 @@
 # Model weights (download with scripts/setup.sh — ~14 GB, do not commit)
+models
 models/*
 !models/.gitkeep
 
