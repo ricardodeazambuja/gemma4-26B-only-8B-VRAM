@@ -36,7 +36,7 @@ The full spec, build order, and rationale live in
 | — | [`web-search`](web-search/) | ✅ done | Google search via stealth Playwright (bot-detection bypass). |
 | 1 | [`verified-edits`](verified-edits/) | ✅ done | Auto-runs the cheapest checker after every edit; appends errors in-band. |
 | 2 | [`symbols`](symbols/) | ✅ done | `get_symbols`/`find_symbol` outlines instead of whole-file reads. |
-| 3 | `loop-breaker` | ⬜ planned | Nudge after 3 identical failing tool calls. |
+| 3 | [`loop-breaker`](loop-breaker/) | ✅ done | Nudge after 3 identical failing tool calls. |
 | 4 | `plan` | ⬜ planned | External task-state checklist, re-injected at tail. |
 | 5 | `semantic-memory` | ⬜ planned | Cross-session memory with automatic recall. |
 | 6 | `operating-manual` | ⬜ planned | If-then rules in the system prefix + JIT nudges. |
