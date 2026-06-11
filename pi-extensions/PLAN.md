@@ -160,7 +160,7 @@ continuation.
 - [x] 4. plan — done, 22 tests passing
 - [x] 5. semantic-memory — done, 30 tests passing (needs llama-server --embeddings)
 - [x] 6. operating-manual — done, 19 tests passing
-- [ ] 7. stats
+- [x] 7. stats — done, 26 tests passing (RAPL energy_uj often root-only)
 - [ ] 8. fetch-page
 
 Each item: one directory per extension under `~/.pi/agent/extensions/<name>/`
