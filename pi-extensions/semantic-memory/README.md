@@ -43,13 +43,32 @@ single-digit milliseconds in plain JS — **no ANN, no quantization, no Turbovec
 (rejected: alpha-stage, only pays off ≫10⁵ vectors). Isolated behind
 `cosineSearch` so the index is swappable if the corpus ever grows.
 
-## Embeddings — run a second llama-server
+## Embeddings — quickest path: Ollama (verified)
+
+If you already run Ollama, one script pulls EmbeddingGemma and verifies it through
+this extension's own `embed()`:
 
 ```bash
-llama-server --embeddings -m embeddinggemma-Q8_0.gguf --port 8081
+./setup-embeddings.sh          # ollama pull embeddinggemma + end-to-end verify
 ```
 
-Configure via env (defaults shown):
+Verified working: 768-dim vectors, related/unrelated cosine 0.79 / 0.34. Then set
+in pi's environment and `/reload`:
+
+```bash
+export PI_EMBED_URL=http://127.0.0.1:11434/v1/embeddings
+export PI_EMBED_MODEL=embeddinggemma
+```
+
+Re-verify any time with `node --experimental-strip-types verify-embeddings.mjs`.
+
+### Alternative: a standalone llama-server
+
+```bash
+llama-server --embeddings -m embeddinggemma-300M-Q8_0.gguf --port 8081
+```
+
+Configure via env (defaults target a llama-server on :8081):
 
 | Var | Default |
 |-----|---------|
