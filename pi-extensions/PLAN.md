@@ -157,7 +157,7 @@ continuation.
 - [x] 1. verified-edits — done, 11 tests passing
 - [x] 2. symbols — done, 30 tests passing (regex extractor; tree-sitter swap deferred)
 - [x] 3. loop-breaker — done, 15 tests passing
-- [ ] 4. plan
+- [x] 4. plan — done, 22 tests passing
 - [ ] 5. semantic-memory
 - [ ] 6. operating-manual
 - [ ] 7. stats
