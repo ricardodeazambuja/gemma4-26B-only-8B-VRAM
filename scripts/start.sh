@@ -23,12 +23,16 @@
 #   BACKEND  cuda | vulkan | cpu          (default: auto-detect)
 #   CTX      context window, in tokens    (default: 32768)
 #   NCMOE    expert layers kept on CPU; lower = more on GPU = faster (default: all)
-#   KVQUANT  KV-cache quant: f16(off) | q8_0 | q5_1 | q4_0 | ...   (default: off)
+#   KVQUANT  KV-cache quant: f16(off) | q8_0 | q5_1 | q4_0 | ...
+#            (default: the KV quant you picked in a previous sweep/--menu,
+#             remembered in the tuning cache; f16/off if you never picked one)
 #   TEMP / TOP_P / TOP_K  sampling        (defaults: 1.0 / 0.95 / 64)
 #   --image  load the vision projector so the server accepts images
 #
 #   KVQUANT also keys the auto-tune cache (backend × context × KV quant), so the
 #   tuned expert split is measured per KV-quant setting — they don't collide.
+#   The first sweep explores the KV dimension too (KVQUANT_LIST, default
+#   f16,q8_0) and your pick — context AND KV quant — is what gets remembered.
 #
 #   STOP_ON_EXIT  control the shutdown offer after pi exits:
 #                 unset = ask (only when interactive); 1 = always stop; 0 = never
@@ -38,14 +42,16 @@
 #                 cache) so later launches reuse it instantly. Two modes:
 #                   * CTX pinned (you passed CTX=)  -> tune NCMOE for that context.
 #                   * no CTX (the default)          -> sweep several contexts
-#                       (CTX_LIST × NCMOE_LIST), show the fastest that fits at
-#                       each, and let you PICK which context to launch; your
-#                       pick is remembered for next time.
+#                       (CTX_LIST × NCMOE_LIST × KVQUANT_LIST — KV is part of
+#                       the grid unless pinned by KVQUANT= or a remembered
+#                       pick), show the fastest that fits at each, and let you
+#                       PICK which config to launch; your pick — context AND
+#                       KV quant — is remembered for next time.
 #                   unset = reuse a saved result, else ask (interactive only)
 #                   1     = force a fresh measurement/sweep (ignore the cache)
 #                   0     = never tune, never ask
 #                 An explicit NCMOE= always wins and skips tuning entirely.
-#                 Override the sweep grid with CTX_LIST= / NCMOE_LIST=.
+#                 Override the sweep grid with CTX_LIST= / NCMOE_LIST= / KVQUANT_LIST=.
 #
 set -euo pipefail
 
@@ -193,9 +199,9 @@ configure_menu() {
   case "$MENU_REPLY" in
     2) export KVQUANT=q8_0 ;;
     3) export KVQUANT=q4_0 ;;
-    4) _menu_text "   KV type (q5_1|q5_0|q4_1|iq4_nl|bf16|f32) [f16]: " ""
+    4) _menu_text "   KV type (q5_1|q5_0|q4_1|iq4_nl|bf16|f32) [f16]: " f16
        export KVQUANT="$MENU_REPLY" ;;
-    *) export KVQUANT="" ;;
+    *) export KVQUANT=f16 ;;   # explicit, so a cache-saved KV pick can't override the menu
   esac
 
   # 4) Sampling --------------------------------------------------------------
@@ -233,6 +239,9 @@ configure_menu() {
   echo "─────────────────────────────────────────────────────────"
   _menu_yesno ">> Launch with these settings? [Y/n]  (q cancels) " yes
   [ "$MENU_REPLY" = yes ] || _menu_cancel
+  # The confirmed menu pick is an explicit choice — remember the KV quant so
+  # later bare launches (no KVQUANT=) land on the same KV universe.
+  tune_set "$(tune_kv_key "$BE")" "${KVQUANT:-f16}"
   echo
 }
 
@@ -299,6 +308,20 @@ else
   #   * no CTX (the default)          -> sweep several contexts, then you pick
   #                                       which to launch (remembered as 'chosen').
   BE="$(resolve_backend)"
+  # KV-quant resolution: an explicit KVQUANT= (env or --menu) wins; otherwise
+  # reuse the KV quant picked in a previous sweep/--menu (chosen-kv in the
+  # tuning cache); else default f16. KV_SOURCE also decides whether the sweep
+  # below explores the KV dimension (default → yes; env/cache → pinned, except
+  # AUTOTUNE=1 which re-explores everything not pinned by env).
+  KV_SOURCE=default                # default | env | cache
+  [ -n "${KVQUANT:-}" ] && KV_SOURCE=env
+  if [ "$KV_SOURCE" = default ]; then
+    _saved_kv="$(tune_get "$(tune_kv_key "$BE")")"
+    if [ -n "$_saved_kv" ]; then
+      export KVQUANT="$_saved_kv"; KV_SOURCE=cache
+      echo ">> auto-tune: reusing saved KV quant KVQUANT=$KVQUANT (re-explore: AUTOTUNE=1 bash scripts/start.sh)"
+    fi
+  fi
   KV="${KVQUANT:-f16}"             # tuning-cache dimension (f16 = unquantized KV)
   bench_port=8099; [ "$bench_port" = "$PORT" ] && bench_port=8100
   if [ -n "${NCMOE:-}" ]; then
@@ -334,7 +357,7 @@ else
       fi
       if [[ "$ans" =~ ^[Yy]$ ]]; then
         echo ">> measuring (this is the slow part — once) ..."
-        CTX="$CTX" BACKEND="$BE" KVQUANT="$KVQUANT" NCMOE_LIST="$nlist" PORT="$bench_port" \
+        CTX="$CTX" BACKEND="$BE" KVQUANT="$KV" NCMOE_LIST="$nlist" PORT="$bench_port" \
           bash "$REPO_ROOT/scripts/benchmark-config.sh" || true
         best="$(tune_get "$(tune_key "$BE" "$CTX" "$KV")")"
         if [[ "$best" =~ ^[0-9]+$ ]]; then
@@ -365,11 +388,20 @@ else
     elif [ -t 0 ]; then
       clist="${CTX_LIST:-16384,32768,65536,131072}"
       nlist="${NCMOE_LIST:-22,27,30}"
-      nprobes=$(( $(awk -F, '{print NF}' <<< "$clist") * $(awk -F, '{print NF}' <<< "$nlist") ))
+      # KV grid: explicit env (or --menu) pins it; a cache-saved pick pins it too
+      # unless AUTOTUNE=1 asked for a full re-exploration; otherwise sweep KV as
+      # a third dimension so the pick below chooses context AND KV quant.
+      if [ "$KV_SOURCE" = env ] || { [ "$KV_SOURCE" = cache ] && [ "${AUTOTUNE:-}" != 1 ]; }; then
+        kvlist="$KV"
+      else
+        kvlist="${KVQUANT_LIST:-f16,q8_0}"
+      fi
+      nprobes=$(( $(awk -F, '{print NF}' <<< "$clist") * $(awk -F, '{print NF}' <<< "$nlist") * $(awk -F, '{print NF}' <<< "$kvlist") ))
       echo
       echo ">> No context tuned yet for BACKEND=$BE. Auto-tuning can sweep several context"
-      echo "   sizes ($clist) × expert splits ($nlist) and show the fastest that fits at each,"
-      echo "   so you can pick how much context to run. It launches the server up to $nprobes time(s)"
+      echo "   sizes ($clist) × expert splits ($nlist) × KV quants ($kvlist) and show the"
+      echo "   fastest that fits at each, so you can pick how much context to run (and under"
+      echo "   which KV quant). It launches the server up to $nprobes time(s)"
       echo "   — roughly ${nprobes}–$(( nprobes + nprobes/2 )) min, measured once and remembered."
       if [ "${TUNE_YES:-}" = 1 ]; then
         ans=y                              # --menu auto-tune choice: don't re-ask
@@ -378,31 +410,40 @@ else
       fi
       if [[ "$ans" =~ ^[Yy]$ ]]; then
         echo ">> sweeping (this is the slow part — once) ..."
-        # CTX= (empty) so benchmark-config.sh sweeps CTX_LIST instead of pinning our default.
-        CTX= BACKEND="$BE" KVQUANT="$KVQUANT" CTX_LIST="$clist" NCMOE_LIST="$nlist" PORT="$bench_port" \
+        # CTX=/KVQUANT= (empty) so benchmark-config.sh sweeps the LISTs instead of pinning.
+        CTX= BACKEND="$BE" KVQUANT= KVQUANT_LIST="$kvlist" CTX_LIST="$clist" NCMOE_LIST="$nlist" PORT="$bench_port" \
           bash "$REPO_ROOT/scripts/benchmark-config.sh" || true
-        # Build the menu from what fit (cache holds backend:ctx:kv=NCMOE per swept ctx).
-        opts=()
+        # Build the menu from what fit (cache holds backend:ctx:kv=NCMOE per swept combo).
+        opts=()                                  # entries: "ctx:ncmoe:kv"
         IFS=',' read -r -a _cl <<< "$clist"
+        IFS=',' read -r -a _kl <<< "$kvlist"
         for c in "${_cl[@]}"; do
           c="$(printf '%s' "$c" | tr -d ' ')"
-          v="$(tune_get "$(tune_key "$BE" "$c" "$KV")")"
-          [[ "$v" =~ ^[0-9]+$ ]] && opts+=("$c:$v")
+          for k in "${_kl[@]}"; do
+            k="$(printf '%s' "$k" | tr -d ' ')"
+            v="$(tune_get "$(tune_key "$BE" "$c" "$k")")"
+            [[ "$v" =~ ^[0-9]+$ ]] && opts+=("$c:$v:$k")
+          done
         done
         if [ "${#opts[@]}" -eq 0 ]; then
           echo ">> auto-tune: nothing fit on this GPU — launching with the default expert split."
         else
           echo
-          echo ">> Which context to launch with? (tok/s for each is in the table above)"
-          i=1; for o in "${opts[@]}"; do printf "     [%d] CTX=%-7s NCMOE=%s\n" "$i" "${o%%:*}" "${o##*:}"; i=$((i+1)); done
+          echo ">> Which config to launch with? (tok/s for each is in the table above)"
+          i=1
+          for o in "${opts[@]}"; do
+            IFS=':' read -r _c _n _k <<< "$o"
+            printf "     [%d] CTX=%-7s KV=%-5s NCMOE=%s\n" "$i" "$_c" "$_k" "$_n"; i=$((i+1))
+          done
           dflt="${#opts[@]}"   # default = the largest context that fit (last entry)
           read -r -p ">> choice [${dflt}=largest, q cancels]: " pick || pick=""
           case "$pick" in q|Q|quit|cancel) echo ">> cancelled — nothing started."; exit 0 ;; esac
           [[ "$pick" =~ ^[0-9]+$ ]] && [ "$pick" -ge 1 ] && [ "$pick" -le "${#opts[@]}" ] || pick="$dflt"
-          sel="${opts[$((pick-1))]}"
-          export CTX="${sel%%:*}"
-          export NCMOE="${sel##*:}"
+          IFS=':' read -r _c _n _k <<< "${opts[$((pick-1))]}"
+          export CTX="$_c" NCMOE="$_n" KVQUANT="$_k"
+          KV="$_k"
           tune_set "$(tune_key "$BE" chosen "$KV")" "$CTX"
+          tune_set "$(tune_kv_key "$BE")" "$KV"    # remember the KV quant itself too
           echo ">> auto-tune: launching at CTX=$CTX NCMOE=$NCMOE KV=$KV (re-explore: AUTOTUNE=1 bash scripts/start.sh)"
           # --menu auto-syncs pi below; only nudge the env-var path here.
           [ "$MENU" = 1 ] || echo ">> NOTE: keep pi in sync with this context:  CTX=$CTX bash scripts/configure-pi.sh"

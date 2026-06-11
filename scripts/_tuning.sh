@@ -16,6 +16,9 @@
 # three move the fit/speed boundary: the backend, the context size, and the
 # KV-cache quant (which frees VRAM, so it changes the fitting expert split).
 # `ctx` may be the literal `chosen`, used to remember a picked context.
+# A second key shape, `backend:chosen-kv` (built by tune_kv_key), remembers the
+# picked KV-cache quant itself, so a bare launch lands on the right KV universe
+# without retyping KVQUANT=. (The hyphen keeps it out of tune_migrate's reach.)
 # Re-tune after changing the model or GPU.
 #
 # The store is dimension-agnostic: tune_get/tune_set take one already-built key,
@@ -29,6 +32,11 @@ tune_cache_file() { printf '%s\n' "${TUNE_CACHE:-${REPO_ROOT:-.}/.gemma4-tuning}
 # tune_key <backend> <ctx|chosen> <kvquant>  — the canonical cache key.
 # kvquant defaults to f16 (the unquantized KV cache) so callers can omit it.
 tune_key() { printf '%s:%s:%s' "$1" "$2" "${3:-f16}"; }
+
+# tune_kv_key <backend>  — key remembering the picked KV-cache quant itself
+# (value: f16, q8_0, ...). Set when the user picks a config interactively
+# (sweep pick or --menu); read by start.sh when KVQUANT isn't given.
+tune_kv_key() { printf '%s:chosen-kv' "$1"; }
 
 # tune_get <key>  — echo the stored value for the key (empty if none).
 tune_get() {

@@ -9,12 +9,12 @@
 #            but more VRAM, so it OOMs sooner.
 # The sweet spot is GPU-specific, so this probes real configs on YOUR hardware.
 #
-# How it works: for each (CTX, NCMOE) pair it launches the *real* server
+# How it works: for each (KV, CTX, NCMOE) combo it launches the *real* server
 # (scripts/run-server.sh, so the measured tok/s is exactly what pi will see),
 # waits for /health, times one short /completion, then shuts it down. A config
 # that dies while loading is reported as OOM/fail, not a crash. At the end it
-# prints, per context size, the fastest NCMOE that fit = your recommended
-# start.sh setting.
+# prints, per KV quant × context size, the fastest NCMOE that fit = your
+# recommended start.sh setting.
 #
 # Two ways to use it:
 #   * Pin a context, optimise NCMOE for it (set CTX):
@@ -28,8 +28,10 @@
 #   NCMOE_LIST NCMOE values to try, low=faster/more-VRAM (default: 20,22,24,27,30)
 #              30 = all 30 layers' experts on CPU (== --cpu-moe, slowest/safest).
 #   BACKEND    cuda | vulkan | cpu                   (default: auto — cuda if built)
-#   KVQUANT    KV-cache quant to measure under (q8_0, q5_1, ...; default f16/off).
-#              Tuning is keyed by it, so each KV setting gets its own results.
+#   KVQUANT    pin ONE KV-cache quant to measure under (q8_0, q5_1, ...).
+#              Unset = sweep KVQUANT_LIST as a third grid dimension.
+#   KVQUANT_LIST  KV quants to sweep when KVQUANT is unset (default: f16,q8_0).
+#              Tuning is keyed by KV, so each setting gets its own results.
 #   MODEL      path to the .gguf                     (default: ./models/.../UD-Q4_K_XL.gguf)
 #   PORT       probe port — kept off 8080 so it never touches a real server (default: 8099)
 #   N_PREDICT  tokens to generate per timed run (after a discarded warmup) (default: 128)
@@ -48,8 +50,9 @@
 #   * Each config is timed RUNS times and reported as the median, with the min–max
 #     spread shown alongside so you can see how noisy that config was.
 #   * Probing reloads the ~14 GB model once per config (the slow part); the RUNS
-#     extra generations are cheap (~seconds each). The default grid is ~15 configs
-#     (~12 min). Trim CTX_LIST / NCMOE_LIST, or lower RUNS, to go faster.
+#     extra generations are cheap (~seconds each). The default grid is ~30 configs
+#     (3 ctx × 5 ncmoe × 2 kv, ~25 min). Trim CTX_LIST / NCMOE_LIST / KVQUANT_LIST,
+#     pin KVQUANT=, or lower RUNS, to go faster.
 #
 # Examples:
 #   CTX=32768 bash scripts/benchmark-config.sh              # optimise NCMOE for 32K
@@ -90,9 +93,14 @@ else
 fi
 
 BACKEND="$(resolve_backend)"
-KV="${KVQUANT:-f16}"                        # tuning-cache dimension (f16 = unquantized KV)
+# KV-quant grid: a pinned KVQUANT measures just that one; unset sweeps the list.
+if [ -n "${KVQUANT:-}" ]; then
+  KVQUANT_LIST="$KVQUANT"
+else
+  KVQUANT_LIST="${KVQUANT_LIST:-f16,q8_0}"
+fi
 SERVER_LOG="${SERVER_LOG:-/tmp/gemma4-benchmark-server.log}"
-RESULTS="$(mktemp)"                        # ctx|ncmoe|status|tokps|pp|vram
+RESULTS="$(mktemp)"                        # kv|ctx|ncmoe|status|tokps|pp|vram
 
 command -v curl >/dev/null 2>&1 || { echo "ERROR: 'curl' not found on PATH."; exit 1; }
 
@@ -111,19 +119,19 @@ trap cleanup EXIT INT TERM
 gpu_mib() { command -v nvidia-smi >/dev/null 2>&1 &&
   nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ' || true; }
 
-splash "$_FG_GREEN" "📊" "GEMMA 4 CONFIG BENCHMARK" "backend: $BACKEND  ·  KV: $KV  ·  probe port: $PORT"
-echo ">> contexts: $CTX_LIST    NCMOE: $NCMOE_LIST    ($RUNS runs × $N_PREDICT tok, median per config)"
+splash "$_FG_GREEN" "📊" "GEMMA 4 CONFIG BENCHMARK" "backend: $BACKEND  ·  KV: $KVQUANT_LIST  ·  probe port: $PORT"
+echo ">> contexts: $CTX_LIST    NCMOE: $NCMOE_LIST    KV: $KVQUANT_LIST    ($RUNS runs × $N_PREDICT tok, median per config)"
 echo ">> tok/s is measured at low context fill — use it to rank, not as a deep-context promise."
 echo ">> each config runs $RUNS times (RUNS=) and reports the median — smooths out the GPU's clock bounce."
 echo
 
-# --- probe one (CTX, NCMOE) -------------------------------------------------
+# --- probe one (KV, CTX, NCMOE) ---------------------------------------------
 # Echoes (stdout): "<status> <med_tps> <med_pp> <vram> <lo_tps> <hi_tps>"
 #   status: ok | oom | fail.  Live progress goes to stderr, never to stdout.
 probe() {
-  local ctx="$1" ncmoe="$2"
+  local ctx="$1" ncmoe="$2" kv="$3"
   : > "$SERVER_LOG"
-  CTX="$ctx" NCMOE="$ncmoe" PORT="$PORT" BACKEND="$BACKEND" HOST="$HOST" KVQUANT="${KVQUANT:-}" \
+  CTX="$ctx" NCMOE="$ncmoe" PORT="$PORT" BACKEND="$BACKEND" HOST="$HOST" KVQUANT="$kv" \
     nohup bash "$REPO_ROOT/scripts/run-server.sh" > "$SERVER_LOG" 2>&1 &
   local pid=$!
   printf 'loading… ' >&2          # live progress (stderr → shown but not captured)
@@ -226,50 +234,57 @@ wait_port_free() {
 # --- the sweep --------------------------------------------------------------
 IFS=',' read -r -a CTXS <<< "$CTX_LIST"
 IFS=',' read -r -a NCMOES <<< "$NCMOE_LIST"
+IFS=',' read -r -a KVS <<< "$KVQUANT_LIST"
 
-for ctx in "${CTXS[@]}"; do
-  ctx="$(printf '%s' "$ctx" | tr -d ' ')"
-  echo "── CTX=$ctx ──────────────────────────────────────────────"
-  for ncmoe in "${NCMOES[@]}"; do
-    ncmoe="$(printf '%s' "$ncmoe" | tr -d ' ')"
-    printf "   NCMOE=%-3s … " "$ncmoe"
-    wait_port_free
-    read -r status tokps pp vram lo hi <<< "$(probe "$ctx" "$ncmoe")"
-    case "$status" in
-      ok)
-        if [ "${lo:--}" != "-" ] && [ "$lo" != "$hi" ]; then
-          printf "✅ %s tok/s  (median of %s: %s–%s; pp %s, VRAM %s MiB)\n" \
-            "$(round1 "$tokps")" "$RUNS" "$lo" "$hi" "$(round1 "$pp")" "$vram"
-        else
-          printf "✅ %s tok/s  (median of %s; pp %s, VRAM %s MiB)\n" \
-            "$(round1 "$tokps")" "$RUNS" "$(round1 "$pp")" "$vram"
-        fi ;;
-      oom)  printf "🔴 OOM — doesn't fit\n" ;;
-      *)    printf "⚠️  failed (see %s)\n" "$SERVER_LOG" ;;
-    esac
-    echo "$ctx|$ncmoe|$status|$tokps|$pp|$vram" >> "$RESULTS"
+for kv in "${KVS[@]}"; do
+  kv="$(printf '%s' "$kv" | tr -d ' ')"
+  for ctx in "${CTXS[@]}"; do
+    ctx="$(printf '%s' "$ctx" | tr -d ' ')"
+    echo "── KV=$kv CTX=$ctx ───────────────────────────────────────"
+    for ncmoe in "${NCMOES[@]}"; do
+      ncmoe="$(printf '%s' "$ncmoe" | tr -d ' ')"
+      printf "   NCMOE=%-3s … " "$ncmoe"
+      wait_port_free
+      read -r status tokps pp vram lo hi <<< "$(probe "$ctx" "$ncmoe" "$kv")"
+      case "$status" in
+        ok)
+          if [ "${lo:--}" != "-" ] && [ "$lo" != "$hi" ]; then
+            printf "✅ %s tok/s  (median of %s: %s–%s; pp %s, VRAM %s MiB)\n" \
+              "$(round1 "$tokps")" "$RUNS" "$lo" "$hi" "$(round1 "$pp")" "$vram"
+          else
+            printf "✅ %s tok/s  (median of %s; pp %s, VRAM %s MiB)\n" \
+              "$(round1 "$tokps")" "$RUNS" "$(round1 "$pp")" "$vram"
+          fi ;;
+        oom)  printf "🔴 OOM — doesn't fit\n" ;;
+        *)    printf "⚠️  failed (see %s)\n" "$SERVER_LOG" ;;
+      esac
+      echo "$kv|$ctx|$ncmoe|$status|$tokps|$pp|$vram" >> "$RESULTS"
+    done
+    echo
   done
-  echo
 done
 
 # --- recommendation ---------------------------------------------------------
-splash "$_FG_GREEN" "🏁" "RECOMMENDED CONFIGS" "fastest NCMOE that fit, per context"
-printf "   %-9s %-7s %-9s %s\n" "CTX" "NCMOE" "tok/s" "start.sh command"
-printf "   %-9s %-7s %-9s %s\n" "---" "-----" "-----" "----------------"
-for ctx in "${CTXS[@]}"; do
-  ctx="$(printf '%s' "$ctx" | tr -d ' ')"
-  # Best = highest tok/s among the 'ok' rows for this ctx.
-  best="$(awk -F'|' -v c="$ctx" '$1==c && $3=="ok"{print $4"\t"$2}' "$RESULTS" | sort -rn | head -1)"
-  if [ -n "$best" ]; then
-    tokps="$(printf '%s' "$best" | cut -f1)"
-    ncmoe="$(printf '%s' "$best" | cut -f2)"
-    printf "   %-9s %-7s %-9s %s\n" "$ctx" "$ncmoe" "$(round1 "$tokps")" \
-      "CTX=$ctx NCMOE=$ncmoe${KVQUANT:+ KVQUANT=$KVQUANT} bash scripts/start.sh"
-    tune_set "$(tune_key "$BACKEND" "$ctx" "$KV")" "$ncmoe"   # remember it so start.sh can reuse it
-  else
-    printf "   %-9s %-7s %-9s %s\n" "$ctx" "-" "-" "doesn't fit on this GPU — lower CTX or raise NCMOE"
-    tune_set "$(tune_key "$BACKEND" "$ctx" "$KV")" nofit
-  fi
+splash "$_FG_GREEN" "🏁" "RECOMMENDED CONFIGS" "fastest NCMOE that fit, per KV quant × context"
+printf "   %-7s %-9s %-7s %-9s %s\n" "KV" "CTX" "NCMOE" "tok/s" "start.sh command"
+printf "   %-7s %-9s %-7s %-9s %s\n" "--" "---" "-----" "-----" "----------------"
+for kv in "${KVS[@]}"; do
+  kv="$(printf '%s' "$kv" | tr -d ' ')"
+  for ctx in "${CTXS[@]}"; do
+    ctx="$(printf '%s' "$ctx" | tr -d ' ')"
+    # Best = highest tok/s among the 'ok' rows for this (kv, ctx).
+    best="$(awk -F'|' -v k="$kv" -v c="$ctx" '$1==k && $2==c && $4=="ok"{print $5"\t"$3}' "$RESULTS" | sort -rn | head -1)"
+    if [ -n "$best" ]; then
+      tokps="$(printf '%s' "$best" | cut -f1)"
+      ncmoe="$(printf '%s' "$best" | cut -f2)"
+      printf "   %-7s %-9s %-7s %-9s %s\n" "$kv" "$ctx" "$ncmoe" "$(round1 "$tokps")" \
+        "CTX=$ctx NCMOE=$ncmoe KVQUANT=$kv bash scripts/start.sh"
+      tune_set "$(tune_key "$BACKEND" "$ctx" "$kv")" "$ncmoe"   # remember it so start.sh can reuse it
+    else
+      printf "   %-7s %-9s %-7s %-9s %s\n" "$kv" "$ctx" "-" "-" "doesn't fit on this GPU — lower CTX or raise NCMOE"
+      tune_set "$(tune_key "$BACKEND" "$ctx" "$kv")" nofit
+    fi
+  done
 done
 echo
 echo ">> Saved to $(tune_cache_file) — start.sh will reuse these (no re-run needed)."
