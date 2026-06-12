@@ -7,9 +7,10 @@ works is concrete **if-then rules** (trigger → action). PLAN.md item 6.
 ## Two layers
 
 1. **The manual in the stable system prefix** (`before_agent_start`). ≤600 bytes of
-   imperative rules — "Before reading a whole code file, call get_symbols first",
-   "Never do arithmetic yourself — run a script", "If the same command fails twice,
-   change approach". It's appended to the system prompt every turn with identical
+   imperative rules — "Before reading a whole file, call get_symbols first", "For a
+   verifiable finish: goal_set(objective, done_when=…); goal_done verifies", "If a
+   command fails twice the same way, change approach". It's appended to the system
+   prompt every turn with identical
    text, so it costs prefill once per session and the KV cache holds (rule R1). It
    chains with `semantic-memory`'s system-prompt injection.
 
@@ -21,7 +22,7 @@ works is concrete **if-then rules** (trigger → action). PLAN.md item 6.
    of this same idea.
 
 The manual references the tools the other extensions provide (`get_symbols`,
-`find_symbol`, `plan_set`, `remember`), so it's the glue that makes the set
+`find_symbol`, `plan_set`, `goal_set`/`goal_done`, `remember`), so it's the glue that makes the set
 cohere — but it degrades gracefully if some of those aren't installed (the rules
 are just advice).
 

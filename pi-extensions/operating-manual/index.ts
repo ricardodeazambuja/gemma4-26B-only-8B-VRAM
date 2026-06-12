@@ -10,13 +10,14 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 // ≤600 bytes. Each line is a trigger and an action.
 export const MANUAL = [
   "## Operating rules",
-  "- Before reading a whole code file, call get_symbols first; read specific ranges only.",
-  "- To locate a function/class, use find_symbol instead of grepping broadly.",
-  "- Starting a multi-step task: call plan_set first, then plan_check as you finish steps.",
+  "- Before reading a whole file, call get_symbols first; read only the ranges you need.",
+  "- Find a function/class with find_symbol, not a broad grep.",
+  "- Multi-step task: plan_set the steps, plan_check each as you finish.",
+  "- For a verifiable finish: goal_set(objective, done_when=<check>); goal_done verifies.",
   "- Learned a durable project fact? Save it with remember.",
-  "- Never do arithmetic, date, or unit math yourself — run a quick script via bash.",
-  "- If the same command fails twice the same way, stop and change approach.",
-  "- After editing a file, trust the auto-check result; fix reported errors before moving on.",
+  "- Never do arithmetic/date/unit math yourself — use a bash script.",
+  "- If a command fails twice the same way, stop and change approach.",
+  "- After editing, trust the auto-check; fix reported errors first.",
 ].join("\n");
 
 export function buildManual(): string {
