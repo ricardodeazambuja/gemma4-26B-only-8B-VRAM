@@ -19,6 +19,10 @@
 #   bash scripts/start.sh --menu     # interactive setup: backend, auto-tune vs
 #                                     # manual, context, KV-quant, sampling, image
 #
+# First interactive run also offers (once) to link this repo's pi-extensions into
+# pi — local-Gemma tools (code outlines, verified edits, memory, web fetch). Decline
+# and it won't ask again (rm ~/.pi/agent/.gemma4-ext-bootstrap-skip to re-enable).
+#
 # Settings (env vars; all forwarded to run-server.sh — see its -h for the rest):
 #   BACKEND  cuda | vulkan | cpu          (default: auto-detect)
 #   CTX      context window, in tokens    (default: 32768)
@@ -66,6 +70,49 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$REPO_ROOT/scripts/_banner.sh"
 # Shared auto-tuning cache (tune_get/tune_set) — see scripts/_tuning.sh.
 source "$REPO_ROOT/scripts/_tuning.sh"
+
+# Actionable hints printed after a server fails to start (OOM / missing build /
+# port clash). Called from both startup-failure paths in the launch block below.
+server_start_hints() {
+  echo ">> Common causes & fixes:"
+  echo "   • out of GPU memory — smaller context (CTX=32768), push more experts to CPU"
+  echo "     (raise NCMOE, e.g. NCMOE=27), or quantize the KV cache (KVQUANT=q8_0)."
+  echo "   • CUDA build missing — build it once:  bash scripts/build-llama-cuda.sh"
+  echo "   • port $PORT already in use — stop a stale server:  bash scripts/stop-server.sh"
+  echo "   • full log:  $SERVER_LOG"
+}
+
+# One-time bootstrap: a fresh clone has the pi-extensions in the repo but not yet
+# linked into pi. On the first interactive launch, offer to run the installer.
+# Guards (each a silent skip): no extensions in the repo · already linked ·
+# previously declined (a marker so we never nag) · non-interactive (never block
+# -p / piped runs). Explicit if-blocks, not `&& return`, to stay set -e safe.
+maybe_bootstrap_extensions() {
+  local dest="${PI_EXT_DIR:-$HOME/.pi/agent/extensions}"
+  local setup="$REPO_ROOT/pi-extensions/setup.sh"
+  local skip_marker="$HOME/.pi/agent/.gemma4-ext-bootstrap-skip"
+
+  if [ ! -f "$setup" ]; then return 0; fi              # repo has no extensions
+  if [ -e "$dest/verified-edits" ]; then return 0; fi  # already linked -> done
+  if [ -f "$skip_marker" ]; then return 0; fi          # declined before -> hush
+  if [ ! -t 0 ]; then return 0; fi                     # non-interactive -> skip
+
+  echo
+  echo ">> The pi-extensions in this repo aren't linked into pi yet —"
+  echo "   local-Gemma tools: code outlines, verified edits, memory, web fetch, …"
+  local ans
+  read -r -p ">> Install them now? (one-time) [Y/n] " ans || ans=""
+  if [[ "$ans" =~ ^[Nn] ]]; then
+    mkdir -p "$(dirname "$skip_marker")"
+    : > "$skip_marker"
+    echo ">> skipped — won't ask again. Install later:  bash pi-extensions/setup.sh"
+    echo "   (re-enable this prompt:  rm $skip_marker)"
+  else
+    echo ">> running pi-extensions/setup.sh …"
+    bash "$setup" || echo ">> setup didn't finish cleanly — re-run anytime: bash pi-extensions/setup.sh"
+  fi
+  echo
+}
 
 # --- interactive setup (--menu) ---------------------------------------------
 # A guided walk-through of every knob and the auto-tune-vs-manual fork. It sets
@@ -271,6 +318,11 @@ for a in "$@"; do
   esac
 done
 
+# First-run turnkey step: offer to link this repo's pi-extensions into pi before
+# we launch. Self-guards (already linked / declined / non-interactive), so it's a
+# no-op on every launch after the first. See maybe_bootstrap_extensions above.
+maybe_bootstrap_extensions
+
 # --- interactive setup (--menu): only meaningful for a fresh server ----------
 # A reused server can't be reconfigured, and the wizard needs a real terminal.
 if [ "$MENU" = 1 ]; then
@@ -472,21 +524,77 @@ else
   fi
 
   echo ">> starting server in background (logs: $SERVER_LOG) ..."
-  nohup bash "$REPO_ROOT/scripts/run-server.sh" "${SERVER_ARGS[@]}" > "$SERVER_LOG" 2>&1 &
-  SRV_PID=$!
-  printf ">> waiting for the model to load"
-  for _ in $(seq 1 150); do          # up to ~5 min
-    if curl -fsS "http://$HOST:$PORT/health" >/dev/null 2>&1; then printf " ready.\n"; break; fi
-    if ! kill -0 "$SRV_PID" 2>/dev/null; then
-      printf "\nERROR: server exited while starting. Last log lines:\n"
-      tail -20 "$SERVER_LOG"; exit 1
-    fi
-    printf "."; sleep 2
-  done
-  if ! curl -fsS "http://$HOST:$PORT/health" >/dev/null 2>&1; then
-    echo; echo "ERROR: server did not become healthy in time. See $SERVER_LOG"; exit 1
+  # Launch in its OWN process group (setsid) so an abort can kill the whole tree.
+  # run-server.sh exec's `mamba run … llama-server`, so llama-server is a grandchild:
+  # killing only $SRV_PID would orphan it, and stop-server.sh can't help mid-load
+  # (the port isn't bound until the model finishes loading).
+  SRV_PGRP=0
+  if command -v setsid >/dev/null 2>&1; then
+    nohup setsid bash "$REPO_ROOT/scripts/run-server.sh" "${SERVER_ARGS[@]}" > "$SERVER_LOG" 2>&1 &
+    SRV_PGRP=1
+  else
+    nohup bash "$REPO_ROOT/scripts/run-server.sh" "${SERVER_ARGS[@]}" > "$SERVER_LOG" 2>&1 &
   fi
-  echo ">> server up (PID $SRV_PID). Stop it later with: bash scripts/stop-server.sh"
+  SRV_PID=$!
+
+  # If the user aborts (Ctrl-C) before pi comes up, stop the server we just started
+  # rather than leaving a half-loaded model orphaned in the background eating RAM.
+  # We own it (we launched it this run), so cleaning it up is the right default.
+  _abort_during_load() {
+    printf '\n>> aborted while the model was loading — stopping the server we started.\n'
+    if kill -0 "$SRV_PID" 2>/dev/null; then
+      if [ "$SRV_PGRP" = 1 ]; then
+        kill -TERM -- -"$SRV_PID" 2>/dev/null || true   # whole process group
+        sleep 1
+        kill -KILL -- -"$SRV_PID" 2>/dev/null || true
+      else
+        # No group isolation: kill the wrapper's child (llama-server) then the wrapper,
+        # plus a by-port sweep in case it had already bound the port.
+        pkill -TERM -P "$SRV_PID" 2>/dev/null || true
+        kill -TERM "$SRV_PID" 2>/dev/null || true
+        bash "$REPO_ROOT/scripts/stop-server.sh" >/dev/null 2>&1 || true
+      fi
+      echo "   server stopped."
+    fi
+    exit 130
+  }
+  trap _abort_during_load INT TERM
+
+  # Live progress (elapsed seconds + the latest server log line) instead of a blank
+  # wall of dots, so a multi-minute first load visibly advances rather than looking
+  # hung. Falls back to plain dots when stdout isn't a terminal (e.g. piped/-p runs).
+  echo ">> waiting for the model to load — first load can take a few minutes (Ctrl-C aborts)"
+  _t0=$SECONDS; _tty=0; [ -t 1 ] && _tty=1
+  for _ in $(seq 1 150); do          # up to ~5 min
+    if curl -fsS "http://$HOST:$PORT/health" >/dev/null 2>&1; then
+      [ "$_tty" = 1 ] && printf '\r\033[K'
+      echo ">> model ready in $((SECONDS - _t0))s."
+      break
+    fi
+    if ! kill -0 "$SRV_PID" 2>/dev/null; then
+      [ "$_tty" = 1 ] && printf '\r\033[K'
+      echo "ERROR: the server exited while starting. Last log lines:"
+      tail -20 "$SERVER_LOG"
+      server_start_hints
+      exit 1
+    fi
+    if [ "$_tty" = 1 ]; then
+      _last="$(grep -av '^[[:space:]]*$' "$SERVER_LOG" 2>/dev/null | tail -1 || true)"
+      printf '\r\033[K>> loading… %3ds  %s' "$((SECONDS - _t0))" "$(printf '%.68s' "$_last")"
+    else
+      printf '.'
+    fi
+    sleep 2
+  done
+  trap - INT TERM
+  if ! curl -fsS "http://$HOST:$PORT/health" >/dev/null 2>&1; then
+    [ "$_tty" = 1 ] || echo
+    echo "ERROR: the server did not become healthy within ~5 min. Last log lines:"
+    tail -20 "$SERVER_LOG"
+    server_start_hints
+    exit 1
+  fi
+  echo ">> server up at http://$HOST:$PORT  (PID $SRV_PID · backend $(resolve_backend) · CTX=$CTX). Stop later: bash scripts/stop-server.sh"
   STARTED_SERVER=1
 fi
 

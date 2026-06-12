@@ -181,7 +181,7 @@ kernels** from 12.9 are too new for the 12.2 driver to load. **Two fixes:**
 |---|---|
 | `scripts/setup.sh` | **(once)** Creates the `llamacpp` conda env (llama.cpp + huggingface_hub) and downloads the GGUF into `models/`. `BACKEND=cuda` also builds the native CUDA backend. Idempotent. |
 | `scripts/configure-pi.sh` | **(once)** Adds the `llamacpp` provider to `~/.pi/agent/models.json` from `config/pi-provider.json`. |
-| `scripts/start.sh` | **All-in-one:** starts the server (if not already up) — showing the CUDA/Vulkan/CPU banner — waits for it to load, then launches pi. Pass **`--menu`** for a guided setup that walks every knob (backend, auto-tune vs manual, context, `KVQUANT`, sampling, image) and launches with your picks. Otherwise set knobs as env vars: passes `BACKEND`/`NCMOE`/`CTX`/`KVQUANT`/`TEMP`/`--image` through; other args go to pi. On the **first** fresh launch it offers to **auto-tune** (runs `benchmark-config.sh` once, then remembers the result): with no `CTX` set it sweeps context sizes × KV quants and lets you pick one (the pick — context *and* KV quant — is remembered); with `CTX=` pinned it tunes the expert split for that context (`AUTOTUNE=1` re-run, `0` off). When pi exits, if it started the server it offers to stop it (interactive prompt; force with `STOP_ON_EXIT=1`/`0`). A server that was already running is left alone. |
+| `scripts/start.sh` | **All-in-one:** starts the server (if not already up) — showing the CUDA/Vulkan/CPU banner — waits for it to load, then launches pi. Pass **`--menu`** for a guided setup that walks every knob (backend, auto-tune vs manual, context, `KVQUANT`, sampling, image) and launches with your picks. Otherwise set knobs as env vars: passes `BACKEND`/`NCMOE`/`CTX`/`KVQUANT`/`TEMP`/`--image` through; other args go to pi. On the **first** fresh launch it offers to **auto-tune** (runs `benchmark-config.sh` once, then remembers the result): with no `CTX` set it sweeps context sizes × KV quants and lets you pick one (the pick — context *and* KV quant — is remembered); with `CTX=` pinned it tunes the expert split for that context (`AUTOTUNE=1` re-run, `0` off). When pi exits, if it started the server it offers to stop it (interactive prompt; force with `STOP_ON_EXIT=1`/`0`). **Cancel (Ctrl-C) while the model is still loading** and it stops the server it just started, rather than leave a half-loaded one running in the background. A server that was already running is left alone. |
 | `scripts/run-server.sh` | Launches `llama-server` with `--cpu-moe`, `--no-mmap`, `-c 32768`, `--jinja`, on `127.0.0.1:8080`. Auto-selects CUDA if built, else Vulkan; prints a color-coded backend banner at launch. Override with `BACKEND=cuda\|vulkan\|cpu`. `KVQUANT=q8_0` quantizes the KV cache (long-context lever). Pass `--image` to enable vision (loads the `mmproj`). |
 | `scripts/run-pi.sh` | Launches pi against the local server (`--provider llamacpp --model gemma-4-26b-a4b-qat`). Extra args pass through to pi. |
 | `scripts/stop-server.sh` | Stops the server by the port it listens on (default 8080). |
@@ -430,8 +430,13 @@ There's also a built-in web UI at <http://127.0.0.1:8080>.
 │   └── inspect-gguf.py       #   (the implementation; .sh runs it in the env)
 ├── config/
 │   └── pi-provider.json      # pi provider definition
+├── pi-extensions/            # pi extensions tuned for local Gemma (own README + PLAN)
+│   ├── setup.sh              # one-shot: npm install + link into ~/.pi/agent/extensions
+│   └── <name>/               # one dir per extension: verified-edits, symbols, loop-breaker,
+│                             #   plan, semantic-memory, operating-manual, stats, fetch-page,
+│                             #   goal, grounding, pipe, toolsets, web-search, thinking-router, advisor (each: index.ts + tests)
 ├── docs/
-│   ├── TECHNICAL.md          # engineering write-up (architecture, perf, multimodal)
+│   ├── TECHNICAL.md          # engineering write-up (architecture, perf, multimodal, harness)
 │   └── speed.svg             # backend speed comparison chart (in the README)
 ├── models/                   # downloaded GGUF lives here (gitignored)
 └── vendor/                   # llama.cpp source + CUDA build (gitignored)

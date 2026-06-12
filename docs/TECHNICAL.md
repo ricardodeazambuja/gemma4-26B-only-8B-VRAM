@@ -801,43 +801,51 @@ params. `--cpu-moe` does nothing (there are no experts to place), so on an 8 GB 
 on the CPU. Expect **~1–3 tok/s** (recall CPU-only on the MoE — which computes just 4B active — was
 ~2 tok/s; a dense 31B computes ~8× more per token). It runs, but it's not interactive.
 
-### Aside — MTP (self-speculative decoding) is *not* a win here
+### Aside — MTP (self-speculative decoding): now unblocked, worth measuring
 
-Gemma 4 ships a **Multi-Token Prediction** head, and llama.cpp added support for it
-([ggml-org/llama.cpp#23398](https://github.com/ggml-org/llama.cpp/pull/23398), merged 2026-06-07). A
-small "draft" head proposes the next few tokens and the full model verifies them in one batched pass:
+Gemma 4 ships a **Multi-Token Prediction** head, and llama.cpp supports it — core MTP
+([#22673](https://github.com/ggml-org/llama.cpp/pull/22673), merged 2026-05-16) plus the Gemma 4 wiring
+([#23398](https://github.com/ggml-org/llama.cpp/pull/23398), merged 2026-06-07). A small "draft" head
+proposes the next few tokens and the full model verifies them in one batched pass:
 
 ```bash
-llama-server -m <model>.gguf --model-draft <mtp-head>.gguf --spec-type draft-mtp --spec-draft-n-max 4
+llama-server -m <model>.gguf --model-draft <mtp-head>.gguf --spec-type draft-mtp --spec-draft-n-max 2
 ```
 
 **Quality is safe** — speculative decoding is lossless by construction (the full model checks every
-drafted token, so the output distribution is identical; the PR replicates Gemma's AIME-26 ~87%). But
-**it doesn't help *this* setup**, for structural reasons:
+drafted token, so the output distribution is identical). Two objections that earlier ruled it out are
+now obsolete; the third is hardware-dependent and **only resolvable by measuring on this rig**:
 
-- The headline **>2× speedup is the *dense* 31B**. On the **MoE 26B-A4B** the author saw *no* speedup;
-  others report only ~10–30% — and only on big GPUs with the whole model resident in VRAM. MoE's
-  bottleneck is streaming experts from RAM (`--cpu-moe`), and verifying *K* draft tokens activates the
-  *union* of experts those tokens route to ⇒ **more** RAM traffic per step, working against the exact
-  thing that limits us.
-- On **8 GB it may not even load**: there's a reported model-load crash for "26B-A4B target + draft on
-  a 16 GB card" when the target nearly fills VRAM before the draft loads. We're already at ~7 GB at
-  `NCMOE=22`; making room for the draft head + its KV means pushing experts back to RAM (lower `NCMOE`)
-  — trading away the speed that makes this rig fast, to chase a gain that nets ~zero on MoE.
-- Practical blockers anyway: the stock build predates the merge (rebuild via `build-llama-cuda.sh`),
-  and the QAT GGUF carries **no MTP tensors** — you'd need a separate draft head (QAT-matched heads
-  exist at `huggingface.co/boxwrench/gemma-4-qat-mtp-assistant-heads`).
+- **The QAT head exists — inside our own repo.** Unsloth ships a QAT-matched, smart-4bit MTP head in
+  `unsloth/gemma-4-26B-A4B-it-qat-GGUF` itself: `mtp-gemma-4-26B-A4B-it.gguf` (**0.25 GB**), plus an
+  `MTP/` folder with Q8_0 (0.46 GB) and F16/BF16 (0.86 GB) variants. No separate or third-party repo.
+  With `-hf` the bundled head auto-loads; with our local-file launch, add
+  `--model-draft .../models/gemma4-26b-a4b-qat/mtp-gemma-4-26B-A4B-it.gguf`.
+- **VRAM cost is small.** The head is **0.25 GB**, not multiple GB — roughly one `NCMOE` step, plus a
+  little KV. Unsloth budgets "~2 GB extra RAM/VRAM headroom" and lists 26B-A4B 4-bit at 17–18 GB
+  *total* (RAM+VRAM) *with* MTP; we have 8 + 32 = 40 GB. (The reported load-crash on a 16 GB card was a
+  specific bug, not a size law.)
+- **Speedup on *our* rig is unknown — likely the weak case, but test it.** Unsloth benchmarks Gemma 4
+  QAT (which includes this MoE) at **1.5–2.2×**, the *dense* 31B benefiting most — but those runs are
+  **GPU-resident** ("gains are smaller on lower-memory-bandwidth devices"). We run `--cpu-moe`,
+  streaming experts over DDR4: the unfavorable regime. Verifying *K* draft tokens activates the *union*
+  of experts those tokens route to ⇒ **more** RAM traffic per step, working against the exact thing
+  that limits us. So the headline numbers may not carry here. The only remaining blocker is the build —
+  the stock binary predates the merge (rebuild via `build-llama-cuda.sh`).
 
-So MTP is a **dense-model / big-VRAM** optimization. If you ever run the dense 31B on a larger GPU it's
-a real >2× win; for 26B-A4B on 8 GB, the CUDA backend + `NCMOE` tuning is where the tok/s lives.
+**Net:** not the dense-only / big-VRAM dismissal it was. It's a cheap, lossless thing to *measure* on
+this rig: best case, free tok/s; worst case, the MoE bandwidth wall eats it and we've spent a 0.25 GB
+download plus a rebuild. Benchmark `--spec-draft-n-max` over 1–6 (Unsloth's starting point is 2) and
+keep it only if it beats the ~23 tok/s baseline.
 
 ### Bottom line
 
 **26B-A4B is the sweet spot for this hardware** — it's the largest model that stays fast, precisely
 because only 4B params are active per token. With 32 GB RAM the realistic upgrade is a **Q5/Q6 quant
 of the same MoE** (marginally better quality, but slower — into the mid-teens tok/s), *not* a bigger
-model — and *not* MTP (see the aside above). The clean ~23 tok/s belongs to the Q4 QAT file you're
-already running.
+model. **MTP** is the one free-tok/s lever left worth measuring (see the aside above) — lossless, a
+0.25 GB head already in our repo, unknown payoff on this bandwidth-bound MoE. The clean ~23 tok/s
+belongs to the Q4 QAT file you're already running.
 
 ---
 
@@ -885,3 +893,133 @@ a different/unified projector (the `gemma4ua`/`gemma4uv` path).
 OpenAI `image_url` format; the model returned all three shapes with correct colors and read "42".
 Decode held at ~30 tok/s with the image in context. (As always, give it enough `max_tokens` to finish
 its hidden reasoning before the visible answer — see §8.)
+
+## 15. The harness layer: `pi-extensions/`
+
+Everything above gets the model *running*; this section is about making it *useful*. The
+problem statement, what we built, why those shapes and not others, and what's still open.
+(Per-extension specs live in `pi-extensions/PLAN.md`; per-extension usage in each
+`pi-extensions/<name>/README.md`. This section is the engineering rationale.)
+
+### Problem statement
+
+A 4-bit 26B-A4B MoE on a 120k window is a competent but fallible coding agent, and its
+failure modes are *systematic*, not random:
+
+| Weakness (observed) | Consequence in real sessions |
+|---|---|
+| Weak self-verification | Ships syntactically broken edits, believes they're fine |
+| Perseveration | Repeats an identical failing tool call until the context fills with errors |
+| No working memory discipline | Re-reads 800-line files to find one signature; re-decides the task mid-way |
+| No autonomous termination | Unattended runs stop before the objective is met, or never stop at all |
+| No cross-session memory | Every session restarts from zero |
+| Thin world knowledge | A 26B can't carry the long tail; needs search + read |
+| Hand-waving from memory | Trusts recollection — states what it never derived, ran, or read, as if proven |
+| Prompt-rule blindness | Instructions in the system prompt decay; the model "knows" but doesn't *do* |
+| Capability ceiling | Some plans are just wrong, and no amount of self-review by the same model fixes that |
+
+Cloud harnesses paper over all of these with a bigger model. The constraint here is the
+opposite: **the local model is the only intelligence at runtime**, so every weakness must be
+covered by *deterministic code* around it. The second constraint is energy: prefill dominates
+laptop inference cost (§8), so every token the harness injects is a standing tax paid on
+every request.
+
+### Solution shape, and why
+
+One pi extension per weakness, all obeying six cross-cutting rules (R1–R6 in
+`pi-extensions/PLAN.md`). The two that drive most design decisions:
+
+- **Enforce > persuade (R4).** A prompt rule ("verify your edits") relies on exactly the
+  attention that a small model lacks — so the harness *does the thing* instead: verified-edits
+  runs the checker itself, symbols intercepts the oversized read, loop-breaker counts the
+  failures. Deterministic code does not get distracted.
+- **KV-cache discipline (R1).** llama.cpp reuses KV cache only for an unchanged prompt
+  *prefix*. So everything static (system prompt, tool schemas, MEMORY.md) is byte-stable for
+  the whole session, and everything dynamic (plan state, recalled memories, nudges) is
+  injected at the *tail*. This is the difference between paying prefill once and paying it
+  every turn.
+
+The full mapping:
+
+| Weakness | Extension | Mechanism (one line) |
+|---|---|---|
+| Weak self-verification | `verified-edits` | Auto-runs the cheapest checker after every edit; errors appended in-band |
+| Perseveration | `loop-breaker` | 3 identical failing calls → one tail nudge to change approach |
+| File re-reading | `symbols` | Outline tools + big-read interception |
+| Task drift | `plan` | External checklist (the steps) re-injected at tail; survives compaction; defers the finish to `goal_done` |
+| No cross-session memory | `semantic-memory` | Passive recall: embed the user turn, inject top matches at tail |
+| Rule blindness | `operating-manual` | If-then triggers in the stable prefix + JIT nudges |
+| Thin world knowledge | `web-search` + `fetch-page` | Stealth Playwright search → readable-text reads |
+| Unmeasured cost | `stats` | llama.cpp timings → per-session token/energy accounting |
+| Over-thinking | `thinking-router` | Per-turn thinking budget routed by input difficulty |
+| Hand-waving from memory | `grounding` | Engineering mindset in the prefix + a prove-it check at the tail: derive / simulate / reference, never trust recollection |
+| No autonomous termination | `goal` | Machine-checkable north-star drives the loop until `done_when` passes; bounded cycles; verifies plan's steps, no checklist of its own |
+| Capability ceiling | `advisor` | Escalate to a stronger external agent (below) |
+
+`plan` and `goal` split cleanly so they don't duplicate: `plan` owns the *steps* (the
+checklist), `goal` owns the *objective* + `done_when` (the finish), and `goal_done` reads
+`plan`'s persisted state to confirm the steps are complete before accepting — one checklist,
+one done-decision.
+
+Two extensions round out the harness without covering a model *weakness*, so they sit outside
+the table above: **`pipe`** chains slash-commands into one ordered agent directive
+(`/pipe /goal … /plan …`), and **`toolsets`** is context economy — it gates situational tool
+groups so the per-request tool tax shrinks. The tool definitions are themselves a standing
+prefill cost, so two levers attack it: the R5 wording pass (terse, model-optimal descriptions)
+and `toolsets` (announce fewer tools). `toolsets` sets the active set *once per session* on
+purpose — tool schemas live in the KV-cached prefix, so toggling them mid-session re-prefills
+(the same R1 logic that governs every injection here).
+
+### The escalation path: `advisor`
+
+The last row is qualitatively different and deserves its own rationale. Eleven of the twelve
+extensions assume the model's plan is *recoverable* — verify it, nudge it, remind it. But a
+wrong plan executed carefully is still wrong, and a model cannot reliably review its own
+reasoning. Cloud harnesses solve this with a stronger reviewer model. The local equivalent:
+an `advisor` tool that serializes the whole session branch into a transcript and asks an
+**external agent of the user's choosing** for a verdict.
+
+**Solution chosen: drive an interactive TUI through tmux** (the existing `tui-driver`
+project: start a session, paste a prompt, wait for the screen to stabilize, scrape the
+reply). The transcript goes to a 0600 file in a per-process 0700 mkdtemp dir; the prompt
+hands the advisor the file path; the reply comes back as the tool result (capped, full text
+saved).
+
+**Why this over the alternatives considered:**
+
+- *Direct API call to a cloud model* — needs per-provider key management, billing wiring,
+  and request-format code inside the extension. The TUI route reuses agents the user has
+  **already installed, authenticated, and paid for** (agy, claude, …), at zero integration
+  cost per new agent. Configurability falls out for free: the agent is one string in a
+  config file.
+- *A second pi/Gemma instance as reviewer* — no capability lift; self-review by the same
+  weights is exactly the failure mode this exists to escape. (Still possible via config if
+  someone wants a fresh-context second opinion.)
+- *MCP or RPC integration per agent* — strictly more machinery for fewer supported agents;
+  tui-driver already handles approval prompts, throttling, orphan reaping, and works with
+  *any* TUI unmodified.
+- *No default agent, on purpose* — consulting an external agent can cost money, so an
+  unconfigured tool returns a teaching error (R2) with the exact config to write, instead
+  of silently picking a vendor.
+
+**Caveats** (also in the extension README): screen-scraping is inherently fragile — TUI
+chrome can leak into replies, and reply extraction anchors on the echoed prompt; the call
+is synchronous, so Gemma blocks for up to `timeoutSec` while the advisor thinks; the
+advised TUI must be able to read the transcript file without an interactive approval
+prompt (or use `inlineTranscript` to paste the text); a kept-alive session holds whatever
+resources the advised agent holds until tui-driver's idle watchdog reaps it.
+
+### Future work
+
+- **Async advisor.** tui-driver already has `send-async`/`poll`; the extension could return
+  immediately and inject the advisor's verdict at tail (`deliverAs: "steer"`) when it lands,
+  letting Gemma keep working instead of blocking.
+- **Auto-escalation.** loop-breaker and advisor are natural partners: after the nudge has
+  fired twice with no change in behavior, suggest (not force — cost) an `advisor` call.
+- **Structured verdicts (R6).** Today the advisor replies free-form; a fill-in template
+  (Sound?/Missed:/Next:) would make verdicts parseable and injectable as plan steps.
+- **Reply cleaning.** A per-TUI post-filter (strip spinners, box-drawing, status lines)
+  would harden the scraped replies.
+- **Engine levers** (tracked in PLAN.md): speculative decoding via `--model-draft`
+  (~1.5–2.5× decode, identical output), and GBNF/JSON-schema-constrained tool calls if the
+  custom build exposes them.

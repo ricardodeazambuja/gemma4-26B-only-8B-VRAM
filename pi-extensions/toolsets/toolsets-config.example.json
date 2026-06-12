@@ -1,0 +1,8 @@
+{
+  "disabled": ["web", "advisor"],
+  "groups": {
+    "web": ["web_search", "fetch_page"],
+    "memory": ["remember", "recall", "forget"],
+    "advisor": ["advisor"]
+  }
+}

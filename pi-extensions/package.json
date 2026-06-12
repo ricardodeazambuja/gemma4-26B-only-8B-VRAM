@@ -1,0 +1,12 @@
+{
+  "name": "pi-gemma-extensions",
+  "version": "1.0.0",
+  "private": true,
+  "description": "pi extensions that empower local Gemma4 (energy-frugal, small-context coding agent)",
+  "type": "module",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "latest",
+    "typebox": "latest",
+    "playwright": "latest"
+  }
+}
