@@ -69,11 +69,18 @@ installs deps, runs `install.sh`, and offers to pull + enable the embedding back
 individually:
 
 ```bash
-./install.sh          # just symlink each extension into ~/.pi/agent/extensions/
+./install.sh                 # symlink each extension into ~/.pi/agent/extensions/
+./install.sh --force         # also relink existing links AND stale real-dir copies (sync to repo)
+./install.sh --prune         # drop our orphaned symlinks (extensions no longer in the repo)
 ```
 
-`install.sh` does two things: symlinks each extension dir into
-`~/.pi/agent/extensions/`, **and** symlinks a shared `node_modules` there too.
+`install.sh` symlinks each extension dir into `~/.pi/agent/extensions/`, **and** symlinks a
+shared `node_modules` there too. By default it **adds what's missing and skips what already
+exists** (symlinks track the repo live, so edits need no reinstall). When something is stale —
+a real-directory copy left by an older install, or a moved repo — `--force`/`--relink`
+replaces it with a fresh symlink; `--prune` removes *our* orphaned/broken links and never
+touches extensions installed from elsewhere. Both flags also pass through `setup.sh`
+(e.g. `./setup.sh --force`).
 
 > **Why the shared node_modules matters.** pi loads extensions with
 > `--preserve-symlinks`, so Node resolves each extension's `import`s from the

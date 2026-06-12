@@ -2,11 +2,21 @@
 # One-shot installer for the whole pi-extensions set. Everything is installable
 # from this repo: deps → symlink into pi → (optionally) the embedding backend.
 #
-# Usage:  ./setup.sh [--yes]
-#   --yes   non-interactive: also pull + persist embeddings without prompting.
+# Usage:  ./setup.sh [--yes] [--force|--relink] [--prune]
+#   --yes               non-interactive: also pull + persist embeddings without prompting.
+#   --force, --relink   forwarded to install.sh: replace existing links / stale copies.
+#   --prune             forwarded to install.sh: drop our orphaned extension symlinks.
 set -euo pipefail
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-YES="no"; [ "${1:-}" = "--yes" ] && YES="yes"
+YES="no"; INSTALL_ARGS=()
+for a in "$@"; do
+  case "$a" in
+    --yes)                    YES="yes" ;;
+    --force|--relink|--prune) INSTALL_ARGS+=("$a") ;;
+    -h|--help)                sed -n '2,11p' "$0"; exit 0 ;;
+    *) echo "setup.sh: unknown option '$a' (try --help)" >&2; exit 2 ;;
+  esac
+done
 
 echo "== pi-extensions setup =="
 
@@ -20,7 +30,7 @@ fi
 
 # 2. link extensions + shared node_modules into pi
 echo "[2/3] linking extensions into ~/.pi/agent/extensions…"
-"$SRC/install.sh"
+"$SRC/install.sh" ${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"}
 
 # 3. embedding backend for semantic-memory (optional)
 echo "[3/3] semantic-memory embedding backend"
