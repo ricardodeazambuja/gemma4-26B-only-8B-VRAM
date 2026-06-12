@@ -801,7 +801,7 @@ params. `--cpu-moe` does nothing (there are no experts to place), so on an 8 GB 
 on the CPU. Expect **~1–3 tok/s** (recall CPU-only on the MoE — which computes just 4B active — was
 ~2 tok/s; a dense 31B computes ~8× more per token). It runs, but it's not interactive.
 
-### Aside — MTP (self-speculative decoding): now unblocked, worth measuring
+### Aside — MTP (self-speculative decoding): measured — marginal at temp 1.0, real win at low temp
 
 Gemma 4 ships a **Multi-Token Prediction** head, and llama.cpp supports it — core MTP
 ([#22673](https://github.com/ggml-org/llama.cpp/pull/22673), merged 2026-05-16) plus the Gemma 4 wiring
@@ -813,8 +813,9 @@ llama-server -m <model>.gguf --model-draft <mtp-head>.gguf --spec-type draft-mtp
 ```
 
 **Quality is safe** — speculative decoding is lossless by construction (the full model checks every
-drafted token, so the output distribution is identical). Two objections that earlier ruled it out are
-now obsolete; the third is hardware-dependent and **only resolvable by measuring on this rig**:
+drafted token, so the output distribution is identical). Three objections that earlier ruled it out
+are now retired — two by inspection, the third **by measurement** (2026-06-12; full numbers in
+[`mtp-benchmark.md`](mtp-benchmark.md)):
 
 - **The QAT head exists — inside our own repo.** Unsloth ships a QAT-matched, smart-4bit MTP head in
   `unsloth/gemma-4-26B-A4B-it-qat-GGUF` itself: `mtp-gemma-4-26B-A4B-it.gguf` (**0.25 GB**), plus an
@@ -825,27 +826,34 @@ now obsolete; the third is hardware-dependent and **only resolvable by measuring
   little KV. Unsloth budgets "~2 GB extra RAM/VRAM headroom" and lists 26B-A4B 4-bit at 17–18 GB
   *total* (RAM+VRAM) *with* MTP; we have 8 + 32 = 40 GB. (The reported load-crash on a 16 GB card was a
   specific bug, not a size law.)
-- **Speedup on *our* rig is unknown — likely the weak case, but test it.** Unsloth benchmarks Gemma 4
-  QAT (which includes this MoE) at **1.5–2.2×**, the *dense* 31B benefiting most — but those runs are
-  **GPU-resident** ("gains are smaller on lower-memory-bandwidth devices"). We run `--cpu-moe`,
-  streaming experts over DDR4: the unfavorable regime. Verifying *K* draft tokens activates the *union*
-  of experts those tokens route to ⇒ **more** RAM traffic per step, working against the exact thing
-  that limits us. So the headline numbers may not carry here. The only remaining blocker is the build —
-  the stock binary predates the merge (rebuild via `build-llama-cuda.sh`).
+- **Speedup is real but acceptance-limited — measured here.** The CUDA build already supports it (the
+  `vendor/llama.cpp` binary is at `04eb4c4`, the #23398 merge — no rebuild), and MTP loads at the
+  **same `NCMOE=27`** as baseline. At **greedy** the draft head hits 79–88 % acceptance and decode runs
+  **+18–31 %** faster (≈21→27 tok/s) — which *refutes* the old worry below. At the rig's **real
+  sampling** (temp 1.0, top-p 0.95, top-k 64) acceptance falls to 66–74 % and the gain shrinks to a
+  noisy **+4–7 %**. So the payoff scales with sampling temperature (high at greedy/coding-temp, marginal
+  at temp 1.0), and `--spec-draft-n-max 2` is the safe default (n-max 4 occasionally *loses* on rejected
+  drafts).
 
-**Net:** not the dense-only / big-VRAM dismissal it was. It's a cheap, lossless thing to *measure* on
-this rig: best case, free tok/s; worst case, the MoE bandwidth wall eats it and we've spent a 0.25 GB
-download plus a rebuild. Benchmark `--spec-draft-n-max` over 1–6 (Unsloth's starting point is 2) and
-keep it only if it beats the ~23 tok/s baseline.
+  > The earlier reasoning here was *wrong*: it claimed verifying *K* tokens activates the *union* of
+  > their experts ⇒ **more** RAM traffic ⇒ no win on `--cpu-moe`. The greedy +25 % shows the opposite —
+  > batched verification **amortizes** expert-weight streaming across accepted tokens (consecutive
+  > tokens route to overlapping experts). The limiter is draft **acceptance**, not RAM bandwidth.
+
+**Net:** not the dense-only / big-VRAM dismissal it was, and not a free lunch either. It's lossless and
+costs only a 0.25 GB head that fits at the current NCMOE, so enabling it never hurts output and rarely
+hurts speed. For default temp-1.0 chat the gain is marginal; for lower-temperature coding work it trends
+toward the greedy ceiling and is worth turning on with `--spec-type draft-mtp --spec-draft-n-max 2`.
 
 ### Bottom line
 
 **26B-A4B is the sweet spot for this hardware** — it's the largest model that stays fast, precisely
 because only 4B params are active per token. With 32 GB RAM the realistic upgrade is a **Q5/Q6 quant
 of the same MoE** (marginally better quality, but slower — into the mid-teens tok/s), *not* a bigger
-model. **MTP** is the one free-tok/s lever left worth measuring (see the aside above) — lossless, a
-0.25 GB head already in our repo, unknown payoff on this bandwidth-bound MoE. The clean ~23 tok/s
-belongs to the Q4 QAT file you're already running.
+model. **MTP** is a lossless free-tok/s lever (0.25 GB head already in our repo, fits at the current
+NCMOE) — measured at +18–31 % greedy but only +4–7 % at temp 1.0 (acceptance-limited; see the aside
+and [`mtp-benchmark.md`](mtp-benchmark.md)). The clean ~23 tok/s belongs to the Q4 QAT file you're
+already running.
 
 ---
 
