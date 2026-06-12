@@ -832,9 +832,11 @@ are now retired — two by inspection, the third **by measurement** (2026-06-12;
   the draft head hits 79–88 % acceptance and decode runs **+19–31 %** faster (≈21→27 tok/s) — a real win
   that *refutes* the old worry below. At the rig's **default sampling** (temp 1.0) acceptance falls to
   66–74 % and the gain is **within measurement noise** — this Max-Q rig's single-config baseline scatters
-  ±13 %, so "+2–7 %" is *no measurable gain*, not a small one. Use `--spec-draft-n-max 2`; `--spec-draft-p-min`
-  (a draft-confidence floor, not a relaxed accept rule) did **not** help. So: a clear win at greedy/low
-  temp, nothing measurable at temp 1.0.
+  ±13 %, so "+2–7 %" is *no measurable gain*, not a small one. Use `--spec-draft-n-max 2` with
+  **`--spec-draft-p-min 0`**: a positive `p_min` (a draft-confidence floor, not a relaxed accept rule)
+  **degenerates the output** under sampling — n-max 6/p_min 0.7 and n-max 4/p_min 0.75 both collapsed to
+  `fmt-fmt…` loops at temp 1.0 (fake 85–100 % acceptance, garbage text). So: a clear win at greedy/low
+  temp, nothing measurable at temp 1.0, and `p_min>0` is unsafe here.
 
   > The earlier reasoning here was *wrong*: it claimed verifying *K* tokens activates the *union* of
   > their experts ⇒ **more** RAM traffic ⇒ no win on `--cpu-moe`. The greedy +25 % shows the opposite —
@@ -844,8 +846,16 @@ are now retired — two by inspection, the third **by measurement** (2026-06-12;
 **Net:** not the dense-only / big-VRAM dismissal it was, and not a free lunch either. It's lossless and
 costs only a 0.25 GB head that fits at the current NCMOE, so enabling it never hurts output. At the
 default temp 1.0 it buys nothing measurable; its value is at **greedy / low-temperature** (coding) work,
-where +20–30 % is real. If enabled, `--spec-type draft-mtp --spec-draft-n-max 2`. (All of the above is at
-CTX 32k; the 64k-vs-32k throughput trade-off — the rig's real target — is a separate measurement.)
+where +20–30 % is real. If enabled, `--spec-type draft-mtp --spec-draft-n-max 2`.
+
+**Context is cheap — run 64k.** Gemma 4's sliding-window attention (`n_swa=1024`) caps most layers' KV,
+so **64k decodes at essentially the same tok/s as 32k** (~22–25 either way; both fit at `NCMOE≈25–27`).
+Decode speed is set by `NCMOE` (expert placement), not context length. So the 64k target costs nothing.
+
+**Next lever to try — EAGLE3.** llama.cpp `88a3927` (2026-06-12) added EAGLE3 spec decoding with a Gemma 4
+draft (`RedHatAI/gemma-4-26B-A4B-it-speculator.eagle3`); EAGLE3 usually holds higher acceptance under
+sampling than a plain MTP head, so it's the most promising shot at a *temp-1.0* win. Needs a rebuild
+(≥ `88a3927`) and `--spec-type draft-eagle3`; not yet measured.
 
 ### Bottom line
 

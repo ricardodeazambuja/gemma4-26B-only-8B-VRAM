@@ -2,122 +2,122 @@
 
 **Date:** 2026-06-12 · **Branch:** `feat/mtp-benchmark` · **Script:** [`scripts/benchmark-mtp.sh`](../scripts/benchmark-mtp.sh)
 
-Self-speculative decoding via Gemma 4's Multi-Token Prediction head, measured with
-vs without MTP on the actual 8 GB rig. Settles the open question in
-[`TECHNICAL.md` §13](TECHNICAL.md) with numbers — and, just as importantly,
-quantifies the measurement noise so the numbers mean something.
+Self-speculative decoding via Gemma 4's MTP head, measured with vs without MTP on the
+actual 8 GB rig across sampling temperature, context length (32k vs 64k), `n-max`, and
+the `--spec-draft-p-min` lever. Settles [`TECHNICAL.md` §13](TECHNICAL.md) with numbers
+— and quantifies the measurement noise so the numbers mean something.
 
 ## TL;DR
 
-MTP is **lossless, free, and loads at the same `NCMOE`** as baseline (the 0.25 GB
-QAT head ships inside our own repo; the CUDA build already supports it — no rebuild).
-The throughput gain is **acceptance-limited**, and acceptance collapses under
-temperature sampling:
+- **MTP is lossless and free** (0.25 GB QAT head ships in our repo; CUDA build already
+  supports it; loads at the same `NCMOE`). It's a **clear win at greedy / low
+  temperature (+15–30 %)** and **no measurable gain at the default temp 1.0**.
+- **64k context is essentially free vs 32k** (~the same tok/s) — Gemma 4's
+  sliding-window attention (`n_swa=1024`) caps most layers' KV, so the bigger context
+  barely costs VRAM or speed. **Use 64k.**
+- **`--spec-draft-p-min` is a footgun here:** `p_min>0` with temperature sampling drove
+  the output into **degenerate loops** (`fmt-fmt-fmt…`) in two independent configs. Its
+  big-looking speedups are garbage. Leave it at 0.
+- **Next lead: EAGLE3.** llama.cpp commit `88a3927` (2026-06-12) added EAGLE3 spec
+  decoding incl. a Gemma 4 draft (`RedHatAI/gemma-4-26B-A4B-it-speculator.eagle3`).
+  EAGLE3 typically keeps higher acceptance under sampling than a plain MTP head, so it's
+  the most promising path to an actual temp-1.0 win. **Not yet measured** (needs a
+  rebuild at ≥ `88a3927`).
 
-| sampling | draft acceptance | MTP speedup | verdict |
-|---|---|---|---|
-| **greedy** (temp 0) | 79–88 % | **+19 % … +31 %** | **real** (well above noise) |
-| **temp 1.0** (rig default) | 66–74 % | +2 % … +7 % | **within measurement noise** |
+## The measurement-noise floor (read before trusting any single number)
 
-So: a **clear win at greedy / low temperature**, and **no measurable gain at the
-default temp 1.0**. The `--spec-draft-p-min` "relaxed drafting" lever did **not**
-help (see below — its one big-looking number was a degenerate-output artifact).
-
-> **Still open (Experiment 3):** all of this is at **CTX 32k**. The rig's target is
-> **64k**, where the larger KV cache forces more experts onto the CPU — likely
-> slower, and possibly changing MTP's payoff. The 64k↔32k decision is measured
-> separately.
-
-## The measurement-noise floor (read this before trusting any single number)
-
-This rig is an **RTX 2070 Max-Q laptop GPU** with CPU-resident MoE experts streaming
-over DDR4 — both thermally throttled and bandwidth-noisy. Across **8 baseline runs
-that are all the *same* configuration** (sampling temperature does not change
-baseline decode speed), the trimmed-mean throughput was:
-
-> **21.9 ± 1.4 tok/s** (±6 % between configs; individual reps spanned **14.9–24.9**,
-> worst single-config excursion −14 %).
-
-**⇒ any speedup smaller than ≈ ±13 % is not resolvable on this rig** and must be
-reported as "within noise," not as a number. This is why the table below has *few*
-rows we trust rather than many we don't. To beat the noise we use: a baseline run
-**interleaved immediately before** each MTP run (same thermal state), **trimmed
-means** (drop slowest+fastest of 6 reps), and we report **mean ± std**.
+RTX 2070 Max-Q laptop GPU + CPU-resident MoE experts over DDR4 → thermally throttled and
+bandwidth-noisy. Across **many baseline runs that are all the *same* config**, trimmed-mean
+throughput was **≈ 21.9 ± 1.4 tok/s** (±6 % between configs; individual reps spanned
+14.9–25 tok/s). **⇒ any speedup under ≈ ±13 % is not resolvable** and is reported as
+"within noise." Controls used everywhere below: a baseline interleaved **immediately
+before** each MTP run (same thermal state), **trimmed means** (drop slowest+fastest of
+5–6 reps), mean ± std.
 
 ## Setup
 
 | | |
 |---|---|
-| GPU | RTX 2070 Max-Q, 8 GB |
-| llama.cpp | local CUDA build `vendor/llama.cpp` @ `04eb4c4` ("llama : add Gemma4 MTP", #23398) — already supports `--spec-type draft-mtp` |
-| target | `gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf` (14 GB) |
-| draft head | `mtp-gemma-4-26B-A4B-it.gguf` (**0.25 GB**, smart-4bit, inside `unsloth/gemma-4-26B-A4B-it-qat-GGUF`) |
-| placement | `-ngl 99 --n-cpu-moe 27` (MTP fits at the **same** NCMOE — no expert-placement penalty) |
-| context / KV | `-c 32768 -ctk q8_0 -ctv q8_0 -fa on` |
-| workload | 256-token generation, fixed seed (42), one LRU-cache coding prompt |
+| GPU | RTX 2070 Max-Q, 8 GB · llama.cpp `vendor/` @ `04eb4c4` (#23398, supports `draft-mtp`) |
+| target / head | `gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf` (14 GB) · `mtp-gemma-4-26B-A4B-it.gguf` (**0.25 GB**, in our own repo) |
+| fixed | `-ngl 99 --n-cpu-moe 27 --no-mmap -ctk q8_0 -ctv q8_0 -fa on`; 256-token gen; one LRU-cache coding prompt; seed 42 |
 
-**Method.** A throwaway `llama-server` per variant; decode throughput =
-`timings.predicted_per_second` from `/completion`; draft acceptance scraped from the
-server log (the JSON omits it). Greedy is lossless ⇒ baseline and MTP generate the
-*identical* 256 tokens (a true same-work comparison); at temp > 0 they diverge.
+**Method.** Throwaway `llama-server` per variant; tok/s = `timings.predicted_per_second`
+from `/completion`; acceptance scraped from the server log. Greedy is lossless ⇒ baseline
+and MTP generate identical tokens (true same-work comparison).
 
-## Results (trimmed mean ± std, paired baseline immediately before each MTP)
+## 1. MTP speedup vs sampling temperature (n-max 2, p_min 0)
 
-| config | baseline tok/s | MTP tok/s | speedup | draft accept | verdict |
-|---|---:|---:|---:|---:|---|
-| greedy, n-max 1 | 18.9 ± 0.6 | 24.6 ± 2.3 | **+31 %** | 87.5 % | real |
-| greedy, n-max 2 | 22.9 ± 0.8 | 27.1 ± 1.0 | **+19 %** | 79.2 % | real |
-| greedy, n-max 4 | 21.5 ± 2.6 | 27.5 ± 2.7 | **+28 %** | 84.1 % | real |
-| temp 1.0, n-max 2 | 23.1 ± 0.0 | 24.0 ± 2.3 | +4 % | 73.7 % | **within noise** |
-| temp 1.0, n-max 4 | 23.7 ± 0.6 | 24.2 ± 2.9 | +2 % | 65.7 % | **within noise** |
+| temp | context | baseline | MTP | speedup | accept | verdict |
+|---|---|---:|---:|---:|---:|---|
+| **greedy** | 32k | 22.9 | 27.1 | **+19 %** | 79 % | **real** |
+| **greedy** | 32k (n-max 1) | 18.9 | 24.6 | **+31 %** | 88 % | real |
+| **greedy** | 32k (n-max 4) | 21.5 | 27.5 | **+28 %** | 84 % | real |
+| **greedy** | 64k | 21.2 | 24.0 | **+13 %** | 79 % | real (noisy) |
+| temp 1.0 | 32k | 23.1 | 24.0 | +4 % | 74 % | within noise |
+| temp 1.0 | 64k | 23.9 | 25.9 | +8 % | 74 % | within noise |
 
-At greedy, output is identical both sides, so these are the cleanest rows — and the
-win (+19–31 %) clears the ±13 % floor comfortably. At temp 1.0 the gain sits *inside*
-the noise band; the honest read is **no measurable speedup at the default sampling**.
+**Read:** a real win at greedy across both contexts; **no measurable gain at temp 1.0**.
+The limiter is draft acceptance, which falls with temperature. (Intermediate temps 0.3/0.6
+were measured but are *not* a usable curve — single prompt + single seed means each temp
+generates different text, and acceptance came out *higher* at 0.6 than greedy, which is
+impossible for the same content. Content luck, not a temperature law.)
 
-## What did *not* survive triage
+## 2. Context: 64k vs 32k (baseline, NCMOE sweep)
 
-- **Intermediate temps (0.3, 0.6) are not a usable curve.** Measured at n-max 2 they
-  read +15 % and +34 % — but acceptance came out *higher* at temp 0.6 (90 %) than at
-  greedy (79 %), which is impossible for the same content. Cause: **single prompt +
-  single seed** ⇒ each temperature generates *different text*, and acceptance is
-  content-dependent. These points measure content luck, not a temperature law.
-- **`--spec-draft-p-min` did not yield a real gain.** It is a *draft-side confidence
-  floor* (`common/speculative.cpp:706`: the MTP head stops drafting once its top-token
-  probability drops below `p_min`) — **not** a relaxed target-accept rule, so it cannot
-  "rescue" good drafts the target would reject. Swept at temp 1.0 / n-max 4:
-  `p_min=0.5` → −3 % (within noise); `p_min=0.75` → an eye-catching **+52 % / 100 %
-  acceptance** that turned out to be a **degenerate-output artifact** — the generation
-  collapsed to `fmt-fmt-fmt…` (a trivial loop is perfectly MTP-predictable and fast,
-  but it's garbage). `p_min=0` on the same seed produced coherent code. Net: p_min is
-  not a usable throughput lever here, and high p_min can co-occur with degenerate samples.
+| context | NCMOE 25 | NCMOE 27 | NCMOE 29/31 |
+|---|---:|---:|---:|
+| 32k | 21.9 | 22.7 | — |
+| 64k | 25.4 | 21–24 | ~21 |
 
-## Mechanism correction
+All NCMOE values **fit at 64k** (no OOM). Within the ±13 % noise, **64k ≈ 32k** — the
+larger context is nearly free because Gemma 4's **sliding-window attention** (`n_swa=1024`)
+bounds most layers' KV. Decode speed is governed by **NCMOE (expert placement), not
+context length** (256-token generations keep the live KV tiny). Lower NCMOE trends faster
+(more experts on GPU) but fine NCMOE distinctions are mostly inside the noise/thermal band.
+**Conclusion: run 64k; it does not cost meaningful tok/s.**
 
-`TECHNICAL.md` had argued MTP can't help a `--cpu-moe` MoE because "verifying K draft
-tokens activates the *union* of experts ⇒ more RAM traffic." The greedy win **refutes**
-that: batched verification *amortizes* expert-weight streaming across accepted tokens
-(consecutive tokens route to overlapping experts), which is exactly why speculative
-decoding helps a memory-bound MoE. **The limiter is draft acceptance, not RAM bandwidth** —
-and acceptance falls with temperature, which is why the temp-1.0 gain vanishes.
+## 3. `--spec-draft-p-min` — a footgun (do not use at temp > 0)
 
-## Caveat
+`p_min` is a *draft-side confidence floor* (`common/speculative.cpp:706`: the head stops
+drafting once its top-token prob drops below `p_min`) — **not** a relaxed target-accept
+rule. Two configs, both at temp 1.0, both **degenerated**:
 
-Acceptance is reported from a **single prompt + single seed**, so it is one content
-sample, not an average — fine for the coarse greedy-vs-temp-1.0 contrast, not for
-fine-grained per-temperature claims (hence the triage above).
+| config (temp 1.0, 64k) | tok/s | accept | **output** |
+|---|---:|---:|---|
+| n-max 6, p_min 0 | 24.0 | 58 % | coherent — but **no gain** (= baseline) |
+| n-max 6, p_min 0.7 | 29.4 | 85 % | ⚠️ **degenerate** (`fmt-1.0-1.0-…-0-0-0`) |
+| n-max 4, p_min 0.75 | (≈32) | 100 % | ⚠️ **degenerate** (`fmt-fmt-fmt…`) |
+
+The eye-catching speedups are an artifact: a trivial repeating loop is perfectly
+MTP-predictable (hence the 85–100 % acceptance) and fast — but it's garbage. `p_min=0` on
+the same seed produced coherent code. **At greedy, p_min is safe** (lossless ⇒ coherent;
+n-max 6 / p_min 0.7 gave a normal +19 %). The takeaway: in this build, `p_min>0` +
+`draft-mtp` + temperature sampling is **not output-safe** — this is the config a Twitter
+post suggested (`--spec-draft-n-max 6 --spec-draft-p-min 0.7 -c 80000`); it looks fast only
+because the text collapses. *(Plausibly a llama.cpp correctness bug; worth verifying on a
+newer build before trusting any p_min>0 result.)*
+
+## 4. Mechanism correction
+
+`TECHNICAL.md` had argued MTP can't help a `--cpu-moe` MoE ("verifying K tokens activates
+the *union* of experts ⇒ more RAM traffic"). The greedy win **refutes** that: batched
+verification *amortizes* expert-weight streaming across accepted tokens. **The limiter is
+draft acceptance, not RAM bandwidth** — and acceptance falls with temperature, which is why
+the temp-1.0 gain vanishes.
 
 ## Recommendation
 
-- **Lossless ⇒ enabling it never hurts output**, and it costs only a 0.25 GB head that
-  fits at the current NCMOE — low risk.
-- **At the default temp 1.0 it buys nothing measurable.** Its value is at **greedy /
-  low-temperature** work (coding), where +20–30 % is real.
-- If enabled, use **`--spec-type draft-mtp --spec-draft-n-max 2`**; leave `p_min` at 0.
-- Reproduce: `NMAX=2 TEMP=0 bash scripts/benchmark-mtp.sh`.
+- **Enable MTP for low-temperature / coding work** (`--spec-type draft-mtp --spec-draft-n-max 2`,
+  `p_min` left at 0): +15–30 %, lossless, free, fits at the current NCMOE.
+- **At default temp 1.0 it buys nothing measurable** — don't expect a chat speedup.
+- **Run 64k** — it costs ~nothing vs 32k.
+- **Do not use `--spec-draft-p-min > 0`** until the temp>0 degeneration is confirmed fixed.
+- **Try EAGLE3 next** (`RedHatAI/gemma-4-26B-A4B-it-speculator.eagle3`, needs llama.cpp
+  rebuild ≥ `88a3927`, `--spec-type draft-eagle3`) — the best shot at a real temp-1.0 win.
 
-## Raw data
+## Reproduce / raw data
 
-`/tmp/mtp_bench/{r2,r3,r4}/` (`results.tsv`, `server-*.log`) + the round driver logs
-`out-r2/r3/r4.log`. Consolidated re-analysis (one trim policy over all rounds):
-`/tmp/mtp_bench/analyze.py`.
+`NMAX=2 TEMP=0 bash scripts/benchmark-mtp.sh`. Raw per-run tok/s + acceptance in
+`/tmp/mtp_bench/{r2..r7}/` and `out-r*.log`; consolidated re-analysis `analyze.py`.
+Degenerate-output check: `NMAX=6 PMIN=0.7 TEMP=1.0 bash /tmp/mtp_bench/inspect.sh`.
