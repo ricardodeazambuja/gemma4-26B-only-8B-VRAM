@@ -143,9 +143,10 @@ runaway). This is the **macro-loop manager**: `plan` tracks the steps *inside* o
 cycle budget caps worst-case wasted carbon.
 
 **Distinct from neighbors** (the repo cares about non-overlap):
-- `plan` = changing tactical steps (HOW), no gate, no self-continuation. `goal` = immutable
-  objective + done-condition (WHAT DONE IS) that *drives* the loop. They compose — `goal_done`
-  can additionally require the plan's steps complete.
+- `plan` = the tactical steps (HOW), no gate, no self-continuation. `goal` = the objective +
+  done-condition (WHAT DONE IS) that *drives* the loop, with **no checklist of its own** (that
+  would duplicate `plan`). They compose via the seam: `goal_done` reads `plan-<id>.json` and
+  requires the steps complete.
 - `loop-breaker` stops a *micro* loop (same failing call ×3). `goal` runs the *macro* loop
   (keep going until done) with a hard cycle cap; loop-breaker's repeated-failure signal is a
   natural "blocked" trigger (future).
@@ -157,23 +158,21 @@ Gemma either declares "done" before the objective is met or never stops. The exi
 don't cover the macro-loop's stop condition.
 
 **State** (one goal per session; persisted so a resumed/looped session reloads it):
-`{objective, criteria:{text,done}[], doneWhen|null, maxCycles, cycle, status:
-active|done|blocked, blockedReason?}`. Live JSON at `<session-dir>/goal-<sessionId>.json`
+`{objective, doneWhen|null, maxCycles, cycle, status: active|done|blocked, blockedReason?}` —
+no checklist (plan owns that). Live JSON at `<session-dir>/goal-<sessionId>.json`
 (R1-safe resume) + a human-readable `goal-status.md` snapshot in the project memory dir
 (`~/.pi/memory/<slug>/`, shared with plan/semantic-memory) on every cycle and on done/blocked
 — durable state a human or the next session can read (mirrors the user's STATE.md
 autonomous-loop convention: state on disk, not chat memory).
 
 **Tools** (R5 — few, terse):
-- `goal_set(objective, criteria?, done_when?, max_cycles?)` — set the north-star once.
-  `objective` one line; `criteria` ≤8 short phrases; `done_when` a shell command (exit 0 ⇒
-  objectively done); `max_cycles` default 20. Teaching errors (R2) on empty objective / too
-  many criteria / over-length.
-- `goal_check(n)` — tick acceptance criterion n (1-based), like `plan_check`.
-- `goal_status()` — objective, criteria ticks, cycle/budget, last `done_when` exit + output tail.
-- `goal_done()` — Gemma claims completion. **Validates** (pull): runs `done_when` via
-  `pi.exec` and checks every criterion ticked. Unmet ⇒ teaching error naming exactly what's
-  unmet (failing command + output tail, or the unchecked criteria); status unchanged. Met ⇒
+- `goal_set(objective, done_when?, max_cycles?)` — set the north-star once. `objective` one
+  line; `done_when` a shell command (exit 0 ⇒ objectively done); `max_cycles` default 20. Use
+  `plan_set` for the steps. Teaching errors (R2) on empty / over-length objective.
+- `goal_status()` — objective, cycle/budget, last `done_when` exit + output tail.
+- `goal_done()` — Gemma claims completion. **Validates** (pull): runs `done_when` via `pi.exec`
+  AND reads `plan-<id>.json` to require every step done. Unmet ⇒ teaching error naming the
+  failing command / output tail and any unfinished plan steps; status unchanged. Met ⇒
   status=done, write DONE snapshot, stop self-continuation.
 
 **Enforcement — pull + bounded push (R4):**
@@ -192,15 +191,15 @@ autonomous-loop convention: state on disk, not chat memory).
 
 **R-compliance:** R1 — the immutable `objective` is injected byte-stable into the system
 prefix via `before_agent_start` (set once at session start; set-mid-session costs one cache
-invalidation); all dynamic status (ticks, cycle, `done_when` tail) is tail-injected via
-`context`, never the prefix. R3 — `done_when` output clipped (~50 lines / 2 KB) in any
-injection; full output saved beside the snapshot with a pointer. R6 — `goal_set` takes
-structured fields (never "describe your goal"); DONE/BLOCKED snapshots use a fixed
-Objective/Status/Cycles/Unmet/Files template.
+invalidation); all dynamic status (cycle, `done_when` tail) is tail-injected via `context`,
+never the prefix (the steps are plan's tail injection). R3 — `done_when` output clipped
+(~50 lines / 2 KB) in any injection; full output saved beside the snapshot with a pointer.
+R6 — `goal_set` takes structured fields (never "describe your goal"); DONE/BLOCKED snapshots
+use a fixed Objective/Status/Cycles/Done-when/Last-check template.
 
 **Accept:**
-- `goal_set` rejects empty objective / >8 criteria / over-length with teaching errors.
-- `goal_done` with a failing `done_when` (or unticked criteria) returns a teaching error
+- `goal_set` rejects empty / over-length objective with teaching errors.
+- `goal_done` with a failing `done_when` (or unfinished plan steps) returns a teaching error
   naming what's unmet; with all met ⇒ status=done.
 - `done_when` exit 0 at `agent_end` auto-marks done and suppresses re-engagement.
 - After `max_cycles` unmet continuations: status=blocked, durable snapshot written, no
@@ -209,8 +208,8 @@ Objective/Status/Cycles/Unmet/Files template.
 - goal JSON reloads on `session_start` (resume/loop survives a pi restart).
 - `done_when` output is clipped per R3; full output saved with a pointer.
 - re-engagement fires at most once per `agent_end` (no double-trigger).
-- tests run with no live model and no real loop (simulate `agent_end` + stub `exec`), meeting
-  the set's bar (~20+ checks).
+- tests run with no live model and no real loop (simulate `agent_end`, stub `exec`, simulate
+  `plan-<id>.json`), meeting the set's bar (~20+ checks).
 
 **Open question for implementation:** `sendUserMessage` triggering a turn from *inside*
 `agent_end` is the first time any extension drives the agent — verify in a real pi run that it
@@ -292,11 +291,11 @@ command → usage error, agent not driven; path slashes aren't parsed as command
 - [x] 8. fetch-page — done, 18 tests passing (live-verified google + wikipedia)
 - [x] +. thinking-router — done, 14 tests passing (engine-level lever as pi code)
 - [x] +. advisor — done, 45 tests passing (external reviewer agent via tui-driver; sees the whole session)
-- [x] 9. goal — done, 48 tests passing (autonomous-loop anchor: machine-checkable north-star + bounded self-continuation)
+- [x] 9. goal — done, 37 tests passing (autonomous-loop anchor: objective + done_when + loop; verifies plan's steps, no checklist of its own)
 - [x] 10. grounding — done, 26 tests passing (think-time engineering mindset; MINDSET prefix + prove-it CHECK at tail)
 - [x] 11. pipe — done, 23 tests passing (chain slash-commands via nested-command expansion; orchestration/UX)
 
-All items complete. 331 tests passing across the set (`./run-tests.sh`). goal is the first
+All items complete. 333 tests passing across the set (`./run-tests.sh`). goal is the first
 extension that *drives* the agent (`sendUserMessage` from `agent_end`) — validate that
 re-engagement in a real pi run before relying on unattended loops (fallback:
 `sendMessage(…, {deliverAs:"nextTurn", triggerTurn:true})`).

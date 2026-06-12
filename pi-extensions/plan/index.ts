@@ -25,7 +25,7 @@ export function renderChecklist(steps: Step[]): string {
   if (!steps.length) return "";
   const lines = steps.map((s, i) => `  ${s.done ? "[x]" : "[ ]"} ${i + 1}. ${s.text}`);
   const next = steps.find((s) => !s.done);
-  const tail = next ? `\nCurrent step: ${next.text}` : `\nAll steps complete — verify, then wrap up.`;
+  const tail = next ? `\nCurrent step: ${next.text}` : `\nAll steps complete — verify your work; if a goal is set, call goal_done to finish.`;
   return `## Active plan\n${lines.join("\n")}${tail}`;
 }
 

@@ -14,7 +14,7 @@ const steps = [{ text: "read config", done: true }, { text: "fix bug", done: fal
 const cl = renderChecklist(steps);
 ok("checklist marks done/undone", cl.includes("[x] 1. read config") && cl.includes("[ ] 2. fix bug"));
 ok("checklist names current step", cl.includes("Current step: fix bug"));
-ok("all-done shows wrap-up", renderChecklist([{ text: "x", done: true }]).includes("All steps complete"));
+ok("all-done defers completion to goal_done", renderChecklist([{ text: "x", done: true }]).includes("All steps complete") && renderChecklist([{ text: "x", done: true }]).includes("goal_done"));
 
 console.log("snapshot:");
 const snap = buildSnapshot(steps, ["a.py", "b.ts"]);
