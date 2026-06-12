@@ -938,15 +938,20 @@ The full mapping:
 | Weak self-verification | `verified-edits` | Auto-runs the cheapest checker after every edit; errors appended in-band |
 | Perseveration | `loop-breaker` | 3 identical failing calls → one tail nudge to change approach |
 | File re-reading | `symbols` | Outline tools + big-read interception |
-| Task drift | `plan` | External checklist re-injected at tail; survives compaction |
+| Task drift | `plan` | External checklist (the steps) re-injected at tail; survives compaction; defers the finish to `goal_done` |
 | No cross-session memory | `semantic-memory` | Passive recall: embed the user turn, inject top matches at tail |
 | Rule blindness | `operating-manual` | If-then triggers in the stable prefix + JIT nudges |
 | Thin world knowledge | `web-search` + `fetch-page` | Stealth Playwright search → readable-text reads |
 | Unmeasured cost | `stats` | llama.cpp timings → per-session token/energy accounting |
 | Over-thinking | `thinking-router` | Per-turn thinking budget routed by input difficulty |
 | Hand-waving from memory | `grounding` | Engineering mindset in the prefix + a prove-it check at the tail: derive / simulate / reference, never trust recollection |
-| No autonomous termination | `goal` | Machine-checkable north-star drives the loop until `done_when` passes; bounded cycles |
+| No autonomous termination | `goal` | Machine-checkable north-star drives the loop until `done_when` passes; bounded cycles; verifies plan's steps, no checklist of its own |
 | Capability ceiling | `advisor` | Escalate to a stronger external agent (below) |
+
+`plan` and `goal` split cleanly so they don't duplicate: `plan` owns the *steps* (the
+checklist), `goal` owns the *objective* + `done_when` (the finish), and `goal_done` reads
+`plan`'s persisted state to confirm the steps are complete before accepting — one checklist,
+one done-decision.
 
 ### The escalation path: `advisor`
 
