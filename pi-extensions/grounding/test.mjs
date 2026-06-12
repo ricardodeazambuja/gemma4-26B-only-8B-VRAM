@@ -66,6 +66,32 @@ const run = async () => {
     ok("injects when thinking level is unavailable", r !== undefined && r.messages.at(-1).content[0].text === PROTOCOL);
   }
 
+  console.log("integration (threaded context pipeline — runner.js order-independence):");
+  {
+    // Faithfully mirror runner.js `emitContext`: thread currentMessages through each
+    // context handler; a returned {messages} feeds the next. This proves grounding's
+    // protocol survives no matter where it sits relative to the other tail-injectors
+    // (goal/plan/recall), since load order (readdirSync) is not guaranteed.
+    const thread = async (handlers) => {
+      let cur = structuredClone(base());
+      for (const h of handlers) {
+        const r = await h({ type: "context", messages: cur });
+        if (r && r.messages) cur = r.messages;
+      }
+      return cur;
+    };
+    const g = makeHarness("medium").hooks.context;
+    const stub = (label) => async (e) => ({ messages: [...e.messages, { role: "user", content: [{ type: "text", text: label }] }] });
+    const plan = stub("## Active plan"), recall = stub("## Recalled");
+    const hasProto = (msgs) => msgs.some((m) => m.content?.[0]?.text === PROTOCOL);
+    for (const [name, order] of [["first", [g, plan, recall]], ["middle", [plan, g, recall]], ["last", [plan, recall, g]]]) {
+      ok(`protocol present when grounding runs ${name}`, hasProto(await thread(order)));
+    }
+    const out = await thread([g, plan, recall]);
+    ok("composes with neighbors (all three injections land)",
+      hasProto(out) && out.some((m) => m.content?.[0]?.text === "## Active plan") && out.some((m) => m.content?.[0]?.text === "## Recalled"));
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 };
