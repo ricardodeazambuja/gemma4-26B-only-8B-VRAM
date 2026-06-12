@@ -483,16 +483,37 @@ else
   fi
 
   echo ">> starting server in background (logs: $SERVER_LOG) ..."
-  nohup bash "$REPO_ROOT/scripts/run-server.sh" "${SERVER_ARGS[@]}" > "$SERVER_LOG" 2>&1 &
+  # Launch in its OWN process group (setsid) so an abort can kill the whole tree.
+  # run-server.sh exec's `mamba run … llama-server`, so llama-server is a grandchild:
+  # killing only $SRV_PID would orphan it, and stop-server.sh can't help mid-load
+  # (the port isn't bound until the model finishes loading).
+  SRV_PGRP=0
+  if command -v setsid >/dev/null 2>&1; then
+    nohup setsid bash "$REPO_ROOT/scripts/run-server.sh" "${SERVER_ARGS[@]}" > "$SERVER_LOG" 2>&1 &
+    SRV_PGRP=1
+  else
+    nohup bash "$REPO_ROOT/scripts/run-server.sh" "${SERVER_ARGS[@]}" > "$SERVER_LOG" 2>&1 &
+  fi
   SRV_PID=$!
 
-  # If the user aborts (Ctrl-C) while the model is still loading, don't leave the
-  # background server orphaned and silent — say it's still coming up and how to stop it.
+  # If the user aborts (Ctrl-C) before pi comes up, stop the server we just started
+  # rather than leaving a half-loaded model orphaned in the background eating RAM.
+  # We own it (we launched it this run), so cleaning it up is the right default.
   _abort_during_load() {
-    printf '\n>> aborted while the model was loading.\n'
+    printf '\n>> aborted while the model was loading — stopping the server we started.\n'
     if kill -0 "$SRV_PID" 2>/dev/null; then
-      echo "   The server is still starting in the background (PID $SRV_PID)."
-      echo "   Watch:  tail -f $SERVER_LOG     Stop:  bash scripts/stop-server.sh"
+      if [ "$SRV_PGRP" = 1 ]; then
+        kill -TERM -- -"$SRV_PID" 2>/dev/null || true   # whole process group
+        sleep 1
+        kill -KILL -- -"$SRV_PID" 2>/dev/null || true
+      else
+        # No group isolation: kill the wrapper's child (llama-server) then the wrapper,
+        # plus a by-port sweep in case it had already bound the port.
+        pkill -TERM -P "$SRV_PID" 2>/dev/null || true
+        kill -TERM "$SRV_PID" 2>/dev/null || true
+        bash "$REPO_ROOT/scripts/stop-server.sh" >/dev/null 2>&1 || true
+      fi
+      echo "   server stopped."
     fi
     exit 130
   }
