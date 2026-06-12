@@ -953,6 +953,15 @@ checklist), `goal` owns the *objective* + `done_when` (the finish), and `goal_do
 `plan`'s persisted state to confirm the steps are complete before accepting — one checklist,
 one done-decision.
 
+Two extensions round out the harness without covering a model *weakness*, so they sit outside
+the table above: **`pipe`** chains slash-commands into one ordered agent directive
+(`/pipe /goal … /plan …`), and **`toolsets`** is context economy — it gates situational tool
+groups so the per-request tool tax shrinks. The tool definitions are themselves a standing
+prefill cost, so two levers attack it: the R5 wording pass (terse, model-optimal descriptions)
+and `toolsets` (announce fewer tools). `toolsets` sets the active set *once per session* on
+purpose — tool schemas live in the KV-cached prefix, so toggling them mid-session re-prefills
+(the same R1 logic that governs every injection here).
+
 ### The escalation path: `advisor`
 
 The last row is qualitatively different and deserves its own rationale. Eleven of the twelve
