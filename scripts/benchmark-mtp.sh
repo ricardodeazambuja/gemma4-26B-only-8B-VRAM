@@ -33,8 +33,9 @@ NMAX="${NMAX:-}"; NCMOE="${NCMOE:-27}"; CTX="${CTX:-32768}"; KVQUANT="${KVQUANT:
 TEMP="${TEMP:-0}"; NPREDICT="${NPREDICT:-256}"; REPS="${REPS:-3}"; SEED="${SEED:-42}"
 PORT="${PORT:-8090}"; OUTDIR="${OUTDIR:-/tmp/mtp_bench}"
 mkdir -p "$OUTDIR"
+PMIN="${PMIN:-}"   # empty -> llama.cpp default (0.0); N -> --spec-draft-p-min N (draft-confidence floor)
 if [ -z "${LABEL:-}" ]; then
-  if [ -z "$NMAX" ]; then LABEL="baseline-t${TEMP}"; else LABEL="mtp-n${NMAX}-t${TEMP}"; fi
+  if [ -z "$NMAX" ]; then LABEL="baseline-t${TEMP}"; else LABEL="mtp-n${NMAX}-t${TEMP}${PMIN:+-p${PMIN}}"; fi
 fi
 LOG="$OUTDIR/server-$LABEL.log"
 PROMPT_FILE="${PROMPT_FILE:-$OUTDIR/prompt.txt}"
@@ -42,8 +43,10 @@ PROMPT_FILE="${PROMPT_FILE:-$OUTDIR/prompt.txt}"
 
 SPEC_ARGS=()
 [ -n "$NMAX" ] && SPEC_ARGS=(--spec-draft-model "$HEAD" --spec-type draft-mtp --spec-draft-n-max "$NMAX")
+# p_min: MTP head stops drafting once its top-token prob drops below this (common/speculative.cpp:706)
+[ -n "$NMAX" ] && [ -n "$PMIN" ] && SPEC_ARGS+=(--spec-draft-p-min "$PMIN")
 
-echo ">> [$LABEL] launching server: NCMOE=$NCMOE CTX=$CTX KV=$KVQUANT TEMP=$TEMP ${NMAX:+MTP n-max=$NMAX}"
+echo ">> [$LABEL] launching server: NCMOE=$NCMOE CTX=$CTX KV=$KVQUANT TEMP=$TEMP ${NMAX:+MTP n-max=$NMAX}${PMIN:+ p-min=$PMIN}"
 setsid mamba run --no-capture-output -n "$CUDA_ENV" "$CUDA_BIN" \
   -m "$MODEL" --alias gemma-4-26b-a4b-qat \
   -ngl 99 --n-cpu-moe "$NCMOE" --no-mmap \

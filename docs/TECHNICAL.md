@@ -826,14 +826,15 @@ are now retired — two by inspection, the third **by measurement** (2026-06-12;
   little KV. Unsloth budgets "~2 GB extra RAM/VRAM headroom" and lists 26B-A4B 4-bit at 17–18 GB
   *total* (RAM+VRAM) *with* MTP; we have 8 + 32 = 40 GB. (The reported load-crash on a 16 GB card was a
   specific bug, not a size law.)
-- **Speedup is real but acceptance-limited — measured here.** The CUDA build already supports it (the
-  `vendor/llama.cpp` binary is at `04eb4c4`, the #23398 merge — no rebuild), and MTP loads at the
-  **same `NCMOE=27`** as baseline. At **greedy** the draft head hits 79–88 % acceptance and decode runs
-  **+18–31 %** faster (≈21→27 tok/s) — which *refutes* the old worry below. At the rig's **real
-  sampling** (temp 1.0, top-p 0.95, top-k 64) acceptance falls to 66–74 % and the gain shrinks to a
-  noisy **+4–7 %**. So the payoff is gated by draft acceptance, which falls as temperature rises — only
-  the two endpoints (0 and 1.0) are measured; the intermediate behaviour is under test. `--spec-draft-n-max 2`
-  is the safe default (n-max 4 occasionally *loses* on rejected drafts).
+- **Speedup is real but acceptance-limited — measured here** (full study + noise analysis in
+  [`mtp-benchmark.md`](mtp-benchmark.md)). The CUDA build already supports it (`vendor/llama.cpp` @
+  `04eb4c4`, #23398 — no rebuild) and MTP loads at the **same `NCMOE=27`** as baseline. At **greedy**
+  the draft head hits 79–88 % acceptance and decode runs **+19–31 %** faster (≈21→27 tok/s) — a real win
+  that *refutes* the old worry below. At the rig's **default sampling** (temp 1.0) acceptance falls to
+  66–74 % and the gain is **within measurement noise** — this Max-Q rig's single-config baseline scatters
+  ±13 %, so "+2–7 %" is *no measurable gain*, not a small one. Use `--spec-draft-n-max 2`; `--spec-draft-p-min`
+  (a draft-confidence floor, not a relaxed accept rule) did **not** help. So: a clear win at greedy/low
+  temp, nothing measurable at temp 1.0.
 
   > The earlier reasoning here was *wrong*: it claimed verifying *K* tokens activates the *union* of
   > their experts ⇒ **more** RAM traffic ⇒ no win on `--cpu-moe`. The greedy +25 % shows the opposite —
@@ -841,11 +842,10 @@ are now retired — two by inspection, the third **by measurement** (2026-06-12;
   > tokens route to overlapping experts). The limiter is draft **acceptance**, not RAM bandwidth.
 
 **Net:** not the dense-only / big-VRAM dismissal it was, and not a free lunch either. It's lossless and
-costs only a 0.25 GB head that fits at the current NCMOE, so enabling it never hurts output and rarely
-hurts speed. For default temp-1.0 chat the gain is marginal (+4–7 %). Lower-temperature coding work
-*should* sit higher — greedy shows the ceiling — but **only temp 0 and 1.0 are measured so far**; the
-intermediate temps and a relaxed-acceptance lever (`--spec-draft-p-min`) are under test. If enabled, use
-`--spec-type draft-mtp --spec-draft-n-max 2`.
+costs only a 0.25 GB head that fits at the current NCMOE, so enabling it never hurts output. At the
+default temp 1.0 it buys nothing measurable; its value is at **greedy / low-temperature** (coding) work,
+where +20–30 % is real. If enabled, `--spec-type draft-mtp --spec-draft-n-max 2`. (All of the above is at
+CTX 32k; the 64k-vs-32k throughput trade-off — the rig's real target — is a separate measurement.)
 
 ### Bottom line
 
