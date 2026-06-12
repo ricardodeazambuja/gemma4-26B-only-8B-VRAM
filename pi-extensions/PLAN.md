@@ -263,6 +263,27 @@ and drives the agent with the whole thing via `sendUserMessage` (the only lever)
 command → usage error, agent not driven; path slashes aren't parsed as commands; one
 `sendUserMessage` per valid pipe.
 
+### 12. toolsets (context economy — announce only the tools you need)
+**Goal:** cut the per-request tool tax (and small-model wrong-tool confusion) by not
+announcing situational tools a session doesn't need. The wording pass (R5) shrank each tool
+entry; this shrinks the *set*.
+**R1 is the whole constraint:** tool schemas live in the KV-cached prefix, so `setActiveTools`
+re-prefills from the tools onward. Naive per-turn toggling trades schema tokens for re-prefill
+tokens — usually a loss. So the set is chosen ONCE per session (`session_start`) and changes
+only on an explicit `/tools` action (bounded, understood). Per-turn auto-gating is deliberately
+deferred (future work).
+**How:** groups of OUR situational tools — `web` (web_search, fetch_page), `memory` (remember,
+recall, forget), `advisor`; everything else (built-ins, symbols, plan, goal) is always active.
+Config (`~/.pi/agent/toolsets-config.json`, env `PI_TOOLSETS_DISABLED`) lists groups to disable
+at start; `session_start` computes active = current − disabled-group tools via `setActiveTools`,
+working from `getActiveTools()` so built-ins / unknown tools are never dropped. A `/tools`
+command lists groups and toggles one live. No model-facing tool — just a command + the startup
+gate, so it adds nothing to the announcement. Default disables nothing (opt-in). Hiding the
+`recall` tool doesn't break semantic-memory's auto-recall (a context injection, not a tool call).
+**Accept:** disabling `web` removes web_search/fetch_page and nothing else; `/tools on web`
+restores them; built-ins never dropped; unknown groups error cleanly; nothing-disabled is a
+no-op; config precedence env > file > defaults.
+
 ---
 
 ## Engine-level energy levers
@@ -299,8 +320,9 @@ command → usage error, agent not driven; path slashes aren't parsed as command
 - [x] 9. goal — done, 37 tests passing (autonomous-loop anchor: objective + done_when + loop; verifies plan's steps, no checklist of its own)
 - [x] 10. grounding — done, 26 tests passing (think-time engineering mindset; MINDSET prefix + prove-it CHECK at tail)
 - [x] 11. pipe — done, 23 tests passing (chain slash-commands via nested-command expansion; orchestration/UX)
+- [x] 12. toolsets — done, 19 tests passing (context economy: gate situational tool groups; R1-safe, set once per session)
 
-All items complete. 333 tests passing across the set (`./run-tests.sh`). goal is the first
+All items complete. 352 tests passing across the set (`./run-tests.sh`). goal is the first
 extension that *drives* the agent (`sendUserMessage` from `agent_end`) — validate that
 re-engagement in a real pi run before relying on unattended loops (fallback:
 `sendMessage(…, {deliverAs:"nextTurn", triggerTurn:true})`).
