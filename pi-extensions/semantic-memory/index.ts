@@ -110,8 +110,8 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "remember",
     label: "Remember",
-    description: "Save a durable fact for future sessions. One concrete line; include file paths/versions where relevant.",
-    parameters: Type.Object({ fact: Type.String({ description: "The fact to remember, as a single concrete line" }) }),
+    description: "Save a durable fact for future sessions (one concrete line; include paths/versions).",
+    parameters: Type.Object({ fact: Type.String({ description: "The fact, one concrete line" }) }),
     async execute(_id, params) {
       const fact = (params.fact || "").trim();
       if (!fact) return err(`remember needs a non-empty fact, e.g. remember(fact="Entry point is src/main.py; Python 3.11").`);
@@ -126,7 +126,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "recall",
     label: "Recall",
-    description: "Search memory from past sessions for facts relevant to a query.",
+    description: "Search past-session memory for facts matching a query.",
     parameters: Type.Object({
       query: Type.String({ description: "What to look up" }),
       k: Type.Optional(Type.Number({ description: `Max results (default ${RECALL_K})` })),
@@ -148,8 +148,8 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "forget",
     label: "Forget",
-    description: "Remove a remembered fact by a substring of its text. Wrong facts are worse than missing ones.",
-    parameters: Type.Object({ match: Type.String({ description: "Substring identifying the fact to remove" }) }),
+    description: "Remove a remembered fact matching a substring.",
+    parameters: Type.Object({ match: Type.String({ description: "Substring of the fact to remove" }) }),
     async execute(_id, params) {
       const match = (params.match || "").trim();
       if (!match) return err(`forget needs a substring, e.g. forget(match="Python 3.11").`);

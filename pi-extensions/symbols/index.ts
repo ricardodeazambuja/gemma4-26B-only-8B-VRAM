@@ -57,9 +57,9 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "get_symbols",
     label: "Get Symbols",
-    description: "Outline a code file: function/class/type signatures and imports with line numbers. Use before reading a whole file.",
+    description: "Outline a file's symbols (signatures + imports, with line numbers). Use before reading a whole file.",
     parameters: Type.Object({
-      path: Type.String({ description: "File path (relative to cwd or absolute)" }),
+      path: Type.String({ description: "File path (relative or absolute)" }),
     }),
     async execute(_id, params, _signal) {
       // ctx.cwd isn't passed to execute; resolve against process.cwd() which pi sets per session.
@@ -72,9 +72,9 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "find_symbol",
     label: "Find Symbol",
-    description: "Find where a function/class/type is defined across the project. Returns file:line for each definition.",
+    description: "Find where a symbol is defined project-wide; returns file:line.",
     parameters: Type.Object({
-      name: Type.String({ description: "Exact symbol name to locate" }),
+      name: Type.String({ description: "Exact symbol name" }),
     }),
     async execute(_id, params, signal) {
       const target = params.name.trim();

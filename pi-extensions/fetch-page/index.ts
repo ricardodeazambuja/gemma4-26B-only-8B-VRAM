@@ -28,10 +28,10 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "fetch_page",
     label: "Fetch Page",
-    description: "Fetch a URL and return its readable text (chrome stripped). Use offset to page through long pages.",
+    description: "Fetch a URL as readable text; offset pages through long results.",
     parameters: Type.Object({
-      url: Type.String({ description: "The URL to fetch (http/https)" }),
-      offset: Type.Optional(Type.Number({ description: "Line offset for continuation (default 0)" })),
+      url: Type.String({ description: "URL to fetch (http/https)" }),
+      offset: Type.Optional(Type.Number({ description: "Line offset for paging (default 0)" })),
     }),
     async execute(_id, params, signal) {
       const url = (params.url || "").trim();

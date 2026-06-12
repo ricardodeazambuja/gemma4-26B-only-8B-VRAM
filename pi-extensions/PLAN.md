@@ -20,8 +20,13 @@ model available at runtime. Claude Code is used only to *author* these extension
   explicit continuation hint, e.g. "412 more lines — call again with offset=50".
 - **R4 — Enforce > persuade.** If a behavior must happen, the tool does it on Gemma's
   behalf (redirects, auto-checks) rather than relying on a prompt rule.
-- **R5 — Terse schemas.** Tool descriptions one line; minimal parameters; few tools.
-  Schemas are resent every request — they are a standing prefill tax.
+- **R5 — Terse, model-optimal schemas.** A tool definition is resent every request — a
+  standing prefill tax AND the text the model reads to choose a tool, so optimize
+  *token-per-behavior*, not prose, and not for humans. One line, imperative, lead with the
+  capability. Keep only tokens that route behavior: when to use it vs. an alternative, and the
+  one gotcha that prevents misuse. Cut implementation/library names, internal mechanics, human
+  rationale, and anything the tool name or parameter type already says. Parameter descriptions
+  carry a format/default/example only when it prevents a malformed call. Few tools.
 - **R6 — Templates over open prompts.** Anything Gemma must *write* (memories,
   snapshots) gets a fill-in template (Task:/Done:/Next:/Files:), never "summarize".
 

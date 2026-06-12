@@ -306,13 +306,13 @@ export default function (pi: ExtensionAPI) {
     name: "advisor",
     label: "Advisor",
     description:
-      "Consult an external senior advisor agent that reads a transcript of this whole session and reviews your approach.",
+      "Get an external senior agent to review this whole session and your approach.",
     promptGuidelines: [
-      "Use advisor before committing to a big decision, when stuck after repeated failures, or before declaring a long task done.",
+      "Use advisor before a big decision, when stuck after repeated failures, or before declaring a long task done.",
     ],
     parameters: Type.Object({
       focus: Type.Optional(
-        Type.String({ description: "Optional: what the advisor should focus on" }),
+        Type.String({ description: "What to focus the review on (optional)" }),
       ),
     }),
     async execute(toolCallId, params, signal, _onUpdate, ctx) {

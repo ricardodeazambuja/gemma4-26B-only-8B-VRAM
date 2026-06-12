@@ -70,7 +70,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "plan_set",
     label: "Set Plan",
-    description: "Set the task plan as an ordered list of short steps. Call once when starting a multi-step task.",
+    description: "Set the plan: an ordered list of short steps. Call once when starting multi-step work.",
     parameters: Type.Object({
       steps: Type.Array(Type.String(), { description: "Ordered steps, each a short phrase" }),
     }),
@@ -90,7 +90,7 @@ export default function (pi: ExtensionAPI) {
     name: "plan_check",
     label: "Check Plan Step",
     description: "Mark a plan step done by its number (1-based).",
-    parameters: Type.Object({ step: Type.Number({ description: "1-based step number to mark done" }) }),
+    parameters: Type.Object({ step: Type.Number({ description: "1-based step number" }) }),
     async execute(_id, params) {
       const n = params.step;
       if (!state.steps.length) return errResult(`No plan set yet. Call plan_set first.`);
@@ -106,7 +106,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "plan_show",
     label: "Show Plan",
-    description: "Show the current plan and which steps remain.",
+    description: "Show the plan and remaining steps.",
     parameters: Type.Object({}),
     async execute() {
       if (!state.steps.length) return { content: [{ type: "text", text: "No plan set. Use plan_set to start one." }] };

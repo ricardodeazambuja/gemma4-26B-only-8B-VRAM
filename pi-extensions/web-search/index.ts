@@ -6,9 +6,9 @@ export default async function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "web_search",
     label: "Web Search",
-    description: "Search Google for information using Playwright",
+    description: "Search the web for current or factual info.",
     parameters: Type.Object({
-      query: Type.String({ description: "The search query" }),
+      query: Type.String({ description: "Search query" }),
     }),
     async execute(toolCallId, params, signal) {
       const browser = await chromium.launch({

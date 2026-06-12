@@ -189,10 +189,10 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "goal_set",
     label: "Set Goal",
-    description: "Set the durable objective. Add done_when (a shell command, exit 0 = done) to run unattended until it passes. Use plan_set for the steps.",
+    description: "Set the objective. done_when (shell cmd, exit 0=done) runs it unattended until it passes; steps go in plan_set.",
     parameters: Type.Object({
-      objective: Type.String({ description: "One-line north-star, e.g. 'all unit tests pass'" }),
-      done_when: Type.Optional(Type.String({ description: "Shell command that exits 0 when the objective is met" })),
+      objective: Type.String({ description: "One-line objective, e.g. 'all unit tests pass'" }),
+      done_when: Type.Optional(Type.String({ description: "Shell command; exit 0 = met" })),
       max_cycles: Type.Optional(Type.Number({ description: "Max auto-continue cycles (default 20)" })),
     }),
     async execute(_id, params) {
@@ -216,7 +216,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "goal_status",
     label: "Show Goal",
-    description: "Show the current goal, its done condition, and the cycle budget.",
+    description: "Show the goal, its done condition, and cycle budget.",
     parameters: Type.Object({}),
     async execute() {
       if (!state.objective) return okResult(`No goal set. Use goal_set to start one.`);
@@ -227,7 +227,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "goal_done",
     label: "Finish Goal",
-    description: "Claim the goal is met. Verifies done_when and that the plan steps are complete before accepting.",
+    description: "Claim the goal is met; verifies done_when and that plan steps are complete first.",
     parameters: Type.Object({}),
     async execute() {
       if (!state.objective) return errResult(`No goal set — nothing to finish.`);
