@@ -20,6 +20,12 @@ head is only 0.25 GB and ships inside our own repo). The throughput gain is
 So the *greedy* number is a misleading ceiling. At the rig's real sampling
 (temp 1.0, top-p 0.95, top-k 64) the win shrinks to a marginal few percent.
 
+> **Scope of what's measured:** only the two endpoints — **temp 0 and temp 1.0** —
+> are measured below. The shape *between* them (e.g. temp 0.6, the usual
+> coding-precision setting) is **not yet measured**; it is the subject of the
+> follow-up experiments, along with `--spec-draft-p-min`. Do not read the two
+> endpoints as a smooth curve until those land.
+
 **Correction to the prior reasoning.** `TECHNICAL.md` had argued MTP can't help a
 `--cpu-moe` MoE because "verifying K draft tokens activates the *union* of experts
 ⇒ more RAM traffic." The greedy result (+25 %) **refutes** that: batched
@@ -80,8 +86,9 @@ comparison.
 - **It never makes output worse** (lossless) and costs only a 0.25 GB head that
   fits at the current NCMOE — so enabling it is low-risk.
 - **The payoff is real but temperature-gated.** For default temp-1.0 chat it's a
-  marginal few percent. For lower-temperature / coding work (where acceptance is
-  higher) it trends toward the greedy ceiling and is worth turning on.
+  marginal few percent. Lower-temperature / coding work *should* land higher (greedy
+  shows the ceiling), but **the intermediate temps are not yet measured** — don't
+  assume a smooth ramp until the follow-up round confirms it.
 - If enabled, use **`--spec-type draft-mtp --spec-draft-n-max 2`** (Unsloth's
   starting point; least downside under sampling). Reproduce with:
   `NMAX=2 bash scripts/benchmark-mtp.sh`.

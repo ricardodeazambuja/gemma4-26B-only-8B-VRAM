@@ -801,7 +801,7 @@ params. `--cpu-moe` does nothing (there are no experts to place), so on an 8 GB 
 on the CPU. Expect **~1–3 tok/s** (recall CPU-only on the MoE — which computes just 4B active — was
 ~2 tok/s; a dense 31B computes ~8× more per token). It runs, but it's not interactive.
 
-### Aside — MTP (self-speculative decoding): measured — marginal at temp 1.0, real win at low temp
+### Aside — MTP (self-speculative decoding): measured — big at greedy, marginal at temp 1.0
 
 Gemma 4 ships a **Multi-Token Prediction** head, and llama.cpp supports it — core MTP
 ([#22673](https://github.com/ggml-org/llama.cpp/pull/22673), merged 2026-05-16) plus the Gemma 4 wiring
@@ -831,9 +831,9 @@ are now retired — two by inspection, the third **by measurement** (2026-06-12;
   **same `NCMOE=27`** as baseline. At **greedy** the draft head hits 79–88 % acceptance and decode runs
   **+18–31 %** faster (≈21→27 tok/s) — which *refutes* the old worry below. At the rig's **real
   sampling** (temp 1.0, top-p 0.95, top-k 64) acceptance falls to 66–74 % and the gain shrinks to a
-  noisy **+4–7 %**. So the payoff scales with sampling temperature (high at greedy/coding-temp, marginal
-  at temp 1.0), and `--spec-draft-n-max 2` is the safe default (n-max 4 occasionally *loses* on rejected
-  drafts).
+  noisy **+4–7 %**. So the payoff is gated by draft acceptance, which falls as temperature rises — only
+  the two endpoints (0 and 1.0) are measured; the intermediate behaviour is under test. `--spec-draft-n-max 2`
+  is the safe default (n-max 4 occasionally *loses* on rejected drafts).
 
   > The earlier reasoning here was *wrong*: it claimed verifying *K* tokens activates the *union* of
   > their experts ⇒ **more** RAM traffic ⇒ no win on `--cpu-moe`. The greedy +25 % shows the opposite —
@@ -842,8 +842,10 @@ are now retired — two by inspection, the third **by measurement** (2026-06-12;
 
 **Net:** not the dense-only / big-VRAM dismissal it was, and not a free lunch either. It's lossless and
 costs only a 0.25 GB head that fits at the current NCMOE, so enabling it never hurts output and rarely
-hurts speed. For default temp-1.0 chat the gain is marginal; for lower-temperature coding work it trends
-toward the greedy ceiling and is worth turning on with `--spec-type draft-mtp --spec-draft-n-max 2`.
+hurts speed. For default temp-1.0 chat the gain is marginal (+4–7 %). Lower-temperature coding work
+*should* sit higher — greedy shows the ceiling — but **only temp 0 and 1.0 are measured so far**; the
+intermediate temps and a relaxed-acceptance lever (`--spec-draft-p-min`) are under test. If enabled, use
+`--spec-type draft-mtp --spec-draft-n-max 2`.
 
 ### Bottom line
 
