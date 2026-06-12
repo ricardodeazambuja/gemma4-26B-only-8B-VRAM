@@ -43,6 +43,7 @@ The full spec, build order, and rationale live in
 | 7 | [`stats`](stats/) | ✅ done | Per-session token/energy accounting. |
 | 8 | [`fetch-page`](fetch-page/) | ✅ done | Readable-text page fetcher (closes the search→read loop). |
 | 9 | [`goal`](goal/) | ✅ done | Machine-checkable north-star that drives an unattended loop until `done_when` passes. |
+| 10 | [`grounding`](grounding/) | ✅ done | Tail-injects a reasoning protocol so Gemma verifies-or-flags at think time instead of hand-waving. |
 | + | [`thinking-router`](thinking-router/) | ✅ done | Routes the thinking budget per turn (engine-level energy lever, as pi code). |
 | + | [`advisor`](advisor/) | ✅ done | On-demand review by an external agent (via tui-driver) that sees the whole session. |
 

@@ -217,6 +217,26 @@ Objective/Status/Cycles/Unmet/Files template.
 re-engages cleanly (no re-entrancy / double-turn) before relying on it; fall back to
 `sendMessage(…, {deliverAs:"nextTurn", triggerTurn:true})` if needed.
 
+### 10. grounding (think-time anti-hand-waving)
+**Goal:** stop Gemma asserting facts from training memory instead of checking them — and do
+it at *think time*, so no tokens are wasted generating a hand-wavy answer only to review and
+regenerate it. Distinct from `web-search`/`fetch-page` (which supply *missing* knowledge):
+this targets *confident fabrication* — the model has the tools, it just doesn't reach for them.
+**How:** a `context` hook appends a terse reasoning protocol at the TAIL each turn — the last
+thing read before the reasoning pass — so the "did this come from a tool or from memory?"
+check happens *inside* the chain-of-thought, and the only answer ever decoded is already
+grounded. There is no API to seed the reasoning stream directly; tail injection is the
+highest-salience way to reach it. Skips the injection when the thinking level is
+`off`/`minimal` (trivial turns, no reasoning to steer). One hook, no state, no tools.
+**Prevention, not a gate (by design):** high-salience guidance the reasoning follows, not a
+hard guarantee — a guarantee needs detect-and-regenerate, the exact tokens this saves, so
+there is deliberately no backstop. Pairs with `thinking-router` (reads its level to skip
+trivial turns).
+**Accept:** protocol is reasoning-directed, contrasts tool vs memory, names the tools, and
+requires an explicit "unverified" flag; tail injection leaves the prefix untouched and is
+byte-identical across turns; trivial-turn skip fires; degrades when no thinking level is
+reported.
+
 ---
 
 ## Engine-level energy levers
@@ -251,8 +271,9 @@ re-engages cleanly (no re-entrancy / double-turn) before relying on it; fall bac
 - [x] +. thinking-router — done, 14 tests passing (engine-level lever as pi code)
 - [x] +. advisor — done, 45 tests passing (external reviewer agent via tui-driver; sees the whole session)
 - [x] 9. goal — done, 48 tests passing (autonomous-loop anchor: machine-checkable north-star + bounded self-continuation)
+- [x] 10. grounding — done, 16 tests passing (think-time anti-hand-waving; tail-injected reasoning protocol)
 
-All items complete. 282 tests passing across the set (`./run-tests.sh`). goal is the first
+All items complete. 298 tests passing across the set (`./run-tests.sh`). goal is the first
 extension that *drives* the agent (`sendUserMessage` from `agent_end`) — validate that
 re-engagement in a real pi run before relying on unattended loops (fallback:
 `sendMessage(…, {deliverAs:"nextTurn", triggerTurn:true})`).

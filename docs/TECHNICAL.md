@@ -906,6 +906,7 @@ failure modes are *systematic*, not random:
 | No autonomous termination | Unattended runs stop before the objective is met, or never stop at all |
 | No cross-session memory | Every session restarts from zero |
 | Thin world knowledge | A 26B can't carry the long tail; needs search + read |
+| Hand-waving from memory | States facts about code or the world it never checked, as if certain |
 | Prompt-rule blindness | Instructions in the system prompt decay; the model "knows" but doesn't *do* |
 | Capability ceiling | Some plans are just wrong, and no amount of self-review by the same model fixes that |
 
@@ -943,12 +944,13 @@ The full mapping:
 | Thin world knowledge | `web-search` + `fetch-page` | Stealth Playwright search → readable-text reads |
 | Unmeasured cost | `stats` | llama.cpp timings → per-session token/energy accounting |
 | Over-thinking | `thinking-router` | Per-turn thinking budget routed by input difficulty |
+| Hand-waving from memory | `grounding` | Tail-injected reasoning protocol: verify-or-flag inside the chain-of-thought, before any answer is decoded |
 | No autonomous termination | `goal` | Machine-checkable north-star drives the loop until `done_when` passes; bounded cycles |
 | Capability ceiling | `advisor` | Escalate to a stronger external agent (below) |
 
 ### The escalation path: `advisor`
 
-The last row is qualitatively different and deserves its own rationale. Ten of the eleven
+The last row is qualitatively different and deserves its own rationale. Eleven of the twelve
 extensions assume the model's plan is *recoverable* — verify it, nudge it, remind it. But a
 wrong plan executed carefully is still wrong, and a model cannot reliably review its own
 reasoning. Cloud harnesses solve this with a stronger reviewer model. The local equivalent:
