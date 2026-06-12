@@ -903,6 +903,7 @@ failure modes are *systematic*, not random:
 | Weak self-verification | Ships syntactically broken edits, believes they're fine |
 | Perseveration | Repeats an identical failing tool call until the context fills with errors |
 | No working memory discipline | Re-reads 800-line files to find one signature; re-decides the task mid-way |
+| No autonomous termination | Unattended runs stop before the objective is met, or never stop at all |
 | No cross-session memory | Every session restarts from zero |
 | Thin world knowledge | A 26B can't carry the long tail; needs search + read |
 | Prompt-rule blindness | Instructions in the system prompt decay; the model "knows" but doesn't *do* |
@@ -942,11 +943,12 @@ The full mapping:
 | Thin world knowledge | `web-search` + `fetch-page` | Stealth Playwright search → readable-text reads |
 | Unmeasured cost | `stats` | llama.cpp timings → per-session token/energy accounting |
 | Over-thinking | `thinking-router` | Per-turn thinking budget routed by input difficulty |
+| No autonomous termination | `goal` | Machine-checkable north-star drives the loop until `done_when` passes; bounded cycles |
 | Capability ceiling | `advisor` | Escalate to a stronger external agent (below) |
 
 ### The escalation path: `advisor`
 
-The last row is qualitatively different and deserves its own rationale. Nine of the ten
+The last row is qualitatively different and deserves its own rationale. Ten of the eleven
 extensions assume the model's plan is *recoverable* — verify it, nudge it, remind it. But a
 wrong plan executed carefully is still wrong, and a model cannot reliably review its own
 reasoning. Cloud harnesses solve this with a stronger reviewer model. The local equivalent:
