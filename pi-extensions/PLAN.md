@@ -237,6 +237,22 @@ requires an explicit "unverified" flag; tail injection leaves the prefix untouch
 byte-identical across turns; trivial-turn skip fires; degrades when no thinking level is
 reported.
 
+### 11. pipe (orchestration / UX — not a weakness fix)
+**Goal:** chain slash-commands, e.g. `/pipe /goal implement the results from /plan a python
+script that says hello world`, so a multi-command intent runs as one ordered flow.
+**Constraint (why it's a command, not real piping):** pi has no command piping — handlers
+return `void`, there's no `executeCommand`, and the `input` event is read-only. So `/a | /b`
+shell-style piping is impossible.
+**How:** one `registerCommand("pipe")` parses the expression itself (`parsePipe` splits on
+`/<known-command>` tokens — only known commands split, so `/tmp/foo` in an arg isn't a
+command), reverses to innermost-first execution order (the outer command references the inner
+one's result), expands each stage into a tool-using directive (`plan`→plan_set, `goal`→goal_set),
+and drives the agent with the whole thing via `sendUserMessage` (the only lever). Extend the
+`ACTIONS` map to teach it a new command.
+**Accept:** the example expands to step 1 = plan, step 2 = goal referencing step 1; unknown/no
+command → usage error, agent not driven; path slashes aren't parsed as commands; one
+`sendUserMessage` per valid pipe.
+
 ---
 
 ## Engine-level energy levers
@@ -272,8 +288,9 @@ reported.
 - [x] +. advisor — done, 45 tests passing (external reviewer agent via tui-driver; sees the whole session)
 - [x] 9. goal — done, 48 tests passing (autonomous-loop anchor: machine-checkable north-star + bounded self-continuation)
 - [x] 10. grounding — done, 16 tests passing (think-time anti-hand-waving; tail-injected reasoning protocol)
+- [x] 11. pipe — done, 23 tests passing (chain slash-commands via nested-command expansion; orchestration/UX)
 
-All items complete. 298 tests passing across the set (`./run-tests.sh`). goal is the first
+All items complete. 325 tests passing across the set (`./run-tests.sh`). goal is the first
 extension that *drives* the agent (`sendUserMessage` from `agent_end`) — validate that
 re-engagement in a real pi run before relying on unattended loops (fallback:
 `sendMessage(…, {deliverAs:"nextTurn", triggerTurn:true})`).
