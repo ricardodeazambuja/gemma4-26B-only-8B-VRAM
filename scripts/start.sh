@@ -597,41 +597,40 @@ else
   }
   trap _abort_during_load INT TERM
 
-  # Live progress (elapsed seconds + a spinner + the latest server log line) instead
-  # of a blank wall of dots, so a multi-minute first load visibly advances rather than
-  # looking hung. The log line is sanitized (ANSI escapes, then every control char,
-  # stripped) and the whole status is clipped to the terminal width, so it redraws
-  # cleanly in place. An embedded carriage return — or a line wider than the terminal,
-  # which then wraps — would defeat the \r redraw and smear text across the line,
-  # making the timer look like it's crashing. Falls back to plain dots when stdout
-  # isn't a terminal (e.g. piped/-p runs).
+  # Live progress: stream the server's own load log, each line on its OWN line so it stays
+  # readable, plus an elapsed heartbeat during quiet stretches so a multi-minute first load
+  # never looks hung. (An earlier version redrew a single line — the log tail crammed next to
+  # a timer, truncated and overwritten every 2s — which was unreadable and made a stray
+  # "W load: ..." warning look like a crash.) Indented lines are the server log; full log in
+  # $SERVER_LOG. Non-terminal stdout (piped / -p) keeps plain dots to avoid log spam.
   echo ">> waiting for the model to load — first load can take a few minutes (Ctrl-C aborts)"
   _t0=$SECONDS; _tty=0; [ -t 1 ] && _tty=1
-  _spin='|/-\'; _si=0
+  [ "$_tty" = 1 ] && echo ">> server log follows (indented); '>> model ready' prints when it is up:"
+  _seen=0; _last_out=$SECONDS
   for _ in $(seq 1 150); do          # up to ~5 min
     if curl -fsS "http://$HOST:$PORT/health" >/dev/null 2>&1; then
-      [ "$_tty" = 1 ] && printf '\r\033[K'
       echo ">> model ready in $((SECONDS - _t0))s."
       break
     fi
     if ! kill -0 "$SRV_PID" 2>/dev/null; then
-      [ "$_tty" = 1 ] && printf '\r\033[K'
       echo "ERROR: the server exited while starting. Last log lines:"
       tail -20 "$SERVER_LOG"
       server_start_hints
       exit 1
     fi
     if [ "$_tty" = 1 ]; then
-      # newest non-blank log line, stripped of ANSI escapes then every control char
-      # (CR/tab/etc.) so nothing in it can scramble the single status line we redraw
-      _last="$(grep -av '^[[:space:]]*$' "$SERVER_LOG" 2>/dev/null | tail -1 || true)"
-      _last="$(printf '%s' "$_last" | sed -E 's/\x1b\[[0-9;?=]*[A-Za-z]//g' | tr -d '[:cntrl:]')"
-      _head="$(printf '>> loading %s %3ds  ' "${_spin:$_si:1}" "$((SECONDS - _t0))")"
-      _si=$(((_si + 1) % 4))
-      # clip the snippet so head+snippet fits the terminal width and never wraps
-      _cols="$(tput cols 2>/dev/null || echo 80)"; _avail=$(( _cols - ${#_head} - 1 ))
-      [ "$_avail" -lt 0 ] && _avail=0
-      printf '\r\033[K%s%.*s' "$_head" "$_avail" "$_last"
+      # Print only the NEW server-log lines since the last check, each on its own line. Strip
+      # ANSI escapes and control chars but keep newlines/tabs, so nothing scrambles scrollback.
+      _total=$(wc -l < "$SERVER_LOG" 2>/dev/null || echo 0)
+      if [ "$_total" -gt "$_seen" ]; then
+        sed -n "$((_seen + 1)),${_total}p" "$SERVER_LOG" 2>/dev/null \
+          | sed -E 's/\x1b\[[0-9;?=]*[A-Za-z]//g' | tr -d '\000-\010\013-\037\177' \
+          | while IFS= read -r _line; do [ -n "$_line" ] && printf '     %s\n' "$_line"; done
+        _seen=$_total; _last_out=$SECONDS
+      elif [ "$((SECONDS - _last_out))" -ge 15 ]; then
+        printf '     … still loading (%ds elapsed)\n' "$((SECONDS - _t0))"
+        _last_out=$SECONDS
+      fi
     else
       printf '.'
     fi
