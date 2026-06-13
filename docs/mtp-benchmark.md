@@ -18,11 +18,12 @@ the `--spec-draft-p-min` lever. Settles [`TECHNICAL.md` §13](TECHNICAL.md) with
 - **`--spec-draft-p-min` is a footgun here:** `p_min>0` with temperature sampling drove
   the output into **degenerate loops** (`fmt-fmt-fmt…`) in two independent configs. Its
   big-looking speedups are garbage. Leave it at 0.
-- **Next lead: EAGLE3.** llama.cpp commit `88a3927` (2026-06-12) added EAGLE3 spec
-  decoding incl. a Gemma 4 draft (`RedHatAI/gemma-4-26B-A4B-it-speculator.eagle3`).
-  EAGLE3 typically keeps higher acceptance under sampling than a plain MTP head, so it's
-  the most promising path to an actual temp-1.0 win. **Not yet measured** (needs a
-  rebuild at ≥ `88a3927`).
+- **EAGLE3 was tried — it doesn't work here.** We converted the Gemma 4 EAGLE3 draft
+  (`RedHatAI/gemma-4-26B-A4B-it-speculator.eagle3`), rebuilt llama.cpp at `88a3927`, and
+  measured it: only ~42 % draft acceptance (vs MTP's ~80 %) ⇒ **slower than baseline even at
+  greedy** (−19 % at n-max 3), **degenerates at temp>0**, and **segfaults on the chat-template
+  path** (real use via pi). The fresh eagle3 support in this build is too immature — revisit
+  only on a much newer llama.cpp. **So there is no temp-1.0 spec-decoding win on this rig today.**
 
 ## The measurement-noise floor (read before trusting any single number)
 
@@ -113,8 +114,10 @@ the temp-1.0 gain vanishes.
 - **At default temp 1.0 it buys nothing measurable** — don't expect a chat speedup.
 - **Run 64k** — it costs ~nothing vs 32k.
 - **Do not use `--spec-draft-p-min > 0`** until the temp>0 degeneration is confirmed fixed.
-- **Try EAGLE3 next** (`RedHatAI/gemma-4-26B-A4B-it-speculator.eagle3`, needs llama.cpp
-  rebuild ≥ `88a3927`, `--spec-type draft-eagle3`) — the best shot at a real temp-1.0 win.
+- **EAGLE3 doesn't help (tried).** On `88a3927` it's slower than baseline (~42 % acceptance),
+  degenerates at temp>0, and segfaults on the chat path — not usable; revisit on a much newer
+  llama.cpp. For a faster temp-1.0 experience the lever is *lowering the sampling temperature*
+  for coding, not speculative decoding.
 
 ## Reproduce / raw data
 

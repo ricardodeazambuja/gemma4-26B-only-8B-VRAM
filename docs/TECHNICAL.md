@@ -852,10 +852,14 @@ where +20–30 % is real. If enabled, `--spec-type draft-mtp --spec-draft-n-max 
 so **64k decodes at essentially the same tok/s as 32k** (~22–25 either way; both fit at `NCMOE≈25–27`).
 Decode speed is set by `NCMOE` (expert placement), not context length. So the 64k target costs nothing.
 
-**Next lever to try — EAGLE3.** llama.cpp `88a3927` (2026-06-12) added EAGLE3 spec decoding with a Gemma 4
-draft (`RedHatAI/gemma-4-26B-A4B-it-speculator.eagle3`); EAGLE3 usually holds higher acceptance under
-sampling than a plain MTP head, so it's the most promising shot at a *temp-1.0* win. Needs a rebuild
-(≥ `88a3927`) and `--spec-type draft-eagle3`; not yet measured.
+**EAGLE3 — tried, doesn't work on this build (2026-06-12).** llama.cpp `88a3927` added EAGLE3 spec
+decoding with a Gemma 4 draft (`RedHatAI/gemma-4-26B-A4B-it-speculator.eagle3`). We converted it,
+rebuilt at `88a3927`, and benchmarked it — it's **not usable**: draft acceptance is only ~42 % (vs MTP's
+79–88 %; not a quant artifact), so its *heavy* draft (a full transformer layer) makes it **slower than
+baseline even at greedy** (−19 % at n-max 3); temp 1.0 **degenerates**; and on the chat-template path
+(i.e. real use through pi) it **segfaults**. The fresh eagle3 support in this build is too immature —
+revisit only on a much newer llama.cpp. **Bottom line for this rig today: there is no temp-1.0
+spec-decoding win — MTP helps only at low temperature, so for faster coding, lower the temperature.**
 
 ### Bottom line
 
