@@ -283,7 +283,12 @@ configure_menu() {
   _menu_yesno "   enable MTP? [y/N] " no
   if [ "$MENU_REPLY" = yes ]; then
     MTP=1
-    _menu_text "   draft tokens per step (n-max) [2]: " 2; NMAX="$MENU_REPLY"
+    _menu_text "   draft tokens per step (n-max) [2, range 1-6]: " 2; NMAX="$MENU_REPLY"
+    # Temperature is THE knob for MTP (it only pays off at low temp), so ask it here —
+    # this overrides the sampling choice above. Default to whatever was already picked,
+    # else 0.7 (a good coding temp). p_min stays 0 (any p_min>0 degenerates the output).
+    echo "     ▸ MTP only speeds up at LOW temperature: 0 = greedy · 0.7 = coding · 1.0 = ~no MTP gain."
+    _menu_text "   temperature for this run [${TEMP:-0.7}]: " "${TEMP:-0.7}"; export TEMP="$MENU_REPLY"
   fi
 
   # Summary + confirm --------------------------------------------------------
