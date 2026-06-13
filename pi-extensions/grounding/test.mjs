@@ -15,7 +15,7 @@ ok("CHECK is the act-now prove-it pass", /prove it/i.test(CHECK) && /before you 
 ok("CHECK invokes the same three modes", /derive/i.test(CHECK) && /simulate/i.test(CHECK) && /read it from a/i.test(CHECK));
 ok("CHECK requires an explicit unverified label", CHECK.includes("unverified"));
 ok("CHECK and MINDSET are different text", CHECK !== MINDSET && !MINDSET.includes(CHECK));
-ok("both stay terse (each < 700 bytes)", Buffer.byteLength(MINDSET) < 700 && Buffer.byteLength(CHECK) < 700);
+ok("both stay terse (MINDSET < 800, CHECK < 700 bytes)", Buffer.byteLength(MINDSET) < 800 && Buffer.byteLength(CHECK) < 700);
 
 // --- harness ---
 function makeHarness(level) {

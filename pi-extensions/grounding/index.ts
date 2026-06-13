@@ -27,6 +27,10 @@ export const MINDSET = [
   "- reference it: read the actual source — the file (read / grep / get_symbols), docs (web_search) —",
   "  not your memory of it.",
   "A claim resting only on memory is unproven: establish it, or say so. Never present recollection as fact.",
+  "",
+  "## Work economically",
+  "Spend tokens only where they buy correctness — above all in your reasoning: think in the densest",
+  "form an LLM can use (notes, not prose). Keep it simple; be creative, not over-engineered.",
 ].join("\n");
 
 // End: the act-now check, re-injected at the tail each turn (different from the prefix).
