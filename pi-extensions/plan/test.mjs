@@ -3,7 +3,7 @@
 import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
-import factory, { renderChecklist, buildSnapshot, memoryDir } from "./index.ts";
+import factory, { renderChecklist, buildSnapshot, memoryDir, wrapReminder } from "./index.ts";
 
 let pass = 0, fail = 0;
 const ok = (name, cond) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ ${name}`); } };
@@ -66,12 +66,23 @@ const run = async () => {
   r = await tools.plan_check.execute("t", { step: 9 });
   ok("out-of-range step → error", r.isError && r.content[0].text.includes("out of range"));
 
-  console.log("context injection:");
-  const base = [{ role: "user", content: [{ type: "text", text: "hi" }] }];
+  console.log("context injection (folds into the trailing user turn as a wrapped reminder):");
+  const base = [
+    { role: "user", content: [{ type: "text", text: "earlier" }] },
+    { role: "assistant", content: [{ type: "text", text: "ok" }] },
+    { role: "user", content: [{ type: "text", text: "hi" }] },
+  ];
   const res = await hooks.context({ messages: base });
-  ok("appends a tail message", res.messages.length === base.length + 1);
-  ok("tail is last (prefix unchanged)", res.messages[0] === base[0]);
-  ok("tail carries the checklist", res.messages.at(-1).content[0].text.includes("read config"));
+  ok("does not add a new message (folds in)", res.messages.length === base.length);
+  ok("earlier messages untouched (same refs)", res.messages[0] === base[0] && res.messages[1] === base[1]);
+  ok("the user's real text stays first in the folded turn", res.messages.at(-1).content[0].text === "hi");
+  const planTail = res.messages.at(-1).content.at(-1).text;
+  ok("checklist rides as a wrapped <reminder> block", planTail.includes("read config") && planTail.startsWith("<reminder>"));
+  ok("original user message not mutated", base[2].content.length === 1);
+  // Tool-loop shape (tail is a toolResult, not a user turn) → append a fresh wrapped reminder.
+  const loop = [{ role: "user", content: [{ type: "text", text: "go" }] }, { role: "toolResult", content: [{ type: "text", text: "out" }] }];
+  const loopRes = await hooks.context({ messages: loop });
+  ok("non-user tail → appends one wrapped reminder", loopRes.messages.length === loop.length + 1 && loopRes.messages.at(-1).role === "user" && loopRes.messages.at(-1).content[0].text.startsWith("<reminder>"));
 
   console.log("touched-files tracking:");
   await hooks.tool_result({ toolName: "write", isError: false, input: { path: "src/x.py" }, content: [], type: "tool_result" });

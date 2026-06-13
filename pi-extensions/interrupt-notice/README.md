@@ -21,8 +21,10 @@ rides a third:
   handed-back conversation is checked the same way. This catches the abort even if a given pi build
   does not emit `message_end` for the aborted partial. The pending flag is idempotent, so both
   events firing on one abort still arms it exactly once.
-- **Inject** (`context`): on the next LLM call, if the flag is set, append the notice at the
-  **tail** of the message list and clear the flag.
+- **Inject** (`context`): on the next LLM call, if the flag is set, fold the notice into the
+  **trailing user turn** as a `<reminder>` block — the shared fleet convention (see
+  [`grounding`](../grounding/)'s `ANCHOR`) so it doesn't read as a fresh user instruction — and
+  clear the flag.
 
 The injected line:
 

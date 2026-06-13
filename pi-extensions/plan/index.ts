@@ -43,6 +43,31 @@ export function buildSnapshot(steps: Step[], touched: string[]): string {
   ].join("\n");
 }
 
+// ---- reminder marker (shared convention; see grounding's ANCHOR note) -----------------------
+// Injected guidance is wrapped so the model can tell it from the user's own words, and folded
+// into the trailing user turn (or appended as a fresh user message when the tail is a
+// toolResult/assistant) so it never surfaces as a new user instruction. The marker bytes MUST be
+// byte-identical to every other extension's — the one ANCHOR note describes them all.
+export const REMINDER_OPEN = "<reminder>\n";
+export const REMINDER_CLOSE = "\n</reminder>";
+export const wrapReminder = (text: string): string => `${REMINDER_OPEN}${text}${REMINDER_CLOSE}`;
+
+type Msg = { role: string; content: unknown };
+export function foldReminder(messages: Msg[], text: string): Msg[] {
+  const block = { type: "text" as const, text: wrapReminder(text) };
+  const out = messages.slice();
+  const last = out[out.length - 1] as Msg | undefined;
+  if (last && last.role === "user") {
+    const prior = Array.isArray(last.content)
+      ? (last.content as Array<{ type: string; text?: string }>)
+      : [{ type: "text" as const, text: String(last.content ?? "") }];
+    out[out.length - 1] = { ...last, content: [...prior, block] };
+  } else {
+    out.push({ role: "user", content: [block] } as Msg);
+  }
+  return out;
+}
+
 export default function (pi: ExtensionAPI) {
   const state: PlanState = { steps: [], touched: [] };
   let planFile: string | null = null;
@@ -122,13 +147,12 @@ export default function (pi: ExtensionAPI) {
     if (p && !state.touched.includes(p)) { state.touched.push(p); if (state.touched.length > 50) state.touched.shift(); persist(); }
   });
 
-  // Re-inject the checklist at the TAIL each turn (cache-safe). Only when a plan
-  // exists and has unfinished work worth reminding about.
+  // Re-inject the checklist each turn (cache-safe — it rides the tail, never the prefix). Folded
+  // into the trailing user turn as a wrapped <reminder> so it doesn't read as a new instruction
+  // from the user. Only when a plan exists and has unfinished work worth reminding about.
   pi.on("context", async (event) => {
     if (!state.steps.length) return;
-    const text = renderChecklist(state.steps);
-    const reminder = { role: "user" as const, content: [{ type: "text" as const, text }] };
-    return { messages: [...event.messages, reminder] };
+    return { messages: foldReminder(event.messages as Msg[], renderChecklist(state.steps)) };
   });
 
   // Persist a human-readable snapshot before compaction destroys the detail, so

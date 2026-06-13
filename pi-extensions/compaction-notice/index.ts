@@ -72,6 +72,30 @@ function dbg(msg: string): void {
   }
 }
 
+// ---- reminder marker (shared convention; see grounding's ANCHOR note) -----------------------
+// Wrap the notice so the model can tell it from the user's own words, and fold it into the
+// trailing user turn (or append a fresh user message when the tail is a toolResult/assistant) so
+// it never reads as a new user instruction. Marker bytes MUST match every other extension's.
+export const REMINDER_OPEN = "<reminder>\n";
+export const REMINDER_CLOSE = "\n</reminder>";
+export const wrapReminder = (text: string): string => `${REMINDER_OPEN}${text}${REMINDER_CLOSE}`;
+
+type Msg = { role: string; content: unknown };
+export function foldReminder(messages: Msg[], text: string): Msg[] {
+  const block = { type: "text" as const, text: wrapReminder(text) };
+  const out = messages.slice();
+  const last = out[out.length - 1] as Msg | undefined;
+  if (last && last.role === "user") {
+    const prior = Array.isArray(last.content)
+      ? (last.content as Array<{ type: string; text?: string }>)
+      : [{ type: "text" as const, text: String(last.content ?? "") }];
+    out[out.length - 1] = { ...last, content: [...prior, block] };
+  } else {
+    out.push({ role: "user", content: [block] } as Msg);
+  }
+  return out;
+}
+
 export default function (pi: ExtensionAPI) {
   const tracker = makeCompactionTracker();
 
@@ -83,15 +107,12 @@ export default function (pi: ExtensionAPI) {
     if (tracker.observe(tb)) dbg(`armed via session_compact (tokensBefore=${tb ?? "?"})`);
   });
 
-  // Inject on the next LLM call, at the TAIL so it sits after the compaction summary (R1).
+  // Inject on the next LLM call, folded into the trailing user turn as a wrapped <reminder> so it
+  // sits after the compaction summary (R1) without impersonating the user.
   pi.on("context", async (event) => {
     const { fired, tokensBefore } = tracker.consume();
     if (!fired) return;
     dbg("injected compaction notice into next request");
-    const note = {
-      role: "user" as const,
-      content: [{ type: "text" as const, text: compactionNotice(tokensBefore) }],
-    };
-    return { messages: [...event.messages, note] };
+    return { messages: foldReminder(event.messages as Msg[], compactionNotice(tokensBefore)) };
   });
 }

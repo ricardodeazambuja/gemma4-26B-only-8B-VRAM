@@ -124,6 +124,30 @@ function okResult(text: string) {
   return { content: [{ type: "text" as const, text }] };
 }
 
+// ---- reminder marker (shared convention; see grounding's ANCHOR note) -----------------------
+// Wrap injected guidance so the model can tell it from the user's own words, and fold it into the
+// trailing user turn (or append a fresh user message when the tail is a toolResult/assistant) so
+// it never reads as a new user instruction. Marker bytes MUST match every other extension's.
+export const REMINDER_OPEN = "<reminder>\n";
+export const REMINDER_CLOSE = "\n</reminder>";
+export const wrapReminder = (text: string): string => `${REMINDER_OPEN}${text}${REMINDER_CLOSE}`;
+
+type Msg = { role: string; content: unknown };
+export function foldReminder(messages: Msg[], text: string): Msg[] {
+  const block = { type: "text" as const, text: wrapReminder(text) };
+  const out = messages.slice();
+  const last = out[out.length - 1] as Msg | undefined;
+  if (last && last.role === "user") {
+    const prior = Array.isArray(last.content)
+      ? (last.content as Array<{ type: string; text?: string }>)
+      : [{ type: "text" as const, text: String(last.content ?? "") }];
+    out[out.length - 1] = { ...last, content: [...prior, block] };
+  } else {
+    out.push({ role: "user", content: [block] } as Msg);
+  }
+  return out;
+}
+
 export default function (pi: ExtensionAPI) {
   let state = freshGoal();
   let goalFile: string | null = null;
@@ -278,11 +302,11 @@ export default function (pi: ExtensionAPI) {
     return { systemPrompt: `${event.systemPrompt}\n\n${block}` };
   });
 
-  // R1: dynamic progress (cycle, last check) is injected at the TAIL each turn.
+  // R1: dynamic progress (cycle, last check) is injected each turn — folded into the trailing
+  // user turn as a wrapped <reminder> (tail, never the prefix), so it doesn't impersonate the user.
   pi.on("context", async (event) => {
     if (!state.objective || state.status !== "active") return;
-    const reminder = { role: "user" as const, content: [{ type: "text" as const, text: renderGoal(state, lastCheck) }] };
-    return { messages: [...event.messages, reminder] };
+    return { messages: foldReminder(event.messages as Msg[], renderGoal(state, lastCheck)) };
   });
 
   // The loop driver (push). Only autonomous goals (done_when set) auto-continue. done_when is

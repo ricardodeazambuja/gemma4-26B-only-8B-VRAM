@@ -16,8 +16,10 @@ A one-flag state machine, no tools:
   already in the message list). It carries `compactionEntry.tokensBefore` — the context size that
   was summarized — which the note surfaces as a concrete "~Nk summarized" anchor. A pending flag is
   latched; it is idempotent, so several compactions before the next call still arm it once.
-- **Inject** (`context`): on the next LLM call, if the flag is set, append the notice at the
-  **tail** of the message list (after the compaction summary) and clear the flag.
+- **Inject** (`context`): on the next LLM call, if the flag is set, fold the notice into the
+  **trailing user turn** (after the compaction summary) as a `<reminder>` block — the shared fleet
+  convention (see [`grounding`](../grounding/)'s `ANCHOR`) so it doesn't read as a fresh user
+  instruction — and clear the flag.
 
 The injected line (the `~Nk` clause is omitted when the token count is unknown):
 

@@ -16,10 +16,11 @@ specific message with a correct example, not "invalid input".
 
 ## How it works
 
-- **Tail injection (rule R1).** A `context` hook appends the rendered checklist as
-  the **last** message every turn. Because it's at the tail, the byte-stable prompt
-  prefix — and therefore the llama.cpp KV cache — is untouched; only the reminder
-  re-prefills.
+- **Tail injection (rule R1).** A `context` hook folds the rendered checklist into the
+  **trailing user turn** every turn, wrapped in a `<reminder>…</reminder>` block (the shared
+  fleet convention — see [`grounding`](../grounding/)'s `ANCHOR`) so it reads as injected context,
+  not a fresh user instruction. Because it rides the tail, the byte-stable prompt prefix — and
+  therefore the llama.cpp KV cache — is untouched; only the reminder re-prefills.
 - **Survives compaction.** State is module-level (persists across turns in the same
   process) and mirrored to `<session-dir>/plan-<id>.json` for resume.
 - **Pre-compaction snapshot.** `session_before_compact` writes a

@@ -73,10 +73,11 @@ const run = async () => {
 
     await onCompact(compactEvent(48000));
     r = await onContext(ctxEvent());
-    ok("after compaction: a note is appended", !!r && Array.isArray(r.messages) && r.messages.length === 2);
-    ok("note is a tail user message", r.messages[1].role === "user" && r.messages[1].content[0].type === "text");
-    ok("note carries the rounded token anchor", r.messages[1].content[0].text.includes("~48k"));
-    ok("original messages preserved", r.messages[0].content[0].text === "do the thing");
+    ok("after compaction: a note is folded in (no new message)", !!r && Array.isArray(r.messages) && r.messages.length === 1);
+    const note = r.messages.at(-1).content.at(-1);
+    ok("note rides as a wrapped <reminder> block on the user turn", r.messages.at(-1).role === "user" && note.type === "text" && note.text.startsWith("<reminder>"));
+    ok("note carries the rounded token anchor", note.text.includes("~48k"));
+    ok("original user text preserved (stays first)", r.messages[0].content[0].text === "do the thing");
 
     r = await onContext(ctxEvent());
     ok("note fires once, not every turn", r === undefined);
@@ -86,8 +87,8 @@ const run = async () => {
     const { onCompact, onContext } = mk();
     await onCompact(compactEvent(undefined));
     let r = await onContext(ctxEvent());
-    ok("compaction w/o token count: still injects", !!r && r.messages.length === 2);
-    ok("…and omits the ~k size clause", !r.messages[1].content[0].text.includes("~"));
+    ok("compaction w/o token count: still injects", !!r && r.messages.length === 1);
+    ok("…and omits the ~k size clause", !r.messages.at(-1).content.at(-1).text.includes("~"));
   }
 
   // ---- PI_COMPACTION_DEBUG writes a log file ----

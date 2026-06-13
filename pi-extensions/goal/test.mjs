@@ -152,9 +152,15 @@ const run = async () => {
     const p1 = await h.hooks.before_agent_start({ systemPrompt: "BASE" });
     const p2 = await h.hooks.before_agent_start({ systemPrompt: "BASE" });
     ok("prefix injects the objective, byte-stable", p1.systemPrompt.includes("north star") && p1.systemPrompt === p2.systemPrompt);
-    const baseMsgs = [{ role: "user", content: [{ type: "text", text: "hi" }] }];
+    const baseMsgs = [
+      { role: "user", content: [{ type: "text", text: "earlier" }] },
+      { role: "assistant", content: [{ type: "text", text: "ok" }] },
+      { role: "user", content: [{ type: "text", text: "hi" }] },
+    ];
     const res = await h.hooks.context({ messages: baseMsgs });
-    ok("tail appends status, prefix untouched", res.messages.length === 2 && res.messages[0] === baseMsgs[0] && res.messages.at(-1).content[0].text.includes("north star"));
+    ok("folds status into the user turn, prefix untouched", res.messages.length === baseMsgs.length && res.messages[0] === baseMsgs[0] && res.messages.at(-1).content[0].text === "hi");
+    const goalTail = res.messages.at(-1).content.at(-1).text;
+    ok("status rides as a wrapped <reminder> block", goalTail.includes("north star") && goalTail.startsWith("<reminder>"));
     h.ctl.execResult = { stdout: "", stderr: "", code: 0, killed: false };
     await h.hooks.agent_end({});
     ok("no prefix/tail injection once not active", !(await h.hooks.before_agent_start({ systemPrompt: "BASE" })) && !(await h.hooks.context({ messages: baseMsgs })));

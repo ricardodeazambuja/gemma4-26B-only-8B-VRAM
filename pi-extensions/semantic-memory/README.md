@@ -17,8 +17,10 @@ facts at the tail of the context, automatically.
 
 ## The automatic parts (where the value is)
 
-- **Auto-recall** (`context` hook): embeds the latest user message, cosine-searches
-  the index, and injects the top 2 chunks (≥0.55 similarity) at the **tail**. No
+- **Auto-recall** (`context` hook): embeds the latest *real* user message — skipping any injected
+  `<reminder>` blocks so the query is the user's words, not plan/check boilerplate — cosine-searches
+  the index, and folds the top 2 chunks (≥0.55 similarity) into the trailing user turn as a
+  `<reminder>` block (the shared fleet convention — see [`grounding`](../grounding/)'s `ANCHOR`). No
   tool call, invisible to Gemma's tool-selection budget, cache-safe (rule R1).
 - **Passive MEMORY.md injection** (`before_agent_start`): the curated file (capped
   at 1 KB) is appended to the system prompt. It's snapshotted at `session_start`

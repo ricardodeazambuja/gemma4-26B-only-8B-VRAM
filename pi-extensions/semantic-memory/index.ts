@@ -20,13 +20,43 @@ const AUTO_RECALL_K = 2;
 const AUTO_RECALL_THRESHOLD = 0.55;
 const CHUNK_INJECT_CHARS = 600; // ~150 tokens per chunk cap (R3)
 
-function lastUserText(messages: { role: string; content: unknown }[]): string {
+// ---- reminder marker (shared convention; see grounding's ANCHOR note) -----------------------
+// Wrap injected guidance so the model can tell it from the user's own words, and fold it into the
+// trailing user turn (or append a fresh user message when the tail is a toolResult/assistant) so
+// it never reads as a new user instruction. Marker bytes MUST match every other extension's.
+export const REMINDER_OPEN = "<reminder>\n";
+export const REMINDER_CLOSE = "\n</reminder>";
+export const wrapReminder = (text: string): string => `${REMINDER_OPEN}${text}${REMINDER_CLOSE}`;
+
+type Msg = { role: string; content: unknown };
+export function foldReminder(messages: Msg[], text: string): Msg[] {
+  const block = { type: "text" as const, text: wrapReminder(text) };
+  const out = messages.slice();
+  const last = out[out.length - 1] as Msg | undefined;
+  if (last && last.role === "user") {
+    const prior = Array.isArray(last.content)
+      ? (last.content as Array<{ type: string; text?: string }>)
+      : [{ type: "text" as const, text: String(last.content ?? "") }];
+    out[out.length - 1] = { ...last, content: [...prior, block] };
+  } else {
+    out.push({ role: "user", content: [block] } as Msg);
+  }
+  return out;
+}
+
+// The real user text for the embedding query. Skips our own injected <reminder> blocks: other
+// extensions (and this one) fold reminders into the trailing user turn, so on a tool-loop call
+// the last user message can be ALL reminder blocks — embedding those would query on the plan /
+// check boilerplate instead of the user's actual words. Walk back to the first NON-reminder text.
+export function lastUserText(messages: { role: string; content: unknown }[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (m.role !== "user") continue;
     if (typeof m.content === "string") return m.content;
     if (Array.isArray(m.content)) {
-      const t = m.content.find((c: any) => c?.type === "text");
+      const t = m.content.find(
+        (c: any) => c?.type === "text" && !String(c.text ?? "").startsWith(REMINDER_OPEN),
+      );
       if (t) return (t as any).text || "";
     }
   }
@@ -103,8 +133,7 @@ export default function (pi: ExtensionAPI) {
     if (!hits.length) return;
     const body = hits.map((h) => `- ${clip(h.chunk.text, CHUNK_INJECT_CHARS)}`).join("\n");
     const text = `## Possibly relevant memory\n${body}`;
-    const reminder = { role: "user" as const, content: [{ type: "text" as const, text }] };
-    return { messages: [...(event.messages as any), reminder] };
+    return { messages: foldReminder(event.messages as Msg[], text) };
   });
 
   pi.registerTool({

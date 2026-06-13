@@ -49,8 +49,10 @@ ticked, defers the *finish* to `goal_done` rather than declaring completion itse
 
 - **R1 — stable prefix + dynamic tail.** The immutable `objective` is injected byte-stable into
   the system prompt via `before_agent_start` (the always-present anchor, paid once). Dynamic
-  loop state (cycle count, last `done_when` output) is injected at the **tail** via `context`;
-  the steps are `plan`'s tail injection, not duplicated here. Once done/blocked, both fall silent.
+  loop state (cycle count, last `done_when` output) rides the **tail** via `context`, folded into
+  the trailing user turn as a `<reminder>` block (the shared fleet convention — see
+  [`grounding`](../grounding/)'s `ANCHOR`); the steps are `plan`'s injection, not duplicated here.
+  Once done/blocked, both fall silent.
 - **The loop driver.** An `agent_end` hook is the push. It is re-entrancy-guarded (fires at most
   once per `agent_end`) and is the first extension in the set that *drives* the agent.
 - **R3 — output caps.** `done_when` output is clipped (~50 lines / 2 KB, keeping the tail) in any

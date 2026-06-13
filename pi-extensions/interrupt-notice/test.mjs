@@ -10,7 +10,7 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { makeInterruptTracker, NOTICE } from "./index.ts";
+import { makeInterruptTracker, NOTICE, wrapReminder } from "./index.ts";
 import factory from "./index.ts";
 
 let pass = 0, fail = 0;
@@ -77,9 +77,9 @@ const run = async () => {
 
     await onMessageEnd(msgEnd("assistant", "aborted"));
     r = await onContext(ctxEvent());
-    ok("after abort: a note is appended", !!r && Array.isArray(r.messages) && r.messages.length === 2);
-    ok("note is a tail user message with the exact NOTICE", r.messages[1].role === "user" && r.messages[1].content[0].text === NOTICE);
-    ok("original messages preserved", r.messages[0].content[0].text === "do the thing");
+    ok("after abort: a note is folded in (no new message)", !!r && Array.isArray(r.messages) && r.messages.length === 1);
+    ok("note rides as a wrapped <reminder> block carrying the NOTICE", r.messages.at(-1).role === "user" && r.messages.at(-1).content.at(-1).text === wrapReminder(NOTICE));
+    ok("original user text preserved (stays first)", r.messages[0].content[0].text === "do the thing");
 
     r = await onContext(ctxEvent());
     ok("note fires once, not every turn", r === undefined);
@@ -98,7 +98,7 @@ const run = async () => {
       { role: "assistant", stopReason: "aborted", content: [] },
     ]));
     let r = await onContext(ctxEvent());
-    ok("agent_end backstop: trailing aborted assistant arms the note", !!r && r.messages.length === 2 && r.messages[1].content[0].text === NOTICE);
+    ok("agent_end backstop: trailing aborted assistant arms the note", !!r && r.messages.length === 1 && r.messages.at(-1).content.at(-1).text === wrapReminder(NOTICE));
   }
   {
     const { onAgentEnd, onContext } = mk();
@@ -108,7 +108,7 @@ const run = async () => {
       { role: "user", content: [{ type: "text", text: "tool result" }] },
     ]));
     let r = await onContext(ctxEvent());
-    ok("agent_end: lastAssistant scans past a trailing non-assistant msg", !!r && r.messages.length === 2);
+    ok("agent_end: lastAssistant scans past a trailing non-assistant msg", !!r && r.messages.length === 1);
   }
   {
     const { onAgentEnd, onContext } = mk();
@@ -126,7 +126,7 @@ const run = async () => {
     await onMessageEnd(msgEnd("assistant", "aborted"));
     await onAgentEnd(agentEnd([{ role: "assistant", stopReason: "aborted", content: [] }]));
     let r = await onContext(ctxEvent());
-    ok("message_end + agent_end on one abort → note appears", !!r && r.messages.length === 2);
+    ok("message_end + agent_end on one abort → note appears", !!r && r.messages.length === 1);
     r = await onContext(ctxEvent());
     ok("…and only once (no double-fire across the two events)", r === undefined);
   }

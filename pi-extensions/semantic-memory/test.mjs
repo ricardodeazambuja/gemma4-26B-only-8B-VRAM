@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { cosine, cosineSearch, substringSearch } from "./search.ts";
 import { encodeVector, decodeVector, appendChunk, loadChunks, removeChunks, appendMemoryLine, readMemoryMd, removeMemoryLine, memoryDir } from "./store.ts";
 import { parseEmbeddingResponse, embed, loadFileConfig, defaultConfig } from "./embed.ts";
+import { lastUserText, wrapReminder } from "./index.ts";
 
 let pass = 0, fail = 0;
 const ok = (name, cond) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ ${name}`); } };
@@ -41,6 +42,18 @@ const ss = substringSearch("database schema design", [
   { id: "2", text: "unrelated note", source: "", date: "" },
 ], 5);
 ok("substringSearch ranks by term overlap", ss[0].chunk.id === "1");
+
+// --- lastUserText (skips injected <reminder> blocks so the query is the real request) ---
+console.log("lastUserText:");
+ok("plain string content works", lastUserText([{ role: "user", content: "plain string" }]) === "plain string");
+ok("returns the real text when reminders ride underneath it (folded turn)",
+  lastUserText([{ role: "user", content: [{ type: "text", text: "the real question" }, { type: "text", text: wrapReminder("## Active plan\n[ ] step") }] }]) === "the real question");
+ok("walks back past an all-reminder tail user turn (tool loop)",
+  lastUserText([
+    { role: "user", content: [{ type: "text", text: "where is the schema?" }] },
+    { role: "toolResult", content: [{ type: "text", text: "out" }] },
+    { role: "user", content: [{ type: "text", text: wrapReminder("## Possibly relevant memory\n- noise") }] },
+  ]) === "where is the schema?");
 
 // --- store ---
 console.log("store:");
@@ -115,11 +128,17 @@ const run = async () => {
   r = await tools.recall.execute("t", { query: "database schema" });
   ok("recall finds the relevant fact", r.content[0].text.includes("db/schema.sql"));
 
-  // auto-recall via context hook
-  const msgs = [{ role: "user", content: [{ type: "text", text: "where is the database schema?" }] }];
+  // auto-recall via context hook — folds into the trailing user turn as a wrapped reminder
+  const msgs = [
+    { role: "user", content: [{ type: "text", text: "first question" }] },
+    { role: "assistant", content: [{ type: "text", text: "ok" }] },
+    { role: "user", content: [{ type: "text", text: "where is the database schema?" }] },
+  ];
   r = await hooks.context({ messages: msgs });
-  ok("auto-recall injects at tail", r && r.messages.length === 2 && r.messages.at(-1).content[0].text.includes("schema"));
-  ok("auto-recall keeps prefix intact", r.messages[0] === msgs[0]);
+  ok("auto-recall folds into the user turn (no new message)", r && r.messages.length === msgs.length);
+  ok("the user's question stays first", r.messages.at(-1).content[0].text === "where is the database schema?");
+  ok("recall rides as a wrapped <reminder> block", r.messages.at(-1).content.at(-1).text.includes("schema") && r.messages.at(-1).content.at(-1).text.startsWith("<reminder>"));
+  ok("earlier messages untouched (same refs)", r.messages[0] === msgs[0] && r.messages[1] === msgs[1]);
 
   // MEMORY.md passive injection (uses session_start snapshot; re-run session_start to refresh)
   await hooks.session_start({}, ctx);

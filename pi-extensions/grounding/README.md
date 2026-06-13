@@ -11,23 +11,41 @@ it, by one of three means:
 This is the scientific method, not just "look things up": tools are only *how* you simulate (run
 it) or reference (read it).
 
-## Two injections that bracket the reasoning
+## Three injections, all in or folded into the prompt
 
-Like `plan` keeps state present, `grounding` brackets every reasoning pass with **two different
-injections**, so the model can't derail from start to finish:
+- **`MINDSET`** — the standing principle (the three modes above) plus a **"Work economically"**
+  rule, appended to the **byte-stable system prefix**. Always on, paid once, then cached.
+- **`ANCHOR`** — also in the system prefix: tells the model that blocks wrapped in
+  `<reminder>…</reminder>` are *automated context injected by the harness, not a new instruction
+  and not the user speaking*, and that its task each turn is the user's **most recent real
+  request** (the unwrapped text). This is what keeps the model on the user's instruction even as
+  several extensions inject reminders.
+- **`CHECK`** — the sharper *act-now* pass: "for each claim you're about to make, have you derived
+  / simulated / read it THIS turn? If it rests on memory, do that now or label it 'unverified'."
 
-- **Beginning — `MINDSET`** in the byte-stable system prefix (rule R1): the standing principle
-  (the three modes above), plus a **"Work economically"** rule — spend tokens only where they buy
-  correctness (above all in reasoning: think dense, not human prose), keep it simple, don't
-  over-engineer. Always on, so it stays cache-stable; paid once, then cached.
-- **End — `CHECK`** appended at the **tail**, the last thing read before the reasoning starts:
-  a sharper *act-now* pass — "for each claim you're about to make, have you derived / simulated /
-  read it THIS turn? If it rests on memory, do that now or label it 'unverified'." Different text
-  from the prefix on purpose: principle up front, checklist at the moment of answering.
+## Why CHECK is *folded into* the user turn, not appended
 
-There is no API to seed the reasoning stream directly, so prefix + tail injection is the
-highest-salience way to reach it. No generate-then-review-then-regenerate: zero wasted
-answer/review tokens (the repo's energy thesis applied to itself).
+CHECK used to be appended as its own tail `role: "user"` message. Two problems, both observed:
+
+1. **It read as a new instruction.** A bare user-role message is, to the model, the user speaking
+   — so it would answer the *check* instead of treating it as a self-directed reminder.
+2. **It wasn't actually last.** Context hooks run in `readdirSync` order, and `grounding` runs
+   *first* among them; `plan` / `goal` / `semantic-memory` / the notices then appended their own
+   user turns *after* it (whenever their state was active). So the "last thing read" was a plan
+   checklist or memory dump — and the real request was buried under a stack of fake user turns.
+
+So CHECK is now **folded into the trailing user turn** as a `<reminder>` block (the user's real
+text stays first), and `ANCHOR` teaches the model what that marker means. No fresh user turn,
+nothing masquerading as the user.
+
+**The whole fleet uses this marker now.** `plan`, `goal`, `semantic-memory`, and the
+compaction / interrupt notices share a byte-identical `foldReminder` helper: each wraps its
+injection in `<reminder>…</reminder>` and folds it into the trailing user turn (appending one only
+when the tail is a tool result, where the first to inject creates the user turn the rest fold
+into). The net effect is that **every reminder collapses into a single user turn** — the real
+request as the unwrapped `content[0]`, every injection a wrapped block underneath — so the one
+`ANCHOR` note covers all of them and none impersonate the user. A top-level `marker.test.sh`
+asserts the delimiter bytes are identical across all six.
 
 ## Why think-time, and why no gate
 
@@ -41,13 +59,18 @@ design there is no backstop.**
 
 ## How it works
 
-- **`before_agent_start`** → appends `MINDSET` to the system prompt (unconditional, byte-stable).
-- **`context`** → appends `CHECK` at the tail each turn; the prefix / KV cache is untouched and
-  only one short block re-prefills.
-- **Trivial-turn skip** — the tail check is skipped when the thinking level is `off`/`minimal`
+- **`before_agent_start`** → appends `MINDSET` + `ANCHOR` to the system prompt (unconditional,
+  byte-stable).
+- **`context`** → folds `CHECK` into the trailing user turn as a wrapped `<reminder>` block; the
+  prefix / KV cache is untouched and only that turn re-prefills. When the tail is a tool
+  result/assistant message (mid tool-loop), it appends one wrapped reminder instead, which later
+  injectors fold into — so the reminders still consolidate into a single user turn.
+- **Trivial-turn skip** — the check is skipped when the thinking level is `off`/`minimal`
   (greetings, "continue" — routed there by `thinking-router`): no reasoning to steer. The prefix
   stays unconditional so it remains cache-stable. Degrades gracefully if no level is reported.
-- Two hooks, no state, no tools. Both texts are exported constants — tune them freely.
+- **Pure transform.** The `context` edit is per-request and does not mutate the stored
+  conversation, so reminders never accumulate across turns. Two hooks, no state, no tools. All
+  texts are exported constants — tune them freely.
 
 ## Test
 
@@ -55,7 +78,8 @@ design there is no backstop.**
 node --experimental-strip-types grounding/test.mjs
 ```
 
-26 assertions: the scientific-method content of both `MINDSET` and `CHECK` (three modes, memory
-as hypothesis, unverified label, terse, and that they differ), the byte-stable unconditional
-prefix injection, the tail injection (role, prefix untouched, byte-identical across turns), the
-trivial-turn skip, and order-independent composition with other tail-injectors.
+35 assertions: the scientific-method content of `MINDSET` and `CHECK`, the `ANCHOR` framing, the
+byte-stable unconditional prefix injection, the fold-into-the-user-turn behaviour (no new message,
+real request stays first, wrapped marker, original not mutated, byte-identical across turns), the
+no-user-turn fallback, the trivial-turn skip, and order-independent composition with other
+tail-injectors.

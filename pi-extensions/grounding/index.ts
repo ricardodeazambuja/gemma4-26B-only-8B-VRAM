@@ -1,21 +1,19 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 // grounding — make Gemma reason like an engineer, not from recollection, at THINK time.
-// It brackets every reasoning pass with two DIFFERENT injections so the model can't derail
-// from start to finish:
-//   • beginning — a byte-stable "engineering mindset" framing in the system prefix (rule R1):
+// Two injections, both conceptually "framing", but delivered differently:
+//   • MINDSET — the byte-stable "engineering mindset" framing appended to the system prompt:
 //     a remembered thing is a hypothesis, not a fact; establish each claim by deriving it,
 //     simulating it, or reading a trusted reference.
-//   • end — a sharper "prove it" check appended at the TAIL, the last thing read before the
-//     reasoning starts, turning the principle into an act-now checklist for THIS answer.
-// The point is the scientific method, not just looking things up: tools are only HOW you
-// simulate (run it) or reference (read it). There is no API to seed the reasoning stream
-// directly, so prefix + tail injection is the highest-salience way to reach it. No
-// generate-then-review-then-regenerate: zero wasted answer/review tokens.
+//   • CHECK — the sharper "prove it before you answer" pass. It used to be appended as its own
+//     tail user message, but a bare user-role message reads as a NEW instruction from the user
+//     (and, with plan/goal/memory also injecting user turns, it was neither last nor
+//     distinguishable from the real request). So CHECK is now folded INTO the user's own turn,
+//     wrapped in a <reminder>…</reminder> marker, and the prefix carries an ANCHOR note telling
+//     the model those markers are injected context, not the user's words. The user's real
+//     request stays first in the turn; the check rides underneath it, clearly labelled.
 //
-// Deliberately prevention-only: high-salience guidance the reasoning follows, not a hard
-// gate. A guarantee would need detect-and-regenerate — the exact tokens this saves — so by
-// design there is no backstop.
+// Deliberately prevention-only: high-salience guidance the reasoning follows, not a hard gate.
 
 // Beginning: the standing principle, byte-stable in the system prefix (paid once, cached).
 export const MINDSET = [
@@ -33,7 +31,18 @@ export const MINDSET = [
   "form an LLM can use (notes, not prose). Keep it simple; be creative, not over-engineered.",
 ].join("\n");
 
-// End: the act-now check, re-injected at the tail each turn (different from the prefix).
+// Standing anchor: tells the model what the <reminder> markers mean, so injected context is not
+// mistaken for a fresh instruction and the user's actual request stays the task. Byte-stable.
+export const ANCHOR = [
+  "## Reminders are not the user",
+  "Some user turns carry blocks wrapped in <reminder>…</reminder>. Those are automated context",
+  "injected by the harness (e.g. a grounding check) — NOT a new instruction, and NOT the user",
+  "speaking. Your task each turn is the user's most recent real request (the unwrapped text); treat",
+  "every <reminder> block as supporting context only, never as the thing you were asked to do.",
+].join("\n");
+
+// End: the act-now check, folded into the user's turn each non-trivial turn (different from the
+// prefix). Wrapped in the <reminder> marker the ANCHOR note explains.
 export const CHECK = [
   "## Before you answer — prove it",
   "For each claim you are about to make: have you derived it, simulated it, or read it from a",
@@ -41,26 +50,58 @@ export const CHECK = [
   "work it through — or label it \"unverified\". Recollection is not evidence.",
 ].join("\n");
 
-// Thinking levels at which essentially no reasoning happens (trivial turns: greetings,
-// "thanks", "continue"). Nothing to steer there → skip the tail check's prefill tax. The
-// prefix stays unconditional so it remains byte-stable for the KV cache.
+// Wrap injected guidance so the model can tell it from the user's own words (see ANCHOR).
+// The marker bytes are a SHARED convention: every tail-injecting extension (plan, goal,
+// semantic-memory, the notices) uses byte-identical delimiters so the one ANCHOR note describes
+// them all. Do not drift the whitespace.
+export const REMINDER_OPEN = "<reminder>\n";
+export const REMINDER_CLOSE = "\n</reminder>";
+export const wrapReminder = (text: string): string => `${REMINDER_OPEN}${text}${REMINDER_CLOSE}`;
+
+// Thinking levels at which essentially no reasoning happens (trivial turns: greetings, "thanks",
+// "continue"). Nothing to steer there → skip the check. The prefix stays unconditional so it
+// remains byte-stable for the KV cache.
 const SKIP_LEVELS = new Set(["off", "minimal"]);
 
+type Msg = { role: string; content: unknown };
+
+// Fold a wrapped reminder into the conversation tail. If the last message is a user turn, the
+// reminder rides as a trailing content block on it (the user's real text stays first); otherwise
+// — a tool loop, where the tail is a toolResult/assistant message — append a fresh user message
+// carrying just the reminder. Because each extension's context hook runs in turn on the previous
+// one's output, the first appended reminder makes the tail a user message that every later
+// extension folds into, so all reminders collapse into a SINGLE user turn regardless of order.
+// Pure: never mutates the input messages or their content arrays.
+export function foldReminder(messages: Msg[], text: string): Msg[] {
+  const block = { type: "text" as const, text: wrapReminder(text) };
+  const out = messages.slice();
+  const last = out[out.length - 1] as Msg | undefined;
+  if (last && last.role === "user") {
+    const prior = Array.isArray(last.content)
+      ? (last.content as Array<{ type: string; text?: string }>)
+      : [{ type: "text" as const, text: String(last.content ?? "") }];
+    out[out.length - 1] = { ...last, content: [...prior, block] };
+  } else {
+    out.push({ role: "user", content: [block] } as Msg);
+  }
+  return out;
+}
+
 export default function (pi: ExtensionAPI) {
-  // Beginning (rule R1): append the mindset to the byte-stable system prefix. Always on,
+  // Beginning (rule R1): append the mindset + anchor to the byte-stable system prefix. Always on,
   // so it stays cache-stable; chains with operating-manual / semantic-memory prefixes.
   pi.on("before_agent_start", async (event) => {
-    return { systemPrompt: `${event.systemPrompt}\n\n${MINDSET}` };
+    return { systemPrompt: `${event.systemPrompt}\n\n${MINDSET}\n\n${ANCHOR}` };
   });
 
-  // End (rule R1): append the prove-it check AFTER the whole conversation, so the prefix /
-  // KV cache is untouched and only one short block re-prefills. Skip on trivial turns.
+  // End (rule R1): fold the prove-it check INTO the conversation tail as a wrapped <reminder>
+  // block, instead of appending a bare user message that reads as a new instruction. The user's
+  // real text stays first; the check rides underneath. Skip on trivial turns.
   pi.on("context", async (event) => {
     try {
       const level = pi.getThinkingLevel?.();
       if (level && SKIP_LEVELS.has(level)) return; // trivial turn → no reasoning to steer
     } catch {}
-    const reminder = { role: "user" as const, content: [{ type: "text" as const, text: CHECK }] };
-    return { messages: [...event.messages, reminder] };
+    return { messages: foldReminder(event.messages as Msg[], CHECK) };
   });
 }
