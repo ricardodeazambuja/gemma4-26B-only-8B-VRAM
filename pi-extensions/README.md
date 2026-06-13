@@ -54,6 +54,7 @@ for the full write-up; test counts are the standalone `test.mjs` assertions.
 | [`verified-edits`](verified-edits/) | Auto-runs the cheapest checker after every edit; appends errors in-band | 11 |
 | [`symbols`](symbols/) | `get_symbols`/`find_symbol` outlines instead of whole-file reads | 30 |
 | [`loop-breaker`](loop-breaker/) | Nudge after 3 identical failing tool calls | 15 |
+| [`interrupt-notice`](interrupt-notice/) | Tell the model it was interrupted when you stop it mid-turn | 17 |
 | [`plan`](plan/) | External task-state checklist, re-injected at the tail | 22 |
 | [`semantic-memory`](semantic-memory/) | Cross-session memory with automatic recall | 34 |
 | [`operating-manual`](operating-manual/) | If-then rules in the system prefix + JIT nudges | 19 |
@@ -65,7 +66,8 @@ for the full write-up; test counts are the standalone `test.mjs` assertions.
 | [`thinking-router`](thinking-router/) | Routes the per-turn thinking budget by input difficulty (engine-level energy lever) | 14 |
 | [`advisor`](advisor/) | On-demand review by a stronger external agent that sees the whole session | 45 |
 
-All complete; **352 assertions across the set** (`./run-tests.sh`). `goal` is the only
+All complete and green via **`./run-tests.sh` — 369 checks** (the per-extension counts above
+sum to 356; the rest are install-flow checks, and `web-search` uses a live test). `goal` is the only
 one that *drives* the agent (`sendUserMessage` from `agent_end`) — validate that
 re-engagement in a real pi run before relying on unattended loops.
 
