@@ -17,7 +17,9 @@ Like `plan` keeps state present, `grounding` brackets every reasoning pass with 
 injections**, so the model can't derail from start to finish:
 
 - **Beginning — `MINDSET`** in the byte-stable system prefix (rule R1): the standing principle
-  (the three modes above). Always on, so it stays cache-stable; paid once, then cached.
+  (the three modes above), plus a **"Work economically"** rule — spend tokens only where they buy
+  correctness (above all in reasoning: think dense, not human prose), keep it simple, don't
+  over-engineer. Always on, so it stays cache-stable; paid once, then cached.
 - **End — `CHECK`** appended at the **tail**, the last thing read before the reasoning starts:
   a sharper *act-now* pass — "for each claim you're about to make, have you derived / simulated /
   read it THIS turn? If it rests on memory, do that now or label it 'unverified'." Different text
