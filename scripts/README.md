@@ -187,6 +187,13 @@ run that measurement once and **remembers** the result, so later launches reuse 
 `KVQUANT`, sampling, image). The full method — the median-of-runs noise handling, the auto-tune
 cache, the menu steps — is in [TECHNICAL.md §9](../docs/TECHNICAL.md#9-tuning).
 
+**The menu remembers your choices.** Each `--menu` run saves your answers to `.gemma4-menu` and
+pre-fills them as the **[defaults]** next time, so you can re-launch with the same setup by pressing
+Enter through. Setting a knob back to its hardcoded default drops it (the menu never drifts away from
+the defaults). Two separate stores, so two separate resets: menu preferences live in `.gemma4-menu`
+(delete it to reset), while the tuned context/`NCMOE`/`KVQUANT` live in `.gemma4-tuning` (re-measure
+with `AUTOTUNE=1`). An explicit env var still wins over a saved menu default for that launch.
+
 **Keep pi in sync.** The menu runs `configure-pi.sh` for you. On the env-var path it isn't
 automatic — if you launch with e.g. `CTX=131072`, also run `CTX=131072 bash scripts/configure-pi.sh`
 once, or pi caps the usable context at its previously configured window (32768 by default).

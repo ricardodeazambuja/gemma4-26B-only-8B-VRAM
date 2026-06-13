@@ -17,7 +17,9 @@
 #
 # Prefer a guided walk-through over remembering env vars?
 #   bash scripts/start.sh --menu     # interactive setup: backend, auto-tune vs
-#                                     # manual, context, KV-quant, sampling, image
+#                                     # manual, context, KV-quant, sampling, image.
+#                                     # Remembers your answers in .gemma4-menu and
+#                                     # pre-fills them as the [defaults] next time.
 #
 # First interactive run also offers (once) to link this repo's pi-extensions into
 # pi — local-Gemma tools (code outlines, verified edits, memory, web fetch). Decline
@@ -168,9 +170,10 @@ _menu_yesno() {
 
 # Ask for a context size; export CTX (suggests common values; defaults to 32768).
 _menu_ask_ctx() {
+  local def; def="$(menu_get ctx)"; [[ "$def" =~ ^[0-9]+$ ]] || def=32768
   echo "   Context size, in tokens — bigger = more room for history, but more VRAM."
   echo "     common: 16384   32768   65536   131072 (128K)"
-  _menu_text "   CTX [default 32768]: " 32768
+  _menu_text "   CTX [default $def]: " "$def"
   if [[ "$MENU_REPLY" =~ ^[0-9]+$ ]]; then
     export CTX="$MENU_REPLY"
   else
@@ -181,17 +184,32 @@ _menu_ask_ctx() {
 configure_menu() {
   splash "$_FG_GREEN" "🛠️" "GEMMA 4 INTERACTIVE SETUP" "configure the server before it launches"
   echo "   At any prompt:  Enter = the [default]   ·   q = cancel and quit."
-  echo
   local _menu_strategy
+  # Last --menu answers prefill the [defaults] below, so your choices stick.
+  local _saved_be _saved_strategy _saved_tunemode _saved_ncmoe _saved_temp _saved_top_p _saved_top_k _saved_mtp _saved_nmax _saved_image
+  _saved_be="$(menu_get backend)"; _saved_strategy="$(menu_get strategy)"; _saved_tunemode="$(menu_get tunemode)"
+  _saved_ncmoe="$(menu_get ncmoe)"
+  _saved_temp="$(menu_get temp)"; _saved_top_p="$(menu_get top_p)"; _saved_top_k="$(menu_get top_k)"
+  _saved_mtp="$(menu_get mtp)"; _saved_nmax="$(menu_get nmax)"; _saved_image="$(menu_get image)"
+  if [ -s "$(menu_cache_file)" ]; then
+    echo "   The [defaults] reflect your last --menu choices (reset: rm $(menu_cache_file))."
+    echo "   Tuned context/KV are remembered separately — reset those with AUTOTUNE=1."
+  fi
+  echo
 
   # 1) Backend ---------------------------------------------------------------
   local detected; detected="$(resolve_backend)"
+  # A saved backend prefills the default — but drop a stale cuda pick when the
+  # CUDA build is gone, so auto-detect wins. Test the binary directly:
+  # resolve_backend echoes $BACKEND verbatim, so it can't answer "is cuda built?".
+  [ "$_saved_be" = cuda ] && [ ! -x "${CUDA_BIN:-$REPO_ROOT/vendor/llama.cpp/build/bin/llama-server}" ] && _saved_be=""
+  local _be_def; case "$_saved_be" in cuda) _be_def=2;; vulkan) _be_def=3;; cpu) _be_def=4;; *) _be_def=1;; esac
   echo "1) Backend  —  the compute path  (auto-detected: $detected)"
   echo "     1) auto    use the detected backend ($detected)"
   echo "     2) cuda    NVIDIA GPU, fast path (needs the CUDA build)"
   echo "     3) vulkan  any GPU, slower MoE path"
   echo "     4) cpu     no GPU offload — very slow (testing only)"
-  _menu_choice "   choice [1-4, default 1]: " 1 4
+  _menu_choice "   choice [1-4, default $_be_def]: " "$_be_def" 4
   case "$MENU_REPLY" in
     2) export BACKEND=cuda ;;
     3) export BACKEND=vulkan ;;
@@ -205,7 +223,8 @@ configure_menu() {
   echo "2) Context & expert split  —  how to size context and place experts"
   echo "     1) auto-tune  measure the fastest split that fits on YOUR GPU (recommended)"
   echo "     2) manual     I'll pick the context and expert split myself"
-  _menu_choice "   choice [1-2, default 1]: " 1 2
+  local _strat_def=1; [ "$_saved_strategy" = manual ] && _strat_def=2
+  _menu_choice "   choice [1-2, default $_strat_def]: " "$_strat_def" 2
   if [ "$MENU_REPLY" = 2 ]; then _menu_strategy=manual; else _menu_strategy=auto; fi
 
   if [ "$_menu_strategy" = auto ]; then
@@ -221,7 +240,8 @@ configure_menu() {
     echo "      The result is saved, so every later launch is instant."
     echo "     1) sweep several contexts, then let me pick which to launch (default)"
     echo "     2) auto-tune the expert split for ONE context I choose"
-    _menu_choice "   choice [1-2, default 1]: " 1 2
+    local _tune_def=1; [ "$_saved_tunemode" = one ] && _tune_def=2
+    _menu_choice "   choice [1-2, default $_tune_def]: " "$_tune_def" 2
     if [ "$MENU_REPLY" = 2 ]; then
       _menu_ask_ctx; CTX_EXPLICIT=1
     else
@@ -234,44 +254,59 @@ configure_menu() {
     echo "     lower  = more experts on GPU = faster, but more VRAM (can OOM)"
     echo "     higher = gentler on VRAM, slower    ·    blank = all on CPU (safest)"
     echo "     typical on an 8 GB card: 20-27."
-    _menu_text "   NCMOE [blank = all on CPU]: " ""
+    # With a saved split, blank keeps it; 'cpu' (any non-number) clears back to all-on-CPU
+    # — '0' can't be the clear sentinel since NCMOE=0 means all experts on GPU.
+    if [ -n "$_saved_ncmoe" ]; then
+      _menu_text "   NCMOE [default $_saved_ncmoe; 'cpu' = all on CPU]: " "$_saved_ncmoe"
+    else
+      _menu_text "   NCMOE [blank = all on CPU]: " ""
+    fi
     if [[ "$MENU_REPLY" =~ ^[0-9]+$ ]]; then export NCMOE="$MENU_REPLY"; else unset NCMOE || true; fi
     export AUTOTUNE=0                        # manual choice: never tune
   fi
 
   # 3) KV-cache quantization -------------------------------------------------
+  # Prefill from the KV quant you last picked (chosen-kv in the tuning cache), so
+  # Enter keeps it instead of silently reverting to f16.
+  local _saved_kv _kv_def; _saved_kv="$(tune_get "$(tune_kv_key "$BE")")"
+  case "$_saved_kv" in q8_0) _kv_def=2;; q4_0) _kv_def=3;; ""|f16) _kv_def=1;; *) _kv_def=4;; esac
   echo
   echo "3) KV-cache quantization  —  frees VRAM; mainly a long-context lever"
   echo "     1) f16   off, full precision (default)"
   echo "     2) q8_0  near-lossless; recommended for 64K+ context"
   echo "     3) q4_0  aggressive: most VRAM saved, some quality cost"
   echo "     4) other pick another type (q5_1, q5_0, q4_1, iq4_nl, bf16, f32)"
-  _menu_choice "   choice [1-4, default 1]: " 1 4
+  _menu_choice "   choice [1-4, default $_kv_def]: " "$_kv_def" 4
   case "$MENU_REPLY" in
     2) export KVQUANT=q8_0 ;;
     3) export KVQUANT=q4_0 ;;
-    4) _menu_text "   KV type (q5_1|q5_0|q4_1|iq4_nl|bf16|f32) [f16]: " f16
+    4) _menu_text "   KV type (q5_1|q5_0|q4_1|iq4_nl|bf16|f32) [${_saved_kv:-f16}]: " "${_saved_kv:-f16}"
        export KVQUANT="$MENU_REPLY" ;;
     *) export KVQUANT=f16 ;;   # explicit, so a cache-saved KV pick can't override the menu
   esac
 
   # 4) Sampling --------------------------------------------------------------
+  # Default to "custom" (and prefill the fields) when you saved custom sampling.
+  local _samp_def=1
+  { [ -n "$_saved_temp" ] || [ -n "$_saved_top_p" ] || [ -n "$_saved_top_k" ]; } && _samp_def=2
   echo
   echo "4) Sampling  —  generation randomness (server-wide default)"
   echo "     1) unsloth defaults — temp=1.0  top-p=0.95  top-k=64 (recommended)"
   echo "     2) custom — enter your own"
-  _menu_choice "   choice [1-2, default 1]: " 1 2
+  _menu_choice "   choice [1-2, default $_samp_def]: " "$_samp_def" 2
   if [ "$MENU_REPLY" = 2 ]; then
-    _menu_text "   temp  (0.0-2.0)  [1.0]:  " ""; [ -n "$MENU_REPLY" ] && export TEMP="$MENU_REPLY"
-    _menu_text "   top-p (0.0-1.0)  [0.95]: " ""; [ -n "$MENU_REPLY" ] && export TOP_P="$MENU_REPLY"
-    _menu_text "   top-k (integer)  [64]:   " ""; [ -n "$MENU_REPLY" ] && export TOP_K="$MENU_REPLY"
+    _menu_text "   temp  (0.0-2.0)  [${_saved_temp:-1.0}]:  " "${_saved_temp:-1.0}"; [ -n "$MENU_REPLY" ] && export TEMP="$MENU_REPLY"
+    _menu_text "   top-p (0.0-1.0)  [${_saved_top_p:-0.95}]: " "${_saved_top_p:-0.95}"; [ -n "$MENU_REPLY" ] && export TOP_P="$MENU_REPLY"
+    _menu_text "   top-k (integer)  [${_saved_top_k:-64}]:   " "${_saved_top_k:-64}"; [ -n "$MENU_REPLY" ] && export TOP_K="$MENU_REPLY"
   fi
 
   # 5) Image input -----------------------------------------------------------
   echo
   echo "5) Image input  —  load the vision projector so the server accepts images"
   echo "     (~1.2 GB on CPU; leave off for text-only, the common case)"
-  _menu_yesno "   enable images? [y/N] " no
+  local _img_def=no _img_prompt; [ "$_saved_image" = 1 ] && _img_def=yes
+  _img_prompt="   enable images? [y/N] "; [ "$_img_def" = yes ] && _img_prompt="   enable images? [Y/n] "
+  _menu_yesno "$_img_prompt" "$_img_def"
   if [ "$MENU_REPLY" = yes ]; then
     case " ${SERVER_ARGS[*]} " in *" --image "*) : ;; *) SERVER_ARGS+=(--image) ;; esac
   fi
@@ -280,10 +315,12 @@ configure_menu() {
   echo
   echo "6) MTP speculative decoding  —  lossless self-speculation (Gemma 4 draft head)"
   echo "     speeds up LOW-temperature / coding generation (~+15-30%); ~no gain at temp 1.0"
-  _menu_yesno "   enable MTP? [y/N] " no
+  local _mtp_def=no _mtp_prompt; [ "$_saved_mtp" = 1 ] && _mtp_def=yes
+  _mtp_prompt="   enable MTP? [y/N] "; [ "$_mtp_def" = yes ] && _mtp_prompt="   enable MTP? [Y/n] "
+  _menu_yesno "$_mtp_prompt" "$_mtp_def"
   if [ "$MENU_REPLY" = yes ]; then
     MTP=1
-    _menu_text "   draft tokens per step (n-max) [2, range 1-6]: " 2; NMAX="$MENU_REPLY"
+    _menu_text "   draft tokens per step (n-max) [${_saved_nmax:-2}, range 1-6]: " "${_saved_nmax:-2}"; NMAX="$MENU_REPLY"
     # Temperature is THE knob for MTP (it only pays off at low temp), so ask it here —
     # this overrides the sampling choice above. Default to whatever was already picked,
     # else 0.7 (a good coding temp). p_min stays 0 (any p_min>0 degenerates the output).
@@ -309,6 +346,22 @@ configure_menu() {
   # The confirmed menu pick is an explicit choice — remember the KV quant so
   # later bare launches (no KVQUANT=) land on the same KV universe.
   tune_set "$(tune_kv_key "$BE")" "${KVQUANT:-f16}"
+  # Remember the menu answers so they prefill next time. Save-or-clear: a knob left
+  # at its default drops its override, so the menu never drifts from the defaults.
+  # This runs BEFORE the auto-tune block, so NCMOE here is the user's MANUAL pick,
+  # never the auto-tuned split (which lives in .gemma4-tuning).
+  menu_save_or_clear backend  "${BACKEND:-}"    ""
+  menu_save_or_clear strategy "$_menu_strategy" auto
+  # tunemode (sweep vs one-context) is an auto sub-choice; it's "one" only when auto
+  # pinned a context. Clear it in manual mode (CTX_EXPLICIT there means a manual pin).
+  if [ "$_menu_strategy" = auto ] && [ "$CTX_EXPLICIT" = 1 ]; then menu_set tunemode one; else menu_clear tunemode; fi
+  menu_save_or_clear ctx      "${CTX:-}"        32768
+  menu_save_or_clear ncmoe    "${NCMOE:-}"      ""
+  menu_save_or_clear temp    "${TEMP:-}"    1.0
+  menu_save_or_clear top_p   "${TOP_P:-}"   0.95
+  menu_save_or_clear top_k   "${TOP_K:-}"   64
+  if [ "${MTP:-}" = 1 ]; then menu_set mtp 1; menu_set nmax "${NMAX:-2}"; else menu_clear mtp; menu_clear nmax; fi
+  case " ${SERVER_ARGS[*]} " in *" --image "*) menu_set image 1 ;; *) menu_clear image ;; esac
   echo
 }
 

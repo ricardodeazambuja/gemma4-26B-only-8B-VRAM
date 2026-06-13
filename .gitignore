@@ -18,3 +18,5 @@ MEMORY.md
 
 # Auto-tuning cache (machine-specific NCMOE/CTX results; written by start.sh / benchmark-config.sh)
 .gemma4-tuning
+# Interactive --menu remembered answers (prefill defaults; written by start.sh)
+.gemma4-menu

@@ -67,4 +67,45 @@ tune_migrate() {
   sed -E 's/^([A-Za-z0-9]+:[A-Za-z0-9]+)=/\1:f16=/' "$f" > "$tmp" && mv "$tmp" "$f"
 }
 
+# --- menu preferences --------------------------------------------------------
+# A SEPARATE key=value store for the interactive --menu's remembered answers, so
+# they prefill the prompts next time (the user's last choice becomes the shown
+# default). Kept apart from the tuning cache on purpose: `rm .gemma4-tuning` to
+# re-tune must NOT wipe UI prefs, and tune_migrate never rewrites these keys.
+# Same shape as tune_get/tune_set. Repo-local + gitignored; override MENU_CACHE=.
+menu_cache_file() { printf '%s\n' "${MENU_CACHE:-${REPO_ROOT:-.}/.gemma4-menu}"; }
+
+# menu_get <key>  — echo the stored value for the key (empty if none).
+menu_get() {
+  local f; f="$(menu_cache_file)"
+  [ -f "$f" ] || return 0
+  sed -n "s/^$1=//p" "$f" | tail -1        # last write wins
+}
+
+# menu_set <key> <value>  — upsert key=value, preserving other keys.
+menu_set() {
+  local f tmp; f="$(menu_cache_file)"
+  tmp="$(mktemp)"
+  { [ -f "$f" ] && grep -v "^$1=" "$f" || true; } > "$tmp"
+  printf '%s=%s\n' "$1" "$2" >> "$tmp"
+  mv "$tmp" "$f"
+}
+
+# menu_clear <key>  — drop a key if present (no-op otherwise).
+menu_clear() {
+  local f tmp; f="$(menu_cache_file)"
+  [ -f "$f" ] || return 0
+  tmp="$(mktemp)"
+  grep -v "^$1=" "$f" > "$tmp" || true
+  mv "$tmp" "$f"
+}
+
+# menu_save_or_clear <key> <value> <default>  — the crux of "my choice becomes
+# the default": persist value as an override, or CLEAR the key when value is empty
+# or equals the hardcoded default — so accepting the default never leaves a stale
+# override behind that would re-appear next time.
+menu_save_or_clear() {
+  if [ -z "$2" ] || [ "$2" = "$3" ]; then menu_clear "$1"; else menu_set "$1" "$2"; fi
+}
+
 tune_migrate
