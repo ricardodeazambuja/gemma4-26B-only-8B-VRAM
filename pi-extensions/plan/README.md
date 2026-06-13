@@ -3,7 +3,7 @@
 An external task checklist so Gemma stops re-deciding what it's doing every turn.
 Small models lose the thread on multi-step work; this gives them a persistent
 "where am I" that lives outside their reasoning and is refreshed at the tail of the
-context on every turn. PLAN.md item 4.
+context on every turn.
 
 ## Tools
 
@@ -25,7 +25,7 @@ specific message with a correct example, not "invalid input".
 - **Pre-compaction snapshot.** `session_before_compact` writes a
   `Task / Done / Next / Files touched` snapshot to
   `~/.pi/memory/<project>/snapshots/` — the exact moment detail is about to be
-  destroyed. semantic-memory (item 5) ingests these. "Files touched" is gathered
+  destroyed. semantic-memory ingests these. "Files touched" is gathered
   passively from a `tool_result` hook on edits/writes.
 
 ## Test

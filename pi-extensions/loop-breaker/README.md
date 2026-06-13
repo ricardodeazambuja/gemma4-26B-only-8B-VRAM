@@ -5,7 +5,6 @@ the context fills with identical failures and the session stalls. This extension
 watches tool results and, after **3 identical failing calls in a row**, appends one
 line telling Gemma to change approach. ~40 lines, no cost, and it rescues exactly
 the sessions that would otherwise burn an hour of laptop GPU going in circles.
-PLAN.md item 3.
 
 ## How it works
 
@@ -21,7 +20,7 @@ The state machine (`makeTracker`) is exported and unit-tested independently of p
 ## Relationship to other extensions
 
 This is the sharpest instance of the "just-in-time nudge" idea that
-`operating-manual` (item 6) generalizes. It stays a separate, always-on extension
+`operating-manual` generalizes. It stays a separate, always-on extension
 because runaway retry loops are the single most expensive failure mode and deserve
 their own guaranteed guard.
 

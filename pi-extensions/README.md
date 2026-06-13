@@ -1,58 +1,111 @@
 # pi-extensions — empowering local Gemma4
 
-A set of [pi](https://pi.dev) extensions whose single purpose is to get the most
-out of **Gemma4 20B QAT 4-bit running locally on a custom llama.cpp build**, with
-a ~120k context window, fully offline. The motivation is energy/carbon: a small
-local model on hardware that's already powered on, doing real work, if the harness
-covers its weaknesses.
+A set of [pi](https://github.com/badlogic/pi-mono) extensions whose single purpose is
+to get the most out of **Gemma 4 26B-A4B QAT 4-bit running locally on a custom
+llama.cpp build**, with a ~120k context window, fully offline. The motivation is
+energy/carbon: a small local model on hardware that's already powered on, doing real
+work — if the harness covers its weaknesses. (Claude Code is used only to *author*
+these extensions; there is no cloud model in the loop at runtime.)
 
-> These run inside pi with Gemma — there is no cloud model in the loop at runtime.
-> The extensions are deterministic code; Gemma is the only intelligence. Anything
-> the model must *write* (memories, summaries) is shaped by a fixed template.
+> These run inside pi with Gemma — Gemma is the only intelligence. The extensions are
+> deterministic code; anything the model must *write* (memories, summaries) is shaped
+> by a fixed template, never an open-ended "summarize this."
 
 ## Design rules (every extension obeys these)
 
-1. **KV-cache discipline.** llama.cpp reuses the KV cache only for the unchanged
-   prompt *prefix*. System prompt, tool schemas, and session-start injections stay
-   byte-stable for the whole session; anything dynamic is injected at the **tail**.
-   Run pi on a single llama.cpp slot.
-2. **Teaching errors.** A rejected tool call returns *what was wrong + a correct
-   example*, never just "invalid input".
-3. **Output caps.** Every tool result is capped (~50 lines) with an explicit
-   continuation hint.
-4. **Enforce > persuade.** Where a behavior must happen, the tool does it on
-   Gemma's behalf rather than relying on a prompt rule.
-5. **Terse schemas.** Tool descriptions are one line; few tools. Schemas are
-   resent every request — they are a standing prefill tax.
-6. **Templates over open prompts.** Anything Gemma writes gets a fill-in template.
+These six rules (R1–R6) are why the set works on a small model and stays cheap on a
+laptop. Each extension's README notes which it leans on.
 
-The full spec, build order, and rationale live in
-[`~/.pi/agent/extensions/PLAN.md`](../) (authored separately).
+- **R1 — KV-cache discipline.** llama.cpp reuses the KV cache only for the unchanged
+  prompt *prefix*. So everything static (system prompt, tool schemas, session-start
+  injections) is byte-stable for the whole session; everything dynamic (recalled
+  memories, plan state, nudges) is injected at the **tail** of the message list. That
+  is the difference between paying prefill once and paying it every turn. Run pi on a
+  single llama.cpp slot.
+- **R2 — Teaching errors.** A rejected tool call never returns "invalid input" — it
+  returns *what was wrong + one correct example*. A small model retries exactly as
+  well as the error message instructs it to.
+- **R3 — Output caps.** Every tool result is hard-capped (~50 lines / ~2 KB) with an
+  explicit continuation hint (e.g. "412 more lines — call again with offset=50").
+- **R4 — Enforce > persuade.** Where a behavior must happen, the tool *does it* on
+  Gemma's behalf (auto-checks, redirects) rather than relying on a prompt rule the
+  model's limited attention will drop.
+- **R5 — Terse, model-optimal schemas.** A tool definition is resent every request — a
+  standing prefill tax *and* the text the model reads to choose a tool. Optimize
+  tokens-per-behavior, not prose: one imperative line, lead with the capability, keep
+  only what routes behavior (when to use it vs. an alternative, the one gotcha). Few
+  tools.
+- **R6 — Templates over open prompts.** Anything Gemma must *write* (memories,
+  snapshots) gets a fill-in template (Task:/Done:/Next:/Files:), never "summarize."
+
+Per-extension design notes — the *why/how/results* for each — live in each
+extension's own `README.md` (linked below). The engineering rationale for the set as
+a whole is in [`docs/TECHNICAL.md` §15](../docs/TECHNICAL.md#15-the-harness-layer-pi-extensions).
 
 ## Extensions
 
-| # | Name | Status | What it does |
-|---|------|--------|--------------|
-| — | [`web-search`](web-search/) | ✅ done | Google search via stealth Playwright (bot-detection bypass). |
-| 1 | [`verified-edits`](verified-edits/) | ✅ done | Auto-runs the cheapest checker after every edit; appends errors in-band. |
-| 2 | [`symbols`](symbols/) | ✅ done | `get_symbols`/`find_symbol` outlines instead of whole-file reads. |
-| 3 | [`loop-breaker`](loop-breaker/) | ✅ done | Nudge after 3 identical failing tool calls. |
-| 4 | [`plan`](plan/) | ✅ done | External task-state checklist, re-injected at tail. |
-| 5 | [`semantic-memory`](semantic-memory/) | ✅ done | Cross-session memory with automatic recall. |
-| 6 | [`operating-manual`](operating-manual/) | ✅ done | If-then rules in the system prefix + JIT nudges. |
-| 7 | [`stats`](stats/) | ✅ done | Per-session token/energy accounting. |
-| 8 | [`fetch-page`](fetch-page/) | ✅ done | Readable-text page fetcher (closes the search→read loop). |
-| 9 | [`goal`](goal/) | ✅ done | Machine-checkable north-star that drives an unattended loop until `done_when` passes. |
-| 10 | [`grounding`](grounding/) | ✅ done | Tail-injects a reasoning protocol so Gemma verifies-or-flags at think time instead of hand-waving. |
-| 11 | [`pipe`](pipe/) | ✅ done | Chain slash-commands: `/pipe /goal … /plan …` expands nested commands into one ordered directive. |
-| 12 | [`toolsets`](toolsets/) | ✅ done | Context economy: gate situational tool groups so the per-request tool tax shrinks (R1-safe). |
-| + | [`thinking-router`](thinking-router/) | ✅ done | Routes the thinking budget per turn (engine-level energy lever, as pi code). |
-| + | [`advisor`](advisor/) | ✅ done | On-demand review by an external agent (via tui-driver) that sees the whole session. |
+Each covers one observed weakness of a 4-bit 26B-A4B MoE coding agent. Click through
+for the full write-up; test counts are the standalone `test.mjs` assertions.
 
-## Layout & dependencies
+| Extension | What it does | Tests |
+|-----------|--------------|------:|
+| [`web-search`](web-search/) | Google search via stealth Playwright (bot-detection bypass) | live |
+| [`fetch-page`](fetch-page/) | Readable-text page fetcher — closes the search→read loop | 18 |
+| [`verified-edits`](verified-edits/) | Auto-runs the cheapest checker after every edit; appends errors in-band | 11 |
+| [`symbols`](symbols/) | `get_symbols`/`find_symbol` outlines instead of whole-file reads | 30 |
+| [`loop-breaker`](loop-breaker/) | Nudge after 3 identical failing tool calls | 15 |
+| [`plan`](plan/) | External task-state checklist, re-injected at the tail | 22 |
+| [`semantic-memory`](semantic-memory/) | Cross-session memory with automatic recall | 34 |
+| [`operating-manual`](operating-manual/) | If-then rules in the system prefix + JIT nudges | 19 |
+| [`stats`](stats/) | Per-session token/energy accounting | 26 |
+| [`goal`](goal/) | Machine-checkable north-star that drives an unattended loop until `done_when` passes | 37 |
+| [`grounding`](grounding/) | Tail-injects a reasoning protocol so Gemma verifies-or-flags at think time | 26 |
+| [`pipe`](pipe/) | Chain slash-commands: `/pipe /goal … /plan …` expands into one ordered directive | 23 |
+| [`toolsets`](toolsets/) | Context economy: gate situational tool groups to shrink the per-request tool tax | 19 |
+| [`thinking-router`](thinking-router/) | Routes the per-turn thinking budget by input difficulty (engine-level energy lever) | 14 |
+| [`advisor`](advisor/) | On-demand review by a stronger external agent that sees the whole session | 45 |
 
-Each extension is a directory with `index.ts`, `test.mjs`, and `README.md`. A
-single shared `package.json`/`node_modules` at this level serves all of them.
+All complete; **352 assertions across the set** (`./run-tests.sh`). `goal` is the only
+one that *drives* the agent (`sendUserMessage` from `agent_end`) — validate that
+re-engagement in a real pi run before relying on unattended loops.
+
+## Engine-level energy levers
+
+Two levers act on the inference engine itself rather than the prompt, so they live
+partly outside the extensions:
+
+- **Thinking-level routing** — ✅ done as the [`thinking-router`](thinking-router/)
+  extension (pi exposes `setThinkingLevel()`, so it's pi code). Routes off/low/medium
+  per turn by input difficulty; respects a manual `/thinking`.
+- **Speculative decoding (MTP)** — ✅ done and wired into `start.sh` (`MTP=1`). Gemma 4's
+  0.25 GB QAT draft head, lossless. Gain is regime-dependent: **+15–30 % at greedy/coding
+  temperature, within measurement noise at temp 1.0**. `p_min` must stay 0 (positive values
+  degenerate the output); EAGLE3 does **not** work on this build. Full study:
+  [`docs/mtp-benchmark.md`](../docs/mtp-benchmark.md).
+- **Constrained tool calls** — open: check whether the custom llama.cpp build exposes
+  GBNF / JSON-schema enforcement for tool calls, and if so wire pi to it.
+
+## Rejected (do not revisit without new evidence)
+
+- **Turbovec / any ANN index** — alpha-stage, pays off only ≫100k vectors. The index is
+  swappable behind `search()` if that day comes.
+- **Key-value `store_fact`/`retrieve_fact`** — models can't query what they don't know
+  they forgot; `semantic-memory` uses passive injection instead.
+- **Embedding the codebase** — churns too fast; `symbols` outlines beat stale vectors.
+- **Model routing (e2b/e4b)** — a single resident model; a second wouldn't stay in RAM.
+
+## Developing an extension
+
+The smallest working example is [`web-search/`](web-search/) — the reference for
+`registerTool`, typebox params, and the tool-result/error shape. The pi extension API
+types are in
+`node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts`; the
+events the set leans on are `session_start`, `before_agent_start`, `context` (returns a
+modified message list — the tail-injection point), `tool_result`, `session_before_compact`,
+`session_shutdown`, `thinking_level_select`, plus `registerTool`/`registerCommand`.
+
+Each extension is a directory with `index.ts`, a `test.mjs`, and a `README.md`. A single
+shared `package.json` / `node_modules` at this level serves all of them.
 
 ```bash
 cd pi-extensions && npm install
@@ -87,7 +140,7 @@ touches extensions installed from elsewhere. Both flags also pass through `setup
 > `--preserve-symlinks`, so Node resolves each extension's `import`s from the
 > symlink's location (`~/.pi/agent/extensions/<name>/`), **not** the real repo path.
 > Without a `node_modules` at `~/.pi/agent/extensions/`, every import of
-> `playwright`/`typebox`/`@earendil-works/*` fails with "Cannot find module". The
+> `playwright`/`typebox`/`@earendil-works/*` fails with "Cannot find module." The
 > shared symlink fixes all of them at once. (A real pi smoke test caught this — the
 > plain-`node` import test missed it because plain Node follows symlinks to realpath.)
 

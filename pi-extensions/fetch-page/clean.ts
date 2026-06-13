@@ -1,6 +1,6 @@
 // Pure text post-processing for fetch-page: collapse browser innerText into tidy
 // lines and paginate with an offset, so a long page can't blow the context window
-// (rule R3). The DOM extraction itself runs in-browser (see index.ts). PLAN.md item 8.
+// (rule R3). The DOM extraction itself runs in-browser (see index.ts).
 
 export function collapseText(raw: string): string {
   return raw

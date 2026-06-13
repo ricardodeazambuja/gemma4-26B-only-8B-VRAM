@@ -1,6 +1,6 @@
 // Pure stats logic: extract token usage from a pi assistant message (tolerant to
 // the exact field names), persist per-message records, aggregate per session, and
-// format the /stats report. PLAN.md item 7.
+// format the /stats report.
 
 import { homedir } from "node:os";
 import { join } from "node:path";

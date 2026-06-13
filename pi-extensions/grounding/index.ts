@@ -11,7 +11,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 // The point is the scientific method, not just looking things up: tools are only HOW you
 // simulate (run it) or reference (read it). There is no API to seed the reasoning stream
 // directly, so prefix + tail injection is the highest-salience way to reach it. No
-// generate-then-review-then-regenerate: zero wasted answer/review tokens. PLAN.md item 10.
+// generate-then-review-then-regenerate: zero wasted answer/review tokens.
 //
 // Deliberately prevention-only: high-salience guidance the reasoning follows, not a hard
 // gate. A guarantee would need detect-and-regenerate — the exact tokens this saves — so by

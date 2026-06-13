@@ -3,7 +3,7 @@
 Give Gemma a **code outline** instead of making it read an entire file to find one
 signature. This is the biggest recurring prefill saving in the set: ~30 lines
 where a full read would be hundreds, every time the model needs to locate
-something. PLAN.md item 2.
+something.
 
 ## Tools
 

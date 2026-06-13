@@ -13,7 +13,7 @@ import {
 // remember() writes a fact; recall() searches; but the real work is auto-recall:
 // the extension embeds each incoming user message itself and injects the most
 // relevant chunks at the TAIL, so Gemma never has to know to ask. MEMORY.md is
-// injected passively (byte-stable) every session. PLAN.md item 5.
+// injected passively (byte-stable) every session.
 
 const RECALL_K = 3;
 const AUTO_RECALL_K = 2;

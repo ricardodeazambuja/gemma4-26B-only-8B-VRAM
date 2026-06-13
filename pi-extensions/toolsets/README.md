@@ -3,7 +3,7 @@
 Context economy: **don't announce situational tools a session doesn't need.** Tool
 definitions are resent to the model every request (the standing prefill tax, R5) — and a
 smaller, focused set also means fewer wrong-tool calls from a small model. This shrinks the
-*set*; the wording pass shrank each entry. PLAN.md item 12.
+*set*; the wording pass shrank each entry.
 
 ## R1 is the whole constraint
 

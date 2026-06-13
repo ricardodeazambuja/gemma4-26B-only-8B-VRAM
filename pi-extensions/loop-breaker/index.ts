@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 // loop-breaker — small models repeat a failing action verbatim until the context
 // fills with identical errors. After N identical *failing* calls, append one line
 // telling Gemma to change approach. Deterministic, ~no cost, rescues the sessions
-// that would otherwise burn an hour of laptop GPU going in circles. PLAN.md item 3.
+// that would otherwise burn an hour of laptop GPU going in circles.
 
 const TRIGGER_AT = 3; // nudge on the 3rd identical failing call
 

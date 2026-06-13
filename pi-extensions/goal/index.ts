@@ -11,7 +11,7 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 // command is set) it drives the loop: after each agent run it runs done_when, and while that
 // command still fails it re-engages Gemma for another cycle — until done_when passes (STOP,
 // done) or a cycle budget is exhausted (STOP, blocked). The verified stop is the energy
-// lever: the loop dies the moment the objective is provably met. PLAN.md item 9.
+// lever: the loop dies the moment the objective is provably met.
 //
 // Enforcement = pull + bounded push (R4):
 //   pull  — goal_done() runs done_when AND checks plan's steps are complete; teaching error

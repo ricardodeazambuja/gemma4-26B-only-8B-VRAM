@@ -1,7 +1,7 @@
 # stats
 
 Per-session token — and, with calibration, **energy** — accounting, so every other
-extension can prove its value in numbers instead of vibes. PLAN.md item 7.
+extension can prove its value in numbers instead of vibes.
 
 ## What it records
 

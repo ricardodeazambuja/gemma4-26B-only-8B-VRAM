@@ -922,8 +922,8 @@ its hidden reasoning before the visible answer — see §8.)
 
 Everything above gets the model *running*; this section is about making it *useful*. The
 problem statement, what we built, why those shapes and not others, and what's still open.
-(Per-extension specs live in `pi-extensions/PLAN.md`; per-extension usage in each
-`pi-extensions/<name>/README.md`. This section is the engineering rationale.)
+(Per-extension specs and usage live in each `pi-extensions/<name>/README.md`, and the
+cross-cutting rules in `pi-extensions/README.md`. This section is the engineering rationale.)
 
 ### Problem statement
 
@@ -950,8 +950,8 @@ every request.
 
 ### Solution shape, and why
 
-One pi extension per weakness, all obeying six cross-cutting rules (R1–R6 in
-`pi-extensions/PLAN.md`). The two that drive most design decisions:
+One pi extension per weakness, all obeying six cross-cutting rules (R1–R6, documented in
+`pi-extensions/README.md`). The two that drive most design decisions:
 
 - **Enforce > persuade (R4).** A prompt rule ("verify your edits") relies on exactly the
   attention that a small model lacks — so the harness *does the thing* instead: verified-edits
@@ -1044,7 +1044,7 @@ resources the advised agent holds until tui-driver's idle watchdog reaps it.
   (Sound?/Missed:/Next:) would make verdicts parseable and injectable as plan steps.
 - **Reply cleaning.** A per-TUI post-filter (strip spinners, box-drawing, status lines)
   would harden the scraped replies.
-- **Engine levers** (tracked in PLAN.md): speculative decoding via `--model-draft` is now
+- **Engine levers** (tracked in `pi-extensions/README.md`): speculative decoding via `--model-draft` is now
   **done and measured** — MTP is wired into `start.sh` (`MTP=1`) and benchmarked (lossless;
   +15–30 % at greedy/coding temp, within measurement noise at temp 1.0; see §13 and
   [`mtp-benchmark.md`](mtp-benchmark.md)). Still open: GBNF/JSON-schema-constrained tool calls

@@ -5,7 +5,7 @@ import { loadCalibration } from "./energy.ts";
 // stats — per-session token (and, with calibration, energy) accounting so every
 // other optimization can prove its value in numbers. Records each assistant
 // message's usage; `/stats` prints the session's prefill/decode split, cache-hit
-// estimate, and estimated Wh. PLAN.md item 7.
+// estimate, and estimated Wh.
 
 export default function (pi: ExtensionAPI) {
   let dir = "";

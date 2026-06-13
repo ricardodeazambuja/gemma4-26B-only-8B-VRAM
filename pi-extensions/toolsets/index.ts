@@ -5,7 +5,7 @@ import { readFileSync, existsSync } from "node:fs";
 
 // toolsets — context economy: don't announce situational tools a session doesn't need.
 // Tool definitions are the standing prefill tax (R5); this shrinks the *set*, not just the
-// wording. PLAN.md item 12.
+// wording.
 //
 // R1 IS THE WHOLE CONSTRAINT. Tool schemas live in the KV-cached prefix, so changing the
 // active set RE-PREFILLS from the tools onward. Naive per-turn toggling trades schema tokens

@@ -5,7 +5,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 // (costs prefill once per session, then cached), and (2) just-in-time one-line
 // nudges appended at the tail exactly when a tool result shows a known foot-gun.
 // Rules are triggers→actions, never "you are weak at X" — small models execute
-// if-then far better than they introspect. PLAN.md item 6.
+// if-then far better than they introspect.
 
 // ≤600 bytes. Each line is a trigger and an action.
 export const MANUAL = [

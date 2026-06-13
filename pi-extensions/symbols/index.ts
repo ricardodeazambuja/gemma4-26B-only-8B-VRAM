@@ -7,7 +7,7 @@ import { extractSymbols, langForExt, type Symbol } from "./extract.ts";
 
 // symbols — give Gemma a code outline instead of making it read whole files to
 // find one signature. The biggest recurring prefill saving: 30 lines instead of
-// 800, every time it needs to locate something. PLAN.md item 2.
+// 800, every time it needs to locate something.
 
 const MAX_OUTPUT_LINES = 60;       // R3 output cap
 const REDIRECT_THRESHOLD = 200;    // R4: reads of code files larger than this get the outline

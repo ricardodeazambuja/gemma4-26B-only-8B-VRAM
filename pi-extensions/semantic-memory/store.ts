@@ -1,6 +1,6 @@
 // Persistence for memory chunks: one JSON object per line in chunks.jsonl, with
 // the vector stored as base64-packed Float32 to keep the file compact. Also owns
-// the curated MEMORY.md file. PLAN.md item 5.
+// the curated MEMORY.md file.
 
 import { homedir } from "node:os";
 import { join } from "node:path";

@@ -1,6 +1,6 @@
 // Energy helpers: read Intel RAPL on Linux and convert tokens → Wh using a
 // one-time calibration. Everything degrades to null/0 when RAPL is unavailable
-// (non-Intel, no permissions, macOS) so the rest of stats still works. PLAN.md item 7.
+// (non-Intel, no permissions, macOS) so the rest of stats still works.
 
 import { join } from "node:path";
 import { readFileSync, existsSync, writeFileSync, readdirSync } from "node:fs";

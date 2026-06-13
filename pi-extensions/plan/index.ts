@@ -7,7 +7,7 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 
 // plan — an external task checklist so Gemma stops re-deciding what it's doing
 // every turn. State is re-injected at the TAIL of the context each turn (cache-safe)
-// and snapshotted before compaction so the thread of work survives. PLAN.md item 4.
+// and snapshotted before compaction so the thread of work survives.
 
 const MAX_STEPS = 10;
 const MAX_STEP_LEN = 80;
@@ -132,7 +132,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   // Persist a human-readable snapshot before compaction destroys the detail, so
-  // semantic-memory (item 5) can ingest "what this session was doing".
+  // semantic-memory can ingest "what this session was doing".
   pi.on("session_before_compact", async () => {
     if (!state.steps.length || !memDir) return;
     try {

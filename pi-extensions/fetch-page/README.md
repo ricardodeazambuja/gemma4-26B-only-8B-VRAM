@@ -2,7 +2,7 @@
 
 Read a web page as clean text. `web_search` finds links; without a fetcher Gemma
 can't actually *read* them — and its world knowledge is thin, so retrieval matters.
-This closes the search→read loop. PLAN.md item 8.
+This closes the search→read loop.
 
 ## Tool
 

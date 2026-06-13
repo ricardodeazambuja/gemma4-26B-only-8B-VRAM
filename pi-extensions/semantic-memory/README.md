@@ -4,7 +4,7 @@ Cross-session memory with **no retrieval burden on the model**. Small models don
 reliably call a "search your memory" tool at the right moment — they can't query
 for what they don't know they forgot. So the extension does the retrieval *for*
 Gemma: it embeds each incoming user message and injects the most relevant past
-facts at the tail of the context, automatically. PLAN.md item 5.
+facts at the tail of the context, automatically.
 
 ## Tools
 

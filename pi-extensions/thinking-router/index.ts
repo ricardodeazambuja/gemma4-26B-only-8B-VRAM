@@ -4,7 +4,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 // proportion to how hard the turn is. Easy turns (short, no code, simple ask) get
 // a low thinking budget; anything that looks like real work gets the full budget.
 // One resident model, so this routes the *thinking level*, not the model. This is
-// the pi-code half of the plan's "engine-level" energy levers. PLAN.md (engine).
+// the pi-code half of the project's "engine-level" energy levers.
 
 export type Level = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 

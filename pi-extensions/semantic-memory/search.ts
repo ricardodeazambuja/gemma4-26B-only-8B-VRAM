@@ -1,7 +1,7 @@
 // Brute-force cosine similarity. At the scale this runs (≤ ~10^4 chunks of
 // EmbeddingGemma 768-dim vectors) this is single-digit milliseconds in plain JS —
 // no ANN, no quantization, no Turbovec. Kept behind this module so the index can
-// be swapped later without touching index.ts. PLAN.md item 5.
+// be swapped later without touching index.ts.
 
 export interface Chunk {
   id: string;

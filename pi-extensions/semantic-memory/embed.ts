@@ -1,7 +1,7 @@
 // Embedding client for a local llama-server (EmbeddingGemma). Talks to either the
 // OpenAI-compatible `/v1/embeddings` or llama.cpp's native `/embedding`. Designed
 // to fail soft: any error returns null and the caller degrades to substring
-// search rather than erroring Gemma's turn. PLAN.md item 5.
+// search rather than erroring Gemma's turn.
 
 import { homedir } from "node:os";
 import { join } from "node:path";

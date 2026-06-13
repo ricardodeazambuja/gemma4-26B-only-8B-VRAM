@@ -12,7 +12,7 @@ runs as:
 > 2. set the goal (`goal_set`): *implement the results from* — use the result of step 1
 > Then carry out the work so the final goal is achieved.
 
-PLAN.md item 11 (orchestration/UX — not a model-weakness fix).
+Unlike the others, `pipe` is an orchestration/UX convenience — not a model-weakness fix.
 
 ## Why a command, and not real piping
 

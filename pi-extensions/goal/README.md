@@ -5,7 +5,7 @@ The macro-loop manager. `plan` owns the **steps** (the HOW); **`goal`** holds th
 *whole job* is finished — so an unattended run stops on a real condition instead of declaring
 victory early (premature "done") or never stopping (drift / runaway). The verified stop is the
 energy lever: the loop dies the moment the objective is provably met, and a cycle budget caps
-worst-case wasted carbon. PLAN.md item 9.
+worst-case wasted carbon.
 
 > **No checklist of its own.** `goal` deliberately does *not* track a list of steps — that would
 > duplicate `plan`. Instead `goal_done` reads `plan`'s state and verifies the steps are complete.

@@ -2,7 +2,7 @@
 
 Help Gemma actually *use* the empowering tools and steer around its own foot-guns.
 Telling a small model "you are weak at X" is self-knowledge it can't act on; what
-works is concrete **if-then rules** (trigger → action). PLAN.md item 6.
+works is concrete **if-then rules** (trigger → action).
 
 ## Two layers
 
@@ -18,7 +18,7 @@ works is concrete **if-then rules** (trigger → action). PLAN.md item 6.
    result *only* when that result shows a known problem — currently a `grep` (or
    `find`/`ls`) that returns more than 80 lines gets "narrow the pattern or add a
    path filter". Fires at the moment of relevance, where a prefix rule would have
-   faded after many turns. `loop-breaker` (item 3) is the sharpest standalone case
+   faded after many turns. `loop-breaker` is the sharpest standalone case
    of this same idea.
 
 The manual references the tools the other extensions provide (`get_symbols`,

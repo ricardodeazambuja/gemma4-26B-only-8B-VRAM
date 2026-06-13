@@ -7,7 +7,7 @@ import { existsSync } from "node:fs";
 // verified-edits — after every edit/write to a source file, run the cheapest
 // available checker for that language and append any error to the tool result,
 // so Gemma sees ground truth in the same turn instead of trusting its own
-// (weak) self-verification. See PLAN.md item 1, rule R1-R6.
+// (weak) self-verification — enforce > persuade (design rule R4).
 
 interface Checker {
   /** Build the argv for checking `absPath`, or null if this checker can't run. */

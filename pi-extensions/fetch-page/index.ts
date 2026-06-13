@@ -7,7 +7,6 @@ import { collapseText, paginate, formatPage } from "./clean.ts";
 // world knowledge is thin, so it needs to actually read the links web_search finds.
 // Reuses web-search's stealth Playwright setup (UA from browser.version() minus the
 // "Headless" marker, automation flags hidden) so pages don't bot-block it.
-// PLAN.md item 8.
 
 const MAX_LINES = 50;        // R3 output cap
 const NAV_TIMEOUT = 30000;

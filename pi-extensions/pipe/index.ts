@@ -6,7 +6,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 //   /pipe /goal implement the results from /plan a python script that says hello world
 // into ordered steps (innermost runs first), expands each into a tool-using directive,
 // and hands the whole thing to the agent in one go via sendUserMessage. The model then
-// calls the underlying tools (plan_set, goal_set, …) in sequence. PLAN.md item 11 (UX).
+// calls the underlying tools (plan_set, goal_set, …) in sequence.
 
 export interface Stage { cmd: string; text: string; }
 

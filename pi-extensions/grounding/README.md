@@ -9,7 +9,7 @@ it, by one of three means:
 - **reference it** — read the actual source (the file, the docs), not your memory of it.
 
 This is the scientific method, not just "look things up": tools are only *how* you simulate (run
-it) or reference (read it). PLAN.md item 10 (think-time energy lever).
+it) or reference (read it).
 
 ## Two injections that bracket the reasoning
 
