@@ -206,6 +206,38 @@ why we also build a native CUDA backend.
 `scripts/build-llama-cuda.sh` builds llama.cpp from source against the CUDA version the driver
 actually supports, so the kernels load. It is fully auto-detecting.
 
+### Exact build currently in use (pin this to reproduce)
+
+The `vendor/llama.cpp/build/bin/llama-server` we run **right now** (built 2026-06-12) is:
+
+| | |
+|---|---|
+| **Repo** | `https://github.com/ggml-org/llama.cpp` (upstream `ggml-org`, no fork) |
+| **Commit** | `88a39274ecf88ba11686acd357b59685b1cbf03d` (`git describe` → `b9549-57-g88a3927`) |
+| **Upstream PR** | #18039 — *"spec: add EAGLE3 speculative decoding support"* |
+| **Source state** | **pristine** — clean working tree, **no local patches** (the build script applies none) |
+| **Toolchain** | mamba env `llamacpp-cuda`: `cuda-toolkit 12.2` (nvcc V12.2.140), `gcc/gxx_linux-64 12.4.0` |
+| **CMake** | `Release`, `GGML_CUDA=ON`, `GGML_CUDA_FA=ON`, `GGML_NATIVE=ON`, `LLAMA_CURL=OFF`, `CMAKE_CUDA_ARCHITECTURES=75` (sm_75 / Turing), Ninja |
+| **Targets** | `llama-server llama-cli llama-bench` |
+
+**Reproduce the exact binary** (the commit is *not* a release tag, so you must pin it — the script
+otherwise builds the latest tag, see below):
+
+```bash
+LLAMA_REF=88a39274ecf88ba11686acd357b59685b1cbf03d \
+CUDA_VER=12.2 CUDA_ARCH=75 \
+./scripts/build-llama-cuda.sh
+```
+
+Caveats for an *exact* match:
+- **`GGML_NATIVE=ON`** compiles the CPU paths with `-march=native`, i.e. tuned to the **build
+  host's** microarchitecture. A different CPU yields a functionally-equivalent but not
+  byte-identical binary.
+- This commit **is** the EAGLE3 PR. EAGLE3 is **dormant** unless `llama-server` is launched with an
+  eagle3 draft model, so this binary serves normal Gemma 4 (MTP/none) correctly — we sit on it only
+  because that's where the EAGLE3 evaluation left the checkout (see §13's "EAGLE3 — tried, doesn't
+  work on this build" note). It was *not* chosen for any improvement over the latest tag.
+
 ### Detection
 
 ```bash
@@ -250,7 +282,10 @@ Notes:
   finds the CUDA runtime at launch without `LD_LIBRARY_PATH` juggling.
 - `LLAMA_CURL=OFF` drops a build dependency we don't need (we download models separately).
 - `LLAMA_REF` defaults to the **latest `b*` release tag** (resolved with `git ls-remote ... | sort
-  -V | tail -1`, which handles `bNNNN` numerically) rather than `master`, for reproducibility.
+  -V | tail -1`, which handles `bNNNN` numerically) rather than `master`. **Note:** this default is
+  *not* what the current build uses — our live binary is pinned to commit `88a3927` (above), which is
+  57 commits past tag `b9549` and would be *replaced* by a newer tag if you ran the script without
+  setting `LLAMA_REF`. Pin `LLAMA_REF` to reproduce the exact build.
 
 ### Smoke test
 
@@ -729,12 +764,24 @@ to CUDA 12.2 with a note to adjust it — `cuda-toolkit` must match the driver's
 recommended build path remains `scripts/build-llama-cuda.sh`, which auto-detects the CUDA version
 and GPU arch rather than relying on a static pin.
 
+**The llama.cpp source itself is *not* auto-pinned.** To reproduce the exact `llama-server` binary
+in use today, pin the commit (the script otherwise builds whatever the latest release tag is):
+
+```bash
+LLAMA_REF=88a39274ecf88ba11686acd357b59685b1cbf03d \
+CUDA_VER=12.2 CUDA_ARCH=75 bash scripts/build-llama-cuda.sh
+```
+
+Full build provenance (commit, toolchain, CMake flags, caveats) is in **§7, "Exact build currently
+in use".**
+
 ### References
 
 - Model: <https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF>
 - **unsloth Gemma 4 QAT guide** (QAT explained, UD-quant accuracy numbers, recommended sampling):
   <https://unsloth.ai/docs/models/gemma-4/qat>
-- llama.cpp: <https://github.com/ggml-org/llama.cpp>
+- llama.cpp: <https://github.com/ggml-org/llama.cpp> — **build in use: commit `88a3927`**
+  (`88a39274ecf88ba11686acd357b59685b1cbf03d`, `git describe` `b9549-57-g88a3927`, PR #18039)
 - pi: <https://github.com/badlogic/pi-mono>
 - Ollama MoE-offload requests: [#11772](https://github.com/ollama/ollama/issues/11772),
   [#14579](https://github.com/ollama/ollama/issues/14579)
@@ -858,7 +905,10 @@ rebuilt at `88a3927`, and benchmarked it — it's **not usable**: draft acceptan
 79–88 %; not a quant artifact), so its *heavy* draft (a full transformer layer) makes it **slower than
 baseline even at greedy** (−19 % at n-max 3); temp 1.0 **degenerates**; and on the chat-template path
 (i.e. real use through pi) it **segfaults**. The fresh eagle3 support in this build is too immature —
-revisit only on a much newer llama.cpp. **Bottom line for this rig today: there is no temp-1.0
+revisit only on a much newer llama.cpp. (Our `vendor/llama.cpp` checkout **still sits at `88a3927`**
+— that's just where this evaluation left it; EAGLE3 stays dormant unless `llama-server` is launched
+with the draft, so the live binary serves normal Gemma 4 fine. See §7, "Exact build currently in
+use", for the pinned-commit reproduction.) **Bottom line for this rig today: there is no temp-1.0
 spec-decoding win — MTP helps only at low temperature, so for faster coding, lower the temperature.**
 
 ### Bottom line
