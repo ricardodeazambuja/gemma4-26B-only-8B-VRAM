@@ -12,11 +12,12 @@ ok("MINDSET frames the engineering mindset", /engineer/i.test(MINDSET));
 ok("MINDSET names all three modes (derive/simulate/reference)", /derive/i.test(MINDSET) && /simulate/i.test(MINDSET) && /reference/i.test(MINDSET));
 ok("MINDSET treats memory as a hypothesis, not fact", /hypothesis/i.test(MINDSET) && /memory/i.test(MINDSET));
 ok("MINDSET mentions concrete means (bash/read/web_search)", ["bash", "read", "web_search"].every((t) => MINDSET.includes(t)));
+ok("MINDSET extends grounding to answer time (every step, final reply)", /answer/i.test(MINDSET) && /final reply/i.test(MINDSET));
 ok("CHECK is the act-now prove-it pass", /prove it/i.test(CHECK) && /before you answer/i.test(CHECK));
 ok("CHECK invokes the same three modes", /derive/i.test(CHECK) && /simulate/i.test(CHECK) && /read it from a/i.test(CHECK));
 ok("CHECK requires an explicit unverified label", CHECK.includes("unverified"));
 ok("CHECK and MINDSET are different text", CHECK !== MINDSET && !MINDSET.includes(CHECK));
-ok("both stay terse (MINDSET < 800, CHECK < 700 bytes)", Buffer.byteLength(MINDSET) < 800 && Buffer.byteLength(CHECK) < 700);
+ok("both stay terse (MINDSET < 1100, CHECK < 700 bytes)", Buffer.byteLength(MINDSET) < 1100 && Buffer.byteLength(CHECK) < 700);
 
 console.log("content — anchor (reminders are not the user):");
 ok("ANCHOR explains the <reminder> marker", ANCHOR.includes("<reminder>"));

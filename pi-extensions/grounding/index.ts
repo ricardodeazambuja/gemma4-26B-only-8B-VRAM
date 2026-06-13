@@ -1,17 +1,17 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 // grounding — make Gemma reason like an engineer, not from recollection, at THINK time.
-// Two injections, both conceptually "framing", but delivered differently:
-//   • MINDSET — the byte-stable "engineering mindset" framing appended to the system prompt:
-//     a remembered thing is a hypothesis, not a fact; establish each claim by deriving it,
-//     simulating it, or reading a trusted reference.
-//   • CHECK — the sharper "prove it before you answer" pass. It used to be appended as its own
-//     tail user message, but a bare user-role message reads as a NEW instruction from the user
-//     (and, with plan/goal/memory also injecting user turns, it was neither last nor
-//     distinguishable from the real request). So CHECK is now folded INTO the user's own turn,
-//     wrapped in a <reminder>…</reminder> marker, and the prefix carries an ANCHOR note telling
-//     the model those markers are injected context, not the user's words. The user's real
-//     request stays first in the turn; the check rides underneath it, clearly labelled.
+// Three framing texts, delivered to cover every model call AND the start of each turn:
+//   • MINDSET — the byte-stable "engineering mindset" appended to the system prompt: a remembered
+//     thing is a hypothesis; establish each claim by deriving / simulating / referencing it. Being
+//     in the prefix it is present on EVERY call — including the final-answer step of a long tool
+//     chain — and it explicitly extends to answer time, so a verified answer is the standing rule.
+//   • CHECK — the sharper act-now "prove it before you answer" pass, folded into the trailing user
+//     turn as a <reminder> block. It fires ONCE per turn (only at turn-start; see isTurnStart), so
+//     it can't re-fire on every tool step and treadmill — read-check → "verify" with a tool →
+//     check re-injected → loop. The always-on MINDSET covers the in-between and final steps.
+//   • ANCHOR — also in the prefix: tells the model the <reminder> markers are injected context,
+//     not the user speaking (the plan/goal/memory/notice injectors still tail-inject wrapped).
 //
 // Deliberately prevention-only: high-salience guidance the reasoning follows, not a hard gate.
 
@@ -25,6 +25,8 @@ export const MINDSET = [
   "- reference it: read the actual source — the file (read / grep / get_symbols), docs (web_search) —",
   "  not your memory of it.",
   "A claim resting only on memory is unproven: establish it, or say so. Never present recollection as fact.",
+  "This holds the moment you answer too — at every step, including your final reply after a long tool",
+  "chain: state nothing as fact you did not establish this session, or mark it \"unverified\".",
   "",
   "## Work economically",
   "Spend tokens only where they buy correctness — above all in your reasoning: think in the densest",
@@ -41,8 +43,9 @@ export const ANCHOR = [
   "every <reminder> block as supporting context only, never as the thing you were asked to do.",
 ].join("\n");
 
-// End: the act-now check, folded into the user's turn each non-trivial turn (different from the
-// prefix). Wrapped in the <reminder> marker the ANCHOR note explains.
+// The sharp act-now pass, folded into the trailing user turn ONCE per turn (turn-start only — see
+// isTurnStart in the context hook) and wrapped in the <reminder> marker the ANCHOR note explains.
+// MINDSET already carries the always-on / answer-time version; this is the extra turn-start nudge.
 export const CHECK = [
   "## Before you answer — prove it",
   "For each claim you are about to make: have you derived it, simulated it, or read it from a",

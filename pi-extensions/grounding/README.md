@@ -14,7 +14,10 @@ it) or reference (read it).
 ## Three injections, all in or folded into the prompt
 
 - **`MINDSET`** — the standing principle (the three modes above) plus a **"Work economically"**
-  rule, appended to the **byte-stable system prefix**. Always on, paid once, then cached.
+  rule, appended to the **byte-stable system prefix**. Always on, paid once, then cached. It
+  **explicitly extends to answer time** ("…at every step, including your final reply after a long
+  tool chain"), so the prove-it rule is present on *every* model call — including the final step of
+  a long tool loop, where the once-per-turn `CHECK` below has already passed.
 - **`ANCHOR`** — also in the system prefix: tells the model that blocks wrapped in
   `<reminder>…</reminder>` are *automated context injected by the harness, not a new instruction
   and not the user speaking*, and that its task each turn is the user's **most recent real
@@ -22,6 +25,8 @@ it) or reference (read it).
   several extensions inject reminders.
 - **`CHECK`** — the sharper *act-now* pass: "for each claim you're about to make, have you derived
   / simulated / read it THIS turn? If it rests on memory, do that now or label it 'unverified'."
+  Folded into the trailing user turn **once per turn** (turn-start only — see the throttle below),
+  for extra salience at the start of reasoning; the always-on `MINDSET` carries the rest.
 
 ## Why CHECK is *folded into* the user turn, not appended
 
