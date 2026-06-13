@@ -31,6 +31,10 @@
 #            (default: the KV quant you picked in a previous sweep/--menu,
 #             remembered in the tuning cache; f16/off if you never picked one)
 #   TEMP / TOP_P / TOP_K  sampling        (defaults: 1.0 / 0.95 / 64)
+#   MTP      enable MTP self-speculative decoding (MTP=1 | y | on; default off)
+#   NMAX     MTP draft tokens per step    (default: 2; only used when MTP is on)
+#            MTP is lossless and speeds up LOW-temp / coding (~+15-30%); ~no gain at
+#            temp 1.0. p_min is pinned to 0 (any p_min>0 degenerates the output).
 #   --image  load the vision projector so the server accepts images
 #
 #   KVQUANT also keys the auto-tune cache (backend × context × KV quant), so the
@@ -272,6 +276,16 @@ configure_menu() {
     case " ${SERVER_ARGS[*]} " in *" --image "*) : ;; *) SERVER_ARGS+=(--image) ;; esac
   fi
 
+  # 6) MTP speculative decoding ----------------------------------------------
+  echo
+  echo "6) MTP speculative decoding  —  lossless self-speculation (Gemma 4 draft head)"
+  echo "     speeds up LOW-temperature / coding generation (~+15-30%); ~no gain at temp 1.0"
+  _menu_yesno "   enable MTP? [y/N] " no
+  if [ "$MENU_REPLY" = yes ]; then
+    MTP=1
+    _menu_text "   draft tokens per step (n-max) [2]: " 2; NMAX="$MENU_REPLY"
+  fi
+
   # Summary + confirm --------------------------------------------------------
   local img=off; case " ${SERVER_ARGS[*]} " in *" --image "*) img=on ;; esac
   echo
@@ -283,6 +297,7 @@ configure_menu() {
   printf "   KV quant: %s\n"                 "${KVQUANT:-f16 (off)}"
   printf "   sampling: temp=%s top-p=%s top-k=%s\n" "${TEMP:-1.0}" "${TOP_P:-0.95}" "${TOP_K:-64}"
   printf "   image   : %s\n"                 "$img"
+  printf "   MTP     : %s\n"                 "$([ "${MTP:-}" = 1 ] && echo "on (n-max ${NMAX:-2})" || echo off)"
   echo "─────────────────────────────────────────────────────────"
   _menu_yesno ">> Launch with these settings? [Y/n]  (q cancels) " yes
   [ "$MENU_REPLY" = yes ] || _menu_cancel
@@ -303,6 +318,8 @@ export KVQUANT="${KVQUANT:-}"      # KV-cache quant; a tuning-cache dimension to
 SERVER_LOG="${SERVER_LOG:-/tmp/gemma4-server.log}"
 STOP_ON_EXIT="${STOP_ON_EXIT:-}"   # unset = ask, 1 = always, 0 = never
 STARTED_SERVER=0                   # set to 1 only if we launch it below
+MTP="${MTP:-}"                     # MTP self-speculative decoding: 1|y|on enables it (default off)
+NMAX="${NMAX:-2}"                  # MTP draft tokens per step (only used when MTP is on)
 
 # Split args: server flags (--image) go to run-server.sh, --menu is consumed
 # here (interactive setup), the rest go to pi. Without this split, --image/--menu
@@ -522,6 +539,21 @@ else
       echo "            CTX=$CTX bash scripts/configure-pi.sh"
     fi
   fi
+
+  # MTP self-speculative decoding (optional). Built HERE — after auto-tune — so the
+  # tuning probes measure the base config; the 0.25 GB draft head fits at the same
+  # NCMOE. p_min is pinned to 0 (any p_min>0 degenerates the output). Appended to
+  # EXTRA_ARGS, which run-server.sh reads from the env we export to it.
+  case "${MTP:-}" in
+    1|y|Y|yes|on)
+      _mtp_head="$REPO_ROOT/models/gemma4-26b-a4b-qat/mtp-gemma-4-26B-A4B-it.gguf"
+      if [ -f "$_mtp_head" ]; then
+        export EXTRA_ARGS="${EXTRA_ARGS:-} --spec-type draft-mtp --spec-draft-model $_mtp_head --spec-draft-n-max ${NMAX:-2} --spec-draft-p-min 0"
+        echo ">> MTP: enabled (n-max ${NMAX:-2}, p-min 0) — speeds up low-temp/coding; ~no gain at temp 1.0"
+      else
+        echo ">> WARNING: MTP requested but draft head missing ($_mtp_head) — launching WITHOUT MTP."
+      fi ;;
+  esac
 
   echo ">> starting server in background (logs: $SERVER_LOG) ..."
   # Launch in its OWN process group (setsid) so an abort can kill the whole tree.
