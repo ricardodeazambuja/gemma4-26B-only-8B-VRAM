@@ -1044,6 +1044,8 @@ resources the advised agent holds until tui-driver's idle watchdog reaps it.
   (Sound?/Missed:/Next:) would make verdicts parseable and injectable as plan steps.
 - **Reply cleaning.** A per-TUI post-filter (strip spinners, box-drawing, status lines)
   would harden the scraped replies.
-- **Engine levers** (tracked in PLAN.md): speculative decoding via `--model-draft`
-  (~1.5–2.5× decode, identical output), and GBNF/JSON-schema-constrained tool calls if the
-  custom build exposes them.
+- **Engine levers** (tracked in PLAN.md): speculative decoding via `--model-draft` is now
+  **done and measured** — MTP is wired into `start.sh` (`MTP=1`) and benchmarked (lossless;
+  +15–30 % at greedy/coding temp, within measurement noise at temp 1.0; see §13 and
+  [`mtp-benchmark.md`](mtp-benchmark.md)). Still open: GBNF/JSON-schema-constrained tool calls
+  if the custom build exposes them.

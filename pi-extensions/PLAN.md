@@ -291,8 +291,12 @@ no-op; config precedence env > file > defaults.
 - **Thinking-level routing:** ✅ DONE as the `thinking-router` extension (it was
   mis-filed here — pi exposes `setThinkingLevel()`, so it's pi code, not manual).
   Routes off/low/medium per-turn by input difficulty; respects manual `/thinking`.
-- **Speculative decoding:** manual, llama.cpp side — `--model-draft` with a small
-  same-vocab Gemma4 QAT; ~1.5–2.5× decode, identical output, ~2 GB RAM.
+- **Speculative decoding:** ✅ DONE — Gemma 4 MTP wired into `start.sh` (`MTP=1`,
+  `--spec-type draft-mtp`) and measured. Lossless; the QAT draft head is only **0.25 GB**
+  (ships in the model repo, fits at the same NCMOE). Gain is regime-dependent, not a flat
+  ~1.5–2.5×: **+15–30 % at greedy/coding temp, within measurement noise at temp 1.0** on this
+  `--cpu-moe` rig. `p_min` must stay 0 (degenerates output). EAGLE3 was also tried and does NOT
+  work on this build. Full study: `docs/mtp-benchmark.md`.
 - **Constrained tool calls:** manual — check whether the custom build exposes
   GBNF/JSON-schema enforcement for tool calls; if yes, wire pi to it.
 

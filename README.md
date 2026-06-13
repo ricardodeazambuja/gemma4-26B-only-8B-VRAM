@@ -181,12 +181,14 @@ kernels** from 12.9 are too new for the 12.2 driver to load. **Two fixes:**
 |---|---|
 | `scripts/setup.sh` | **(once)** Creates the `llamacpp` conda env (llama.cpp + huggingface_hub) and downloads the GGUF into `models/`. `BACKEND=cuda` also builds the native CUDA backend. Idempotent. |
 | `scripts/configure-pi.sh` | **(once)** Adds the `llamacpp` provider to `~/.pi/agent/models.json` from `config/pi-provider.json`. |
-| `scripts/start.sh` | **All-in-one:** starts the server (if not already up) — showing the CUDA/Vulkan/CPU banner — waits for it to load, then launches pi. Pass **`--menu`** for a guided setup that walks every knob (backend, auto-tune vs manual, context, `KVQUANT`, sampling, image) and launches with your picks. Otherwise set knobs as env vars: passes `BACKEND`/`NCMOE`/`CTX`/`KVQUANT`/`TEMP`/`--image` through; other args go to pi. On the **first** fresh launch it offers to **auto-tune** (runs `benchmark-config.sh` once, then remembers the result): with no `CTX` set it sweeps context sizes × KV quants and lets you pick one (the pick — context *and* KV quant — is remembered); with `CTX=` pinned it tunes the expert split for that context (`AUTOTUNE=1` re-run, `0` off). When pi exits, if it started the server it offers to stop it (interactive prompt; force with `STOP_ON_EXIT=1`/`0`). **Cancel (Ctrl-C) while the model is still loading** and it stops the server it just started, rather than leave a half-loaded one running in the background. A server that was already running is left alone. |
+| `scripts/start.sh` | **All-in-one:** starts the server (if not already up) — showing the CUDA/Vulkan/CPU banner — waits for it to load, then launches pi. Pass **`--menu`** for a guided setup that walks every knob (backend, auto-tune vs manual, context, `KVQUANT`, sampling, image, **MTP**) and launches with your picks. Otherwise set knobs as env vars: passes `BACKEND`/`NCMOE`/`CTX`/`KVQUANT`/`TEMP`/`MTP`/`NMAX`/`--image` through; other args go to pi. Set **`MTP=1`** (optionally `NMAX=`) to enable MTP speculative decoding — lossless, helps at low temperature (see [Speculative decoding](#speculative-decoding-mtp) and [`docs/mtp-benchmark.md`](docs/mtp-benchmark.md)). On the **first** fresh launch it offers to **auto-tune** (runs `benchmark-config.sh` once, then remembers the result): with no `CTX` set it sweeps context sizes × KV quants and lets you pick one (the pick — context *and* KV quant — is remembered); with `CTX=` pinned it tunes the expert split for that context (`AUTOTUNE=1` re-run, `0` off). When pi exits, if it started the server it offers to stop it (interactive prompt; force with `STOP_ON_EXIT=1`/`0`). **Cancel (Ctrl-C) while the model is still loading** and it stops the server it just started, rather than leave a half-loaded one running in the background. A server that was already running is left alone. |
 | `scripts/run-server.sh` | Launches `llama-server` with `--cpu-moe`, `--no-mmap`, `-c 32768`, `--jinja`, on `127.0.0.1:8080`. Auto-selects CUDA if built, else Vulkan; prints a color-coded backend banner at launch. Override with `BACKEND=cuda\|vulkan\|cpu`. `KVQUANT=q8_0` quantizes the KV cache (long-context lever). Pass `--image` to enable vision (loads the `mmproj`). |
+| `scripts/run-server-mtp.sh` | **(optional)** Interactive launcher for the server **with MTP speculative decoding** — prompts for each tunable (n-max, temperature, context, KV quant, NCMOE, backend, port) with safe defaults, then hands off to `run-server.sh`. `DRY_RUN=1` previews the command. MTP is lossless and helps at low temperature (`p_min` pinned to 0). |
 | `scripts/run-pi.sh` | Launches pi against the local server (`--provider llamacpp --model gemma-4-26b-a4b-qat`). Extra args pass through to pi. |
 | `scripts/stop-server.sh` | Stops the server by the port it listens on (default 8080). |
 | `scripts/build-llama-cuda.sh` | **(optional, ~5–6× faster)** Builds llama.cpp from source against your driver's CUDA version into a `llamacpp-cuda` env. Auto-detects CUDA + GPU arch, smoke-tests the result. |
 | `scripts/benchmark-config.sh` | **(optional)** Finds the fastest `NCMOE`/`CTX` for *your* GPU: probes real configs on an isolated port and prints the fastest that fits per context. Times each config `RUNS` times (default 5) and reports the **median** (with min–max spread) to smooth out GPU-clock noise, showing live `runs: 1/5 …` progress. Pin one context with `CTX=` or sweep `CTX_LIST`. |
+| `scripts/benchmark-mtp.sh` | **(optional)** Measures decode tok/s (and MTP draft acceptance) with vs without MTP for one config — used to produce [`docs/mtp-benchmark.md`](docs/mtp-benchmark.md). `SPEC_TYPE`/`DRAFT_MODEL` also allow other draft methods. |
 | `config/pi-provider.json` | The pi provider definition (copy into `models.json` manually if you prefer). |
 
 All scripts accept env-var overrides — see the header comment in each, or run any of them with
@@ -292,6 +294,27 @@ EXTRA_ARGS="--min-p 0.01 --repeat-penalty 1.1 --seed 42" bash scripts/start.sh  
 
 (`pi` doesn't expose sampling flags, so the server is where you set them. An OpenAI client that
 *does* send `temperature`/`top_p` overrides the server default for that request.)
+
+### Speculative decoding (MTP)
+
+Gemma 4 ships a **Multi-Token Prediction** head. llama.cpp can use it for *lossless*
+self-speculative decoding — a small draft head proposes the next few tokens and the full model
+verifies them in one batched pass, so the output is identical but generation can be faster. The
+0.25 GB QAT head ships in our own model repo and fits at the same `NCMOE`.
+
+```bash
+MTP=1 TEMP=0.7 bash scripts/start.sh           # MTP on (n-max 2), at a coding temperature
+MTP=1 NMAX=2 CTX=65536 bash scripts/start.sh   # 64k context (≈free here) + MTP
+bash scripts/run-server-mtp.sh                 # interactive: pick every MTP knob with safe defaults
+```
+
+**It only pays off at low temperature.** Measured on this rig (full study + measurement-noise
+analysis in [`docs/mtp-benchmark.md`](docs/mtp-benchmark.md)): **+15–30 % at greedy / coding
+temperature**, and **no measurable gain at the default `TEMP=1.0`** (the gain falls within this
+Max-Q rig's ±13 % run-to-run noise). So enable it for coding work and keep the temperature low;
+for chat at `TEMP=1.0` it's not worth it. `--spec-draft-p-min` is left at 0 — any positive value
+degenerates the output on this build. (EAGLE3 was also tried and **does not work** here — see the
+benchmark doc.)
 
 ### Performance & tuning
 
@@ -418,10 +441,12 @@ There's also a built-in web UI at <http://127.0.0.1:8080>.
 │   ├── configure-pi.sh       # register provider in pi
 │   ├── start.sh              # all-in-one: server (if needed) + pi
 │   ├── run-server.sh         # launch llama-server (auto CUDA/Vulkan; --image for vision)
+│   ├── run-server-mtp.sh     # interactive launcher with MTP speculative decoding (optional)
 │   ├── run-pi.sh             # launch pi against the local server
 │   ├── stop-server.sh        # stop the server
 │   ├── build-llama-cuda.sh   # build llama.cpp against the local CUDA (optional, ~5-6x faster)
 │   ├── benchmark-config.sh   # probe NCMOE/CTX configs, recommend the fastest that fits (optional)
+│   ├── benchmark-mtp.sh      # measure tok/s + draft acceptance with vs without MTP (optional)
 │   ├── _banner.sh            # shared backend banner + resolution (sourced by the above)
 │   ├── _tuning.sh            # shared auto-tune cache: best NCMOE per backend+context+KV, plus your picked context & KV quant
 │   └── make-speed-chart.py   # regenerate docs/speed.svg from measured numbers
