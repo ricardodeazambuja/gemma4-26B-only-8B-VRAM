@@ -62,10 +62,16 @@ design there is no backstop.**
 - **`before_agent_start`** → appends `MINDSET` + `ANCHOR` to the system prompt (unconditional,
   byte-stable).
 - **`context`** → folds `CHECK` into the trailing user turn as a wrapped `<reminder>` block; the
-  prefix / KV cache is untouched and only that turn re-prefills. When the tail is a tool
-  result/assistant message (mid tool-loop), it appends one wrapped reminder instead, which later
-  injectors fold into — so the reminders still consolidate into a single user turn.
-- **Trivial-turn skip** — the check is skipped when the thinking level is `off`/`minimal`
+  prefix / KV cache is untouched and only that turn re-prefills.
+- **Turn-start only (no treadmill).** `CHECK` fires *once per user request* — only when the
+  conversation tail (ignoring reminder-only turns other injectors appended) is the user's genuine
+  message. **Mid tool-loop the tail is a tool result, so `CHECK` is skipped.** This is deliberate:
+  re-stamping an act-now "prove it" imperative on *every* tool step is exactly what could let a
+  small model read it as a fresh instruction to answer and loop on it (read check → "verify" with a
+  tool → check re-injected → …). The standing `MINDSET` prefix still grounds those in-between steps;
+  only the sharp per-turn pass is gated. So across turns the model gets one nudge per request, never
+  a self-sustaining review loop.
+- **Trivial-turn skip** — the check is also skipped when the thinking level is `off`/`minimal`
   (greetings, "continue" — routed there by `thinking-router`): no reasoning to steer. The prefix
   stays unconditional so it remains cache-stable. Degrades gracefully if no level is reported.
 - **Pure transform.** The `context` edit is per-request and does not mutate the stored
@@ -78,8 +84,9 @@ design there is no backstop.**
 node --experimental-strip-types grounding/test.mjs
 ```
 
-35 assertions: the scientific-method content of `MINDSET` and `CHECK`, the `ANCHOR` framing, the
+45 assertions: the scientific-method content of `MINDSET` and `CHECK`, the `ANCHOR` framing, the
 byte-stable unconditional prefix injection, the fold-into-the-user-turn behaviour (no new message,
 real request stays first, wrapped marker, original not mutated, byte-identical across turns), the
-no-user-turn fallback, the trivial-turn skip, and order-independent composition with other
+empty-history fallback, the trivial-turn skip, the **turn-start throttle** (`isTurnStart` /
+skips mid tool-loop / fires on a genuine user turn), and order-independent composition with other
 tail-injectors.

@@ -87,6 +87,33 @@ export function foldReminder(messages: Msg[], text: string): Msg[] {
   return out;
 }
 
+// True if a user message carries any GENUINE (non-reminder) content — real text, or any non-text
+// block (e.g. an image). A message whose only content is wrapped <reminder> blocks is something an
+// injector appended, not the user speaking.
+function hasGenuineUserContent(m: Msg): boolean {
+  if (typeof m.content === "string") return true;
+  if (!Array.isArray(m.content)) return false;
+  return (m.content as Array<{ type?: string; text?: string }>).some(
+    (b) => b?.type !== "text" || !String(b?.text ?? "").startsWith(REMINDER_OPEN),
+  );
+}
+
+// True only at the START of an agent turn: the conversation tail — ignoring any reminder-only user
+// turns other injectors appended mid-loop — is the user's own genuine message. Mid tool-loop the
+// tail is a toolResult/assistant, so this is false. That gates CHECK to fire once per user request,
+// not on every tool step: re-stamping the act-now "prove it" imperative each step is what could let
+// the model read it as a fresh instruction and treadmill on it. The standing MINDSET prefix still
+// grounds the in-between steps. Empty / all-reminder history → treat as a fresh turn.
+export function isTurnStart(messages: Msg[]): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== "user") return false; // tail real content is assistant/toolResult → mid tool-loop
+    if (hasGenuineUserContent(m)) return true; // the user's own turn → turn start
+    // else: a reminder-only user turn an injector appended — keep scanning back past it
+  }
+  return true;
+}
+
 export default function (pi: ExtensionAPI) {
   // Beginning (rule R1): append the mindset + anchor to the byte-stable system prefix. Always on,
   // so it stays cache-stable; chains with operating-manual / semantic-memory prefixes.
@@ -96,12 +123,16 @@ export default function (pi: ExtensionAPI) {
 
   // End (rule R1): fold the prove-it check INTO the conversation tail as a wrapped <reminder>
   // block, instead of appending a bare user message that reads as a new instruction. The user's
-  // real text stays first; the check rides underneath. Skip on trivial turns.
+  // real text stays first; the check rides underneath. Skip on trivial turns, and skip mid
+  // tool-loop (only fire at the start of an agent turn) so the check can't re-stamp every tool
+  // step and treadmill — the standing MINDSET prefix grounds those in-between steps.
   pi.on("context", async (event) => {
     try {
       const level = pi.getThinkingLevel?.();
       if (level && SKIP_LEVELS.has(level)) return; // trivial turn → no reasoning to steer
     } catch {}
-    return { messages: foldReminder(event.messages as Msg[], CHECK) };
+    const messages = event.messages as Msg[];
+    if (!isTurnStart(messages)) return; // mid tool-loop → don't re-fire the act-now check
+    return { messages: foldReminder(messages, CHECK) };
   });
 }

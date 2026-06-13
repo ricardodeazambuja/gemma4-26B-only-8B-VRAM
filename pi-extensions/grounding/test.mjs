@@ -2,7 +2,7 @@
 // folded into the latest user turn as a wrapped <reminder> block (not a bare user message), with
 // the trivial-turn skip and the no-user-turn fallback. No live model needed.
 // Run: node --experimental-strip-types grounding/test.mjs
-import factory, { ANCHOR, CHECK, MINDSET, wrapReminder } from "./index.ts";
+import factory, { ANCHOR, CHECK, MINDSET, wrapReminder, isTurnStart } from "./index.ts";
 
 let pass = 0, fail = 0;
 const ok = (name, cond) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ ${name}`); } };
@@ -76,11 +76,10 @@ const run = async () => {
     ok("the folded block is byte-identical across turns", lastBlockText(res2.messages[2]) === lastBlockText(res.messages[2]));
   }
 
-  console.log("fallback — no user turn to fold into:");
+  console.log("empty history — appends a standalone wrapped reminder:");
   {
-    const onlyAssistant = [{ role: "assistant", content: [{ type: "text", text: "ok" }] }];
-    const res = await makeHarness("medium").hooks.context({ messages: onlyAssistant });
-    ok("appends a standalone wrapped reminder", res.messages.length === 2 && res.messages[1].role === "user" && lastBlockText(res.messages[1]) === wrapReminder(CHECK));
+    const res = await makeHarness("medium").hooks.context({ messages: [] });
+    ok("empty history is a fresh turn → standalone wrapped reminder", res && res.messages.length === 1 && res.messages[0].role === "user" && lastBlockText(res.messages[0]) === wrapReminder(CHECK));
   }
 
   console.log("trivial-turn skip:");
@@ -90,6 +89,33 @@ const run = async () => {
     }
     ok("folds the check at a real thinking level", (await makeHarness("high").hooks.context({ messages: base() })) !== undefined);
     ok("folds the check when thinking level is unavailable", (await makeHarness("NONE").hooks.context({ messages: base() })) !== undefined);
+  }
+
+  console.log("tool-loop throttle — CHECK only at the start of a turn:");
+  {
+    const h = makeHarness("medium");
+    const loop = () => [
+      { role: "user", content: [{ type: "text", text: "THE REAL REQUEST" }] },
+      { role: "assistant", content: [{ type: "text", text: "calling a tool" }] },
+      { role: "toolResult", content: [{ type: "text", text: "tool output" }] },
+    ];
+    ok("skips the check mid tool-loop (tail is a toolResult)", (await h.hooks.context({ messages: loop() })) === undefined);
+    const loopThenReminder = [...loop(), { role: "user", content: [{ type: "text", text: wrapReminder("## Active plan") }] }];
+    ok("skips when only reminder-only user turns sit after the toolResult", (await h.hooks.context({ messages: loopThenReminder })) === undefined);
+    ok("fires at the start of a turn (tail is the user's genuine message)", (await h.hooks.context({ messages: base() })) !== undefined);
+  }
+
+  console.log("isTurnStart (pure):");
+  {
+    const userTurn = (t) => ({ role: "user", content: [{ type: "text", text: t }] });
+    const tool = { role: "toolResult", content: [{ type: "text", text: "o" }] };
+    ok("true when the tail is a genuine user turn", isTurnStart(base()));
+    ok("false when the tail is a toolResult (mid loop)", !isTurnStart([userTurn("q"), tool]));
+    ok("false when the tail is an assistant turn", !isTurnStart([userTurn("q"), { role: "assistant", content: [{ type: "text", text: "a" }] }]));
+    ok("skips past reminder-only user turns to the real tail", !isTurnStart([userTurn("q"), tool, { role: "user", content: [{ type: "text", text: wrapReminder("CHECK") }] }]));
+    ok("a folded real turn (real text + reminder) is still a turn start", isTurnStart([{ role: "user", content: [{ type: "text", text: "real" }, { type: "text", text: wrapReminder("CHECK") }] }]));
+    ok("an image-only user turn counts as genuine", isTurnStart([{ role: "user", content: [{ type: "image", image: "…" }] }]));
+    ok("empty history → treated as a fresh turn", isTurnStart([]));
   }
 
   console.log("integration (threaded context pipeline — order-independence):");
