@@ -10,12 +10,17 @@ and waits for your steer.
 
 ## How it works
 
-Two hooks, a one-flag state machine, no tools:
+A one-flag state machine, no tools. Detection rides **two** events for robustness, and injection
+rides a third:
 
-- **Detect** (`message_end`): every finalized message is inspected; an **assistant** message
-  whose `stopReason` is **`"aborted"`** latches a pending flag. (`StopReason` is defined in
+- **Detect** (`message_end`, primary): every finalized message is inspected; an **assistant**
+  message whose `stopReason` is **`"aborted"`** latches a pending flag. (`StopReason` is defined in
   `@earendil-works/pi-ai` as `stop | length | toolUse | error | aborted`; the user-abort path
   — `session.abort()` — is what produces `"aborted"`.)
+- **Detect** (`agent_end`, backstop): when the run ends, the most recent assistant message in the
+  handed-back conversation is checked the same way. This catches the abort even if a given pi build
+  does not emit `message_end` for the aborted partial. The pending flag is idempotent, so both
+  events firing on one abort still arms it exactly once.
 - **Inject** (`context`): on the next LLM call, if the flag is set, append the notice at the
   **tail** of the message list and clear the flag.
 
@@ -34,11 +39,24 @@ fires exactly once per interrupt (the flag clears on inject), so a normal turn n
 
 ## Verify it on your build
 
-This keys on `message_end` firing with `stopReason: "aborted"` on the user-abort path, which was
-read from pi's type surface (v0.79.1), **not** observed live. Confirm before relying on it:
-interrupt a real session with Esc and check the note appears on the next turn — or run the test,
-which simulates the abort with no live model. If a future pi stops firing `message_end` on
-abort, switch the detect hook to `agent_end` or `turn_end` (both also carry the messages).
+This keys on `stopReason: "aborted"` reaching `message_end` and/or `agent_end` on the user-abort
+path. That was read from pi's type surface (v0.79.1), **not** observed live — and the test, which
+drives the handlers with event shapes *it* constructs, proves the extension's logic but **not**
+that your pi build actually fires those events on a real abort. So confirm it live: interrupt a
+real session with **Esc** and check the note appears on the next turn.
+
+To see exactly what fired, turn on debug logging:
+
+```bash
+PI_INTERRUPT_DEBUG=1 pi                       # logs to $TMPDIR/interrupt-notice-debug.log
+PI_INTERRUPT_DEBUG=/tmp/intnotice.log pi      # or a path you choose (must contain a "/")
+```
+
+It appends one line when an abort arms the flag (`armed via message_end` or `armed via agent_end`,
+so you learn which event your build emits) and one when the notice is injected. Logging goes to a
+file, never the console, so it can't corrupt pi's TUI. Unset or `=0`/`=false` disables it. If a
+future pi stops firing **both** events on abort, the debug log will show nothing armed — the place
+to look is `turn_end` (it also carries the messages).
 
 ## Alternative: implement it directly in pi's source
 
@@ -69,6 +87,8 @@ core patch only if the event-API approach proves insufficient.
 node --experimental-strip-types interrupt-notice/test.mjs
 ```
 
-Covers the tracker (only an aborted assistant turn arms it; fires once), the notice text, and
-the real `message_end`/`context` handlers (note appended at the tail, original messages
-preserved, self-limiting, normal turns untouched) — no tmux, no live model.
+Covers the tracker (only an aborted assistant turn arms it; `observe` returns whether it armed;
+fires once), the notice text, and the real `message_end`/`agent_end`/`context` handlers (note
+appended at the tail, original messages preserved, self-limiting, both detect events arm exactly
+once together, normal turns untouched). A child-process case sets `PI_INTERRUPT_DEBUG` and checks
+the log is written. No tmux, no live model — see the caveat in **Verify it on your build**.

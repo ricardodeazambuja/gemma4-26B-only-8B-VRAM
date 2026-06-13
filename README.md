@@ -104,10 +104,10 @@ A 4-bit 26B-A4B MoE on a ~120K window is a capable but **fallible** coding agent
 edits, repeats failing tool calls, re-reads whole files to find one line, forgets everything across
 sessions. Cloud harnesses paper over this with a bigger model; here the local model is the *only*
 intelligence at runtime, so [`pi-extensions/`](pi-extensions/) covers each weakness with
-**deterministic code**: 16 extensions for verified edits, code outlines, loop-breaking, task plans,
+**deterministic code**: 17 extensions for verified edits, code outlines, loop-breaking, task plans,
 cross-session memory, web search + page fetch, autonomous goals, think-time grounding, interrupt
-notices, an external advisor, and more — all built to keep the KV-cache prefix byte-stable so the
-harness stays cheap on a laptop.
+and compaction notices, an external advisor, and more — all built to keep the KV-cache prefix
+byte-stable so the harness stays cheap on a laptop.
 
 ```bash
 cd pi-extensions && ./setup.sh    # npm install → symlink into ~/.pi/agent/extensions → (optional) embeddings
