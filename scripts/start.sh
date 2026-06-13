@@ -676,9 +676,12 @@ else
       # ANSI escapes and control chars but keep newlines/tabs, so nothing scrambles scrollback.
       _total=$(wc -l < "$SERVER_LOG" 2>/dev/null || echo 0)
       if [ "$_total" -gt "$_seen" ]; then
+        # if/then/fi (not `&& printf`): a trailing blank/control-only line would make the
+        # loop body's last status non-zero, and under `set -o pipefail` that fails the whole
+        # pipeline → `set -e` would kill start.sh here, before pi launches. `if` always exits 0.
         sed -n "$((_seen + 1)),${_total}p" "$SERVER_LOG" 2>/dev/null \
           | sed -E 's/\x1b\[[0-9;?=]*[A-Za-z]//g' | tr -d '\000-\010\013-\037\177' \
-          | while IFS= read -r _line; do [ -n "$_line" ] && printf '     %s\n' "$_line"; done
+          | while IFS= read -r _line; do if [ -n "$_line" ]; then printf '     %s\n' "$_line"; fi; done
         _seen=$_total; _last_out=$SECONDS
       elif [ "$((SECONDS - _last_out))" -ge 15 ]; then
         printf '     … still loading (%ds elapsed)\n' "$((SECONDS - _t0))"
