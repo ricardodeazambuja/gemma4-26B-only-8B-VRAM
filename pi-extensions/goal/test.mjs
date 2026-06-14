@@ -6,7 +6,7 @@ import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import factory, {
   freshGoal, isAutonomous, memoryDir, clip, readPlanRemaining,
-  renderGoal, buildContinue, buildSnapshot,
+  renderGoal, buildContinue, buildSnapshot, lastAssistantStopReason,
 } from "./index.ts";
 
 let pass = 0, fail = 0;
@@ -39,6 +39,10 @@ ok("active (self-judged) render shows the loop cycle too", renderGoal({ ...fresh
 ok("render shows a user-set completion check", renderGoal({ ...freshGoal(), objective: "x", check: "re-render and look at it" }).includes("re-render and look at it"));
 ok("render falls back to the default (verify, don't assume) check", /verify/i.test(renderGoal({ ...freshGoal(), objective: "x" })));
 ok("buildContinue restates objective + goal_done + the check", buildContinue(auto).includes("all tests green") && buildContinue(auto).includes("goal_done") && /verify/i.test(buildContinue(auto)));
+ok("buildContinue surfaces a goal_done rejection reason when given one", buildContinue(auto, null, "plan steps not done: write code").includes("rejected") && buildContinue(auto, null, "plan steps not done: write code").includes("write code"));
+ok("buildContinue omits the rejection line when there is none", !buildContinue(auto).includes("rejected"));
+ok("lastAssistantStopReason finds the latest assistant stopReason", lastAssistantStopReason([{ role: "assistant", stopReason: "stop" }, { role: "user" }, { role: "assistant", stopReason: "aborted" }]) === "aborted");
+ok("lastAssistantStopReason is undefined for empty/non-array", lastAssistantStopReason([]) === undefined && lastAssistantStopReason(null) === undefined);
 const snap = buildSnapshot({ ...auto, status: "blocked", blockedReason: "budget" });
 ok("snapshot has the R6 template keys", ["Objective:", "Status:", "Cycles:", "Done-when:", "Last check:"].every((k) => snap.includes(k)));
 ok("snapshot has no criteria line", !/criteria/i.test(snap));
@@ -186,6 +190,70 @@ const run = async () => {
     await h.commands.goal.handler("clear", {});
     await h.hooks.agent_end({});
     ok("a cleared goal does not re-engage", h.sent.length === 0);
+    cleanup(h);
+  }
+
+  console.log("Esc/abort stops the loop:");
+  {
+    // primary detect: message_end latches the aborted assistant turn → next agent_end yields
+    let h = makeHarness(); await h.hooks.session_start({}, h.ctx);
+    ok("registers a message_end hook", !!h.hooks.message_end);
+    await h.tools.goal_set.execute("t", { objective: "go" });
+    await h.hooks.message_end({ message: { role: "assistant", stopReason: "aborted" } });
+    await h.hooks.agent_end({});
+    ok("an aborted turn does NOT re-engage (Esc stops it)", h.sent.length === 0);
+    // one-shot: the latch clears, so a later clean turn still drives the loop (abort doesn't brick it)
+    await h.hooks.agent_end({});
+    ok("abort is one-shot — a later clean turn still pushes", h.sent.length === 1);
+    cleanup(h);
+
+    // backstop detect: agent_end's own messages carry the aborted assistant (no message_end emitted)
+    h = makeHarness(); await h.hooks.session_start({}, h.ctx);
+    await h.tools.goal_set.execute("t", { objective: "go" });
+    await h.hooks.agent_end({ messages: [{ role: "user", content: "go" }, { role: "assistant", stopReason: "aborted" }] });
+    ok("abort detected from agent_end messages too (backstop)", h.sent.length === 0);
+    cleanup(h);
+
+    // a normal (non-aborted) finish still re-engages — the gate is abort-specific
+    h = makeHarness(); await h.hooks.session_start({}, h.ctx);
+    await h.tools.goal_set.execute("t", { objective: "go" });
+    await h.hooks.message_end({ message: { role: "assistant", stopReason: "stop" } });
+    await h.hooks.agent_end({ messages: [{ role: "assistant", stopReason: "stop" }] });
+    ok("a normal finish still re-engages", h.sent.length === 1);
+    cleanup(h);
+
+    // STALENESS: abort latches regardless of goal status (message_end has no guard) and agent_end
+    // only clears it past the active-status guard — so arming a NEW goal must clear it, or the new
+    // goal's first turn gets swallowed and the loop looks dead.
+    h = makeHarness(); await h.hooks.session_start({}, h.ctx);
+    await h.hooks.message_end({ message: { role: "assistant", stopReason: "aborted" } }); // latched while no goal
+    await h.tools.goal_set.execute("t", { objective: "fresh" });
+    await h.hooks.agent_end({});
+    ok("goal_set clears a stale abort latch (new goal's first turn fires)", h.sent.length === 1);
+    cleanup(h);
+
+    h = makeHarness(); await h.hooks.session_start({}, h.ctx);
+    await h.hooks.message_end({ message: { role: "assistant", stopReason: "aborted" } });
+    const before = h.sent.length;
+    await h.commands.goal.handler("do the thing", {}); // +1 kickoff
+    await h.hooks.agent_end({});                        // +1 re-engage iff the stale latch was cleared
+    ok("/goal kickoff clears a stale abort latch", h.sent.length === before + 2);
+    cleanup(h);
+  }
+
+  console.log("a rejected goal_done feeds the next re-engagement (gradient):");
+  {
+    // self-judged goal, plan step left unchecked → goal_done is gated; the reason rides the next push
+    const h = makeHarness(); await h.hooks.session_start({}, h.ctx);
+    await h.tools.goal_set.execute("t", { objective: "ship" });
+    writePlan(h.dir, [{ text: "write code", done: false }]);
+    const r = await h.tools.goal_done.execute("t", {});
+    ok("goal_done gated on the unfinished plan step", r.isError && r.content[0].text.includes("write code"));
+    await h.hooks.agent_end({});
+    ok("the re-engagement names why goal_done was rejected", h.sent.length === 1 && h.sent[0].content.includes("rejected") && h.sent[0].content.includes("write code"));
+    // and it's one-shot: a second push (still gated state, but no new goal_done) doesn't repeat it
+    await h.hooks.agent_end({});
+    ok("the rejection reason is surfaced once, then cleared", h.sent.length === 2 && !h.sent[1].content.includes("rejected"));
     cleanup(h);
   }
 

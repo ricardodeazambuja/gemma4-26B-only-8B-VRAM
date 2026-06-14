@@ -29,18 +29,27 @@ kickoff drives a turn with the full task text via `sendUserMessage`, the lever `
 
 `/goal <task>` starts the work **and keeps it going across turns until the goal is reached** — the
 thing you actually wanted. After each turn an `agent_end` hook re-engages Gemma (restating the
-objective + the completion check), and it stops only when:
+objective + the completion check, and *why* the last `goal_done` was rejected if it was), and it
+stops only when:
 
-- Gemma **applies the check, sees it pass, and calls `goal_done`** (self-judged — no external
-  reviewer; Gemma checks its own work, and for visual goals it can re-render and *look*); or
+- Gemma **applies the check, sees it pass, and calls the `goal_done` tool** (self-judged — no
+  external reviewer; Gemma checks its own work, and for visual goals it can re-render and *look*); or
 - the **cycle cap** is hit → **blocked** (durable, never a silent runaway); or
-- **you type** — see below.
+- **you press `Esc`, or you type** — see below.
 
-**No hijack — it yields the instant you interject.** The loop's own re-engagements go through
+**No hijack — it yields the instant you take over.** The loop's own re-engagements go through
 `sendUserMessage`, which pi tags with input `source: "extension"`; *your* typing is `source:
-"interactive"`. The `input` hook watches for `"interactive"` and, on that turn's `agent_end`, the
-loop **does not re-engage** — you've taken over. So it runs autonomously yet steps aside the moment
-you say something. (To stop it entirely: `/goal clear`, or `Esc`.)
+"interactive"`. Two things make it step aside, both checked on that turn's `agent_end`:
+
+- **You type.** The `input` hook flags `source === "interactive"`, so the turn you started never
+  re-engages.
+- **You press `Esc`.** pi finalizes the aborted turn with `stopReason: "aborted"`; a `message_end`
+  latch (with an `agent_end` message-scan backstop, the same signal [`interrupt-notice`](../interrupt-notice/)
+  uses) makes the loop yield instead of re-engaging. *This is load-bearing:* without it the loop
+  re-engaged straight through repeated `Esc` presses and the only escape was killing pi.
+
+So it runs autonomously yet steps aside the moment you say *or* signal anything. (To end it for
+good rather than just pause: `/goal clear`.)
 
 ### Two stop signals
 
@@ -69,9 +78,14 @@ ticked, defers the *finish* to `goal_done` rather than declaring completion itse
   [`grounding`](../grounding/)'s `ANCHOR`); the steps are `plan`'s injection, not duplicated here.
   Once done/blocked, both fall silent.
 - **The loop driver.** An `agent_end` hook is the push: it re-engages any *active* goal via
-  `sendUserMessage(deliverAs:"followUp")`. Re-entrancy-guarded (once per `agent_end`) and gated on
-  `!userInterjected` — an `input` hook sets that flag when input `source === "interactive"` (you
-  typed), so a turn you started never re-engages.
+  `sendUserMessage(deliverAs:"followUp")`. Re-entrancy-guarded (once per `agent_end`) and it yields
+  on two signals — an `input` hook flags input `source === "interactive"` (you typed), and a
+  `message_end`/`agent_end` latch flags `stopReason === "aborted"` (you pressed `Esc`) — so a turn
+  you started or stopped never re-engages.
+- **Gradient on rejection.** When `goal_done` is refused (failing `done_when`, or unfinished plan
+  steps), the reason is captured and folded into the *next* re-engagement ("Your last goal_done was
+  rejected — …"), so the loop hands back something to act on instead of a bare "not yet" — and the
+  re-engagement tells Gemma to **call the `goal_done` tool**, not narrate completion in prose.
 - **R3 — output caps.** `done_when` output is clipped (~50 lines / 2 KB, keeping the tail) in any
   injection; the full output is saved to `~/.pi/memory/<project>/goal-last-check.log`.
 - **R6 — templates.** `goal_set` takes structured fields; the durable
@@ -93,10 +107,13 @@ ticked, defers the *finish* to `goal_done` rather than declaring completion itse
 node --experimental-strip-types goal/test.mjs
 ```
 
-47 assertions: helpers (clip/render/snapshot incl. the completion `check`), `readPlanRemaining`
-(the plan↔goal seam), the tools with validation, the `goal_done` pull gate (`done_when` **and**
-plan-steps-complete), the **self-judged loop** (`agent_end` re-engages without `done_when`,
-budget → blocked, auto-done on a passing `done_when`), the **yield-to-human** path (`input`
-`source:"interactive"` suppresses the next re-engagement; `"extension"` does not), R1 prefix/tail
-injection, persistence reload, and `/goal`. No tmux, no live model — `exec`/`sendUserMessage` are
-stubbed and `plan-<id>.json` is simulated.
+63 assertions: helpers (clip/render/snapshot incl. the completion `check`, the rejection-gradient in
+`buildContinue`, `lastAssistantStopReason`), `readPlanRemaining` (the plan↔goal seam), the tools with
+validation, the `goal_done` pull gate (`done_when` **and** plan-steps-complete), the **self-judged
+loop** (`agent_end` re-engages without `done_when`, budget → blocked, auto-done on a passing
+`done_when`), the **yield-to-human** path (`input` `source:"interactive"` suppresses the next
+re-engagement; `"extension"` does not), the **Esc/abort stop** (`message_end` latch *and* `agent_end`
+message-scan backstop both yield; a normal finish still re-engages; one-shot), the **rejection
+gradient** (a refused `goal_done` names its reason in the next push, once), R1 prefix/tail injection,
+persistence reload, and `/goal`. No tmux, no live model — `exec`/`sendUserMessage` are stubbed and
+`plan-<id>.json` is simulated.

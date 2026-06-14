@@ -99,8 +99,8 @@ export function renderGoal(s: GoalState, last?: LastCheck | null): string {
     lines.push(`Last check: \`${last.cmd}\` exited ${last.code}` + (last.code === 0 ? "" : `:\n${clip(last.output)}`));
   }
   if (s.status === "active") {
-    lines.push(`Done when: ${checkText(s)}`);
-    lines.push(`Then call goal_done${isAutonomous(s) ? " (it also runs done_when)" : ""} — only after you have actually checked, not assumed.`);
+    lines.push(`Completion check: ${checkText(s)}`);
+    lines.push(`When it passes, call the goal_done tool${isAutonomous(s) ? " (it also runs done_when)" : ""} — invoke the tool, don't just say you're done, and never on assumption.`);
   } else {
     lines.push(`Status: ${s.status}${s.blockedReason ? ` — ${s.blockedReason}` : ""}`);
   }
@@ -108,15 +108,31 @@ export function renderGoal(s: GoalState, last?: LastCheck | null): string {
 }
 
 // Push message: the north-star restated at the tail each cycle for drift correction (R6 shape),
-// carrying the completion check so Gemma re-applies it. plan re-injects its own checklist, so lean.
-export function buildContinue(s: GoalState, last?: LastCheck | null): string {
+// carrying the completion check so Gemma re-applies it — and, when the last goal_done was rejected,
+// the reason, so the loop hands back a gradient instead of a bare "not yet". plan re-injects its
+// own checklist, so lean. The check rides on its own line so the text reads cleanly whether it's a
+// noun clause ("the PNG is judged good") or an imperative ("re-render and look").
+export function buildContinue(s: GoalState, last?: LastCheck | null, doneError?: string | null): string {
   const parts = [`Goal not yet met (cycle ${s.cycle}/${s.maxCycles}).`, `Objective: ${s.objective}`];
   if (last && last.code !== 0) parts.push(`Last check: \`${last.cmd}\` exited ${last.code}:\n${clip(last.output)}`);
+  if (doneError) parts.push(`Your last goal_done was rejected — ${doneError}`);
   parts.push(
-    `Keep working toward the goal. Before you finish you must ${checkText(s)} ` +
-      `Call goal_done only once that check actually passes — do not claim done on assumption.`,
+    `Keep working toward the goal. Completion check (must pass before you finish):\n${checkText(s)}\n` +
+      `When that check actually passes, call the goal_done tool to finish — invoke the tool, don't just say you're done, and never claim done on assumption.`,
   );
   return parts.join("\n");
+}
+
+// Detect an aborted turn (the user hit Esc). pi finalizes the partial assistant message with
+// stopReason "aborted"; the most recent assistant message in the run carries it. Shared signal with
+// interrupt-notice (which latches the same thing) — here it tells the loop to YIELD, so Esc stops it.
+export function lastAssistantStopReason(messages: unknown): string | undefined {
+  const arr = Array.isArray(messages) ? messages : [];
+  for (let i = arr.length - 1; i >= 0; i--) {
+    const m = arr[i] as { role?: string; stopReason?: string };
+    if (m?.role === "assistant") return m.stopReason;
+  }
+  return undefined;
 }
 
 // Durable terminal/cycle snapshot (R6 template). One current-state file per project,
@@ -173,8 +189,10 @@ export default function (pi: ExtensionAPI) {
   let memDir: string | null = null;
   let cwd = process.cwd();
   let lastCheck: LastCheck | null = null;
+  let lastDoneError: string | null = null; // why the last goal_done was rejected → fed back into the next push
   let inAgentEnd = false; // re-entrancy guard: process each agent_end at most once
   let userInterjected = false; // set when the user TYPES (input source "interactive") → loop yields
+  let abortPending = false; // latched when the user ABORTS a turn (Esc) → loop yields, doesn't re-engage
 
   const persist = () => {
     if (goalFile) { try { writeFileSync(goalFile, JSON.stringify(state)); } catch {} }
@@ -249,12 +267,17 @@ export default function (pi: ExtensionAPI) {
       maxCycles = Math.max(1, Math.min(MAX_MAX_CYCLES, maxCycles));
       state = { objective, doneWhen, check, maxCycles, cycle: 0, status: "active" };
       lastCheck = null;
-      userInterjected = false; // setting a goal ARMS the loop — even from a turn you typed (it's pursuit, not a redirect away)
+      lastDoneError = null;
+      // ARM the loop — clear both yield latches so a stale interjection/abort from an earlier
+      // (inactive) turn can't swallow this goal's first re-engagement. (message_end latches abort
+      // regardless of goal status, and agent_end only clears it past the active-status guard.)
+      userInterjected = false;
+      abortPending = false;
       persist();
       snapshot();
       const mode = isAutonomous(state)
         ? `Autonomous: after each turn I run \`${doneWhen}\`; while it fails I re-engage you (up to ${maxCycles} cycles), and stop when it passes.`
-        : `Self-judged: I re-engage you each turn (up to ${maxCycles} cycles) until you ${checkText(state)} then call goal_done. (Stops the moment you type, or on /goal clear.)`;
+        : `Self-judged: I re-engage you each turn (up to ${maxCycles} cycles) until the completion check passes and you call goal_done. (Stops on Esc, the moment you type, or on /goal clear.)`;
       return okResult(`Goal set.\n${renderGoal(state)}\n\n${mode}`);
     },
   });
@@ -287,11 +310,13 @@ export default function (pi: ExtensionAPI) {
         }
       }
       const remaining = readPlanRemaining(sessionDir, sessionId);
-      if (remaining.length) unmet.push(`plan steps not done: ${remaining.join("; ")} (use plan_check, or revise the plan)`);
+      if (remaining.length) unmet.push(`plan steps not done: ${remaining.join("; ")} (mark each with plan_check, or revise the plan)`);
       if (unmet.length) {
+        lastDoneError = unmet.join("; "); // fed into the next re-engagement so the loop gives a reason, not a bare "not yet"
         return errResult(`Not done yet — fix these, then call goal_done again:\n- ${unmet.join("\n- ")}`);
       }
       state.status = "done";
+      lastDoneError = null;
       persist();
       snapshot();
       return okResult(`Goal complete: ${state.objective}`);
@@ -305,7 +330,7 @@ export default function (pi: ExtensionAPI) {
       const notify = (msg: string) => { try { (ctx as any)?.ui?.notify?.(msg); } catch {} };
       const a = (args ?? "").trim();
       if (a === "clear") {
-        state = freshGoal(); lastCheck = null; persist(); snapshot();
+        state = freshGoal(); lastCheck = null; lastDoneError = null; persist(); snapshot();
         notify("Goal cleared.");
         return;
       }
@@ -315,9 +340,10 @@ export default function (pi: ExtensionAPI) {
       // re-engages each turn (self-judged loop) until Gemma checks the goal reached and calls
       // goal_done, or the cycle cap. It yields the instant you type (input source "interactive").
       state = { ...freshGoal(), objective: a.slice(0, MAX_OBJECTIVE_LEN) };
-      userInterjected = false; // arm the loop (clear any stale interjection flag from a prior turn)
+      lastDoneError = null;
+      userInterjected = false; abortPending = false; // arm the loop (clear stale interjection/abort latches)
       persist(); snapshot();
-      notify(`Goal set — working until reached (type to take over, /goal clear to stop): ${state.objective}`);
+      notify(`Goal set — working until reached (Esc or type to take over, /goal clear to stop): ${state.objective}`);
       pi.sendUserMessage(a, { deliverAs: "followUp" });
     },
   });
@@ -326,7 +352,7 @@ export default function (pi: ExtensionAPI) {
   // a fixed instruction), so it is the always-present anchor and is paid once.
   pi.on("before_agent_start", async (event) => {
     if (!state.objective || state.status !== "active") return;
-    const block = `## Goal (north-star)\n${state.objective}\nKeep working until reached. To finish you must first ${checkText(state)} Then call goal_done — only after that check actually passes, never on assumption.`;
+    const block = `## Goal (north-star)\n${state.objective}\nKeep working until reached. Completion check (must pass before you finish):\n${checkText(state)}\nWhen it passes, call the goal_done tool to finish — invoke the tool, never claim done on assumption.`;
     return { systemPrompt: `${event.systemPrompt}\n\n${block}` };
   });
 
@@ -346,14 +372,27 @@ export default function (pi: ExtensionAPI) {
     return { action: "continue" as const };
   });
 
+  // Stop on Esc/abort (primary detect): pi finalizes the aborted assistant turn with stopReason
+  // "aborted". Latch it here so the loop yields on the next agent_end. Without this, the loop
+  // re-engaged straight through repeated Esc presses — the user could only escape by killing pi.
+  pi.on("message_end", async (event) => {
+    const m = (event as { message?: { role?: string; stopReason?: string } }).message;
+    if (m?.role === "assistant" && m?.stopReason === "aborted") abortPending = true;
+  });
+
   // The loop driver (push) — CROSS-TURN re-engagement, for ANY active goal. The stop signal differs:
   // autonomous goals stop when done_when passes; self-judged goals stop when Gemma calls goal_done
   // after applying the completion check. Either way it re-engages until stop or the cycle cap. It is
-  // gated on !userInterjected so a turn YOU started never triggers a re-engagement (no hijack), and
-  // re-entrancy-guarded so each agent_end is processed once.
-  pi.on("agent_end", async () => {
+  // gated so a turn YOU started or aborted never re-engages (no hijack, and Esc actually stops it),
+  // and re-entrancy-guarded so each agent_end is processed once.
+  pi.on("agent_end", async (event) => {
     if (state.status !== "active" || !state.objective || inAgentEnd) return; // no/cleared goal → nothing to drive
-    if (userInterjected) { userInterjected = false; return; } // you drove this turn → yield, don't push
+    // Esc/abort during a goal turn is a STOP signal — yield like a human interjection so the loop
+    // does not re-engage. Detect via the latch (message_end) OR a backstop scan of this run's
+    // messages, so it fires regardless of which event a given pi build emits on abort.
+    const aborted = abortPending || lastAssistantStopReason((event as { messages?: unknown }).messages) === "aborted";
+    abortPending = false;
+    if (aborted || userInterjected) { userInterjected = false; return; } // you drove/stopped this turn → yield
     inAgentEnd = true;
     try {
       // Autonomous: done_when is the authoritative machine stop — done even if Gemma forgot goal_done.
@@ -365,7 +404,8 @@ export default function (pi: ExtensionAPI) {
       // re-engage for another cycle, restating the objective + completion check for drift correction.
       if (state.cycle < state.maxCycles) {
         state.cycle++; persist(); snapshot();
-        pi.sendUserMessage(buildContinue(state, lastCheck), { deliverAs: "followUp" });
+        const doneErr = lastDoneError; lastDoneError = null; // surface a rejected goal_done once, then clear
+        pi.sendUserMessage(buildContinue(state, lastCheck, doneErr), { deliverAs: "followUp" });
       } else {
         // BLOCKED is durable, not silent — stop cleanly, never a silent runaway.
         state.status = "blocked";
