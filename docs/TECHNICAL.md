@@ -1027,13 +1027,28 @@ The full mapping:
 | Unmeasured cost | `stats` | llama.cpp timings → per-session token/energy accounting |
 | Over-thinking | `thinking-router` | Per-turn thinking budget routed by input difficulty |
 | Hand-waving from memory | `grounding` | Engineering mindset in the prefix + a prove-it check at the tail: derive / simulate / reference, never trust recollection |
-| No autonomous termination | `goal` | Machine-checkable north-star drives the loop until `done_when` passes; bounded cycles; verifies plan's steps, no checklist of its own |
+| No autonomous termination | `goal` | Machine-checkable north-star drives the loop until `done_when` passes; the nudge **anneals** across cycles (explore → consolidate → commit → decide) so the budget ends on a forced decision, not a hard cut; bounded cycles; verifies plan's steps, no checklist of its own |
 | Capability ceiling | `advisor` | Escalate to a stronger external agent (below) |
 
 `plan` and `goal` split cleanly so they don't duplicate: `plan` owns the *steps* (the
 checklist), `goal` owns the *objective* + `done_when` (the finish), and `goal_done` reads
 `plan`'s persisted state to confirm the steps are complete before accepting — one checklist,
 one done-decision.
+
+**Annealed termination — land the answer, don't yank it.** A flat loop coaches cycle 1 and cycle
+19 identically and then cuts the work off at the budget. `goal` instead *anneals* the nudge over
+its own `cycle / max_cycles` counter — generous and exploratory early, increasingly directive late —
+through four phases (**explore → consolidate → commit → decide**) chosen by *reserved cycle counts*
+(not raw temperature), so the arc stays sane at any budget. The honesty floor never melts: every
+phase keeps "verified, or explicitly marked *unverified*"; only the emphasis and effort-triage cool.
+The terminal *ramps* rather than guillotines — the final cycle is an explicit "you cannot iterate
+further, decide now," and the model's own exit is `goal_conclude`, which lands the work as a new
+**`concluded`** status (`partial` or `abandoned`, with a one-line reason) — distinct from `blocked`
+(ran out of road) and `done` (verified). So an unattended run ends on a *stated decision*, not a
+silent cut. (An optional second channel cools the *sampling temperature* on the same cosine schedule,
+`PI_GOAL_TEMP_ANNEAL=1`; off by default. Full rationale:
+[`goal-annealing-prd.md`](goal-annealing-prd.md) and the
+[extension README](../pi-extensions/goal/README.md).)
 
 Two extensions round out the harness without covering a model *weakness*, so they sit outside
 the table above: **`pipe`** chains slash-commands into one ordered agent directive

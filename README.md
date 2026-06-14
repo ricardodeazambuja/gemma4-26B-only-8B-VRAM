@@ -105,7 +105,7 @@ edits, repeats failing tool calls, re-reads whole files to find one line, forget
 sessions. Cloud harnesses paper over this with a bigger model; here the local model is the *only*
 intelligence at runtime, so [`pi-extensions/`](pi-extensions/) covers each weakness with
 **deterministic code**: 17 extensions for verified edits, code outlines, loop-breaking, task plans,
-cross-session memory, web search + page fetch, autonomous goals, think-time grounding, interrupt
+cross-session memory, web search + page fetch, annealed autonomous goals, think-time grounding, interrupt
 and compaction notices, an external advisor, and more — all built to keep the KV-cache prefix
 byte-stable so the harness stays cheap on a laptop.
 
