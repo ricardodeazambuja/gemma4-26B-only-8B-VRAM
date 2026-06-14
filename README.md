@@ -161,7 +161,7 @@ More symptoms and the deeper caveats are in [TECHNICAL.md §11](docs/TECHNICAL.m
 │   ├── benchmark-config.sh   # probe NCMOE/CTX configs, recommend the fastest that fits (optional)
 │   └── …                     # configure-pi, run-pi, stop-server, run-server-mtp, benchmark-mtp, helpers
 ├── pi-extensions/            # pi extensions tuned for local Gemma (hub README + one README per extension)
-│   ├── README.md             # design rules, the 16 extensions, install
+│   ├── README.md             # design rules, the 17 extensions, install
 │   ├── setup.sh              # one-shot: npm install + link into ~/.pi/agent/extensions
 │   └── <name>/               # one dir per extension: index.ts + test.mjs + README.md
 ├── config/

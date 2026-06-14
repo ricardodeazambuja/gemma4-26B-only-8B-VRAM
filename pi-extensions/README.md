@@ -56,19 +56,19 @@ for the full write-up; test counts are the standalone `test.mjs` assertions.
 | [`loop-breaker`](loop-breaker/) | Nudge after 3 identical failing tool calls | 15 |
 | [`interrupt-notice`](interrupt-notice/) | Tell the model it was interrupted when you stop it mid-turn | 28 |
 | [`compaction-notice`](compaction-notice/) | Tell the model its context was just compacted, so it re-reads instead of trusting stale memory | 26 |
-| [`plan`](plan/) | External task-state checklist, re-injected at the tail | 22 |
-| [`semantic-memory`](semantic-memory/) | Cross-session memory with automatic recall | 34 |
+| [`plan`](plan/) | External task-state checklist, re-injected at the tail | 25 |
+| [`semantic-memory`](semantic-memory/) | Cross-session memory with automatic recall | 39 |
 | [`operating-manual`](operating-manual/) | If-then rules in the system prefix + JIT nudges | 19 |
 | [`stats`](stats/) | Per-session token/energy accounting | 26 |
-| [`goal`](goal/) | Machine-checkable north-star that drives an unattended loop until `done_when` passes | 37 |
-| [`grounding`](grounding/) | Tail-injects a reasoning protocol so Gemma verifies-or-flags at think time | 26 |
+| [`goal`](goal/) | Machine-checkable north-star that drives an unattended loop until `done_when` passes; the nudge anneals to a forced decision | 116 |
+| [`grounding`](grounding/) | Tail-injects a reasoning protocol so Gemma verifies-or-flags at think time | 46 |
 | [`pipe`](pipe/) | Chain slash-commands: `/pipe /goal … /plan …` expands into one ordered directive | 23 |
 | [`toolsets`](toolsets/) | Context economy: gate situational tool groups to shrink the per-request tool tax | 19 |
 | [`thinking-router`](thinking-router/) | Routes the per-turn thinking budget by input difficulty (engine-level energy lever) | 14 |
 | [`advisor`](advisor/) | On-demand review by a stronger external agent that sees the whole session | 45 |
 
-All complete and green via **`./run-tests.sh` — 406 checks** (the per-extension counts above
-sum to 393; the rest are install-flow checks, and `web-search` uses a live test). `goal` is the only
+All complete and green via **`./run-tests.sh` — 519 checks** (the per-extension counts above
+sum to 500; the rest are install-flow checks, and `web-search` uses a live test). `goal` is the only
 one that *drives* the agent (`sendUserMessage` from `agent_end`) — validate that
 re-engagement in a real pi run before relying on unattended loops.
 
