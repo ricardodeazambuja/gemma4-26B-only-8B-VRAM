@@ -4,10 +4,17 @@
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 import factory, {
   freshGoal, isAutonomous, memoryDir, clip, readPlanRemaining,
   renderGoal, buildContinue, buildSnapshot, lastAssistantStopReason,
+  bandGuidance, currentBand, applyTempAnneal,
 } from "./index.ts";
+import {
+  bandFor, reservedCommit, temperature, samplingTemperature, isColdBand,
+  annealConfigFromEnv, annealEnabled, tempAnnealEnabled, DEFAULT_ANNEAL,
+} from "./anneal.ts";
+const SRC = new URL(".", import.meta.url).pathname;
 
 let pass = 0, fail = 0;
 const ok = (name, cond) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ ${name}`); } };
@@ -297,6 +304,145 @@ const run = async () => {
     ok("/goal clear clears it", (await statusText(h1.tools)).includes("No goal set"));
     ok("/goal clear does not drive a turn", h1.sent.length === sentBefore + 1);
     cleanup(h1);
+  }
+
+  // ============================================================ ANNEALING (PRD: docs/goal-annealing-prd.md)
+  console.log("anneal schedule (pure):");
+  {
+    // reserved-tail math + band boundaries for tiny → normal budgets (FR4)
+    ok("reservedCommit ≥1 always", reservedCommit(1) === 1 && reservedCommit(20) === 5);
+    ok("maxCycles=1 → pure decide", bandFor(1, 1) === "decide");
+    ok("maxCycles=2 → explore then decide", bandFor(1, 2) === "explore" && bandFor(2, 2) === "decide");
+    ok("maxCycles=3 → explore, consolidate, decide", bandFor(1, 3) === "explore" && bandFor(2, 3) === "consolidate" && bandFor(3, 3) === "decide");
+    const arc20 = Array.from({ length: 20 }, (_, i) => bandFor(i + 1, 20));
+    ok("maxCycles=20 → explore[1-10] consolidate[11-15] commit[16-19] decide[20]",
+      arc20[0] === "explore" && arc20[9] === "explore" && arc20[10] === "consolidate" &&
+      arc20[14] === "consolidate" && arc20[15] === "commit" && arc20[18] === "commit" && arc20[19] === "decide");
+    ok("last cycle is ALWAYS decide", [1, 2, 3, 7, 50, 200].every((m) => bandFor(m, m) === "decide"));
+    ok("≥1 explore whenever budget > 1", [2, 3, 5, 20, 100].every((m) => Array.from({ length: m }, (_, i) => bandFor(i + 1, m)).includes("explore")));
+    ok("isColdBand only commit/decide", isColdBand("commit") && isColdBand("decide") && !isColdBand("explore") && !isColdBand("consolidate"));
+    // temperature: monotone, normalized endpoints
+    let mono = true; for (let c = 1; c <= 20; c++) if (temperature(c, 20) > temperature(c - 1, 20) + 1e-9) mono = false;
+    ok("temperature monotone non-increasing", mono);
+    ok("temperature endpoints 1 → 0", temperature(0, 20) === 1 && temperature(20, 20) === 0);
+    ok("cosine holds heat early (warmer than linear at p=0.25)", temperature(5, 20) > temperature(5, 20, { ...DEFAULT_ANNEAL, shape: "linear" }) && temperature(5, 20) > 0.8);
+    // sampling temperature maps into [lo,hi], cools with cycle
+    ok("samplingTemperature in [lo,hi], hot→cold", Math.abs(samplingTemperature(0, 20) - 1.0) < 1e-9 && Math.abs(samplingTemperature(20, 20) - 0.3) < 1e-9 && samplingTemperature(2, 20) > samplingTemperature(18, 20));
+    // env config
+    ok("annealEnabled default on, off via flag", annealEnabled({}) && !annealEnabled({ PI_GOAL_ANNEAL: "0" }) && !annealEnabled({ PI_GOAL_ANNEAL: "off" }));
+    ok("tempAnnealEnabled default off, on via flag", !tempAnnealEnabled({}) && tempAnnealEnabled({ PI_GOAL_TEMP_ANNEAL: "1" }));
+    const cfg = annealConfigFromEnv({ PI_GOAL_COMMIT_FRACTION: "0.4", PI_GOAL_TEMP_HI: "0.8", PI_GOAL_ANNEAL_SHAPE: "linear" });
+    ok("annealConfigFromEnv reads overrides", cfg.commitFraction === 0.4 && cfg.tempHi === 0.8 && cfg.shape === "linear");
+    ok("annealConfigFromEnv ignores garbage (fail-safe)", annealConfigFromEnv({ PI_GOAL_COMMIT_FRACTION: "xyz" }).commitFraction === DEFAULT_ANNEAL.commitFraction);
+  }
+
+  console.log("banded buildContinue + currentBand:");
+  {
+    const mk = (cycle, maxCycles) => ({ ...freshGoal(), objective: "render a pelican on a bike", maxCycles, cycle });
+    ok("currentBand reflects cycle", currentBand(mk(1, 20)) === "explore" && currentBand(mk(20, 20)) === "decide");
+    const explore = buildContinue(mk(1, 20));
+    const commit = buildContinue(mk(17, 20));
+    const decide = buildContinue(mk(20, 20));
+    ok("explore push names the explore phase + invites breadth", explore.includes("phase: explore") && /explore/i.test(explore) && explore.includes("approach"));
+    ok("explore does NOT offer goal_conclude (gated to cold)", !explore.includes("goal_conclude"));
+    ok("commit push offers goal_conclude", commit.includes("phase: commit") && commit.includes("goal_conclude"));
+    ok("decide push is decision-forcing + lists both exits", decide.includes("phase: decide") && decide.includes("goal_done") && decide.includes('goal_conclude(outcome="partial"') && decide.includes("abandoned"));
+    ok("every band keeps the honesty floor (verify/unverified)", [explore, commit, decide].every((t) => /verif|unverified|establish/i.test(t)));
+    ok("banded push still restates the objective", decide.includes("render a pelican on a bike"));
+  }
+
+  console.log("renderGoal phase line + concluded; snapshot:");
+  {
+    const active = { ...freshGoal(), objective: "x", maxCycles: 20, cycle: 3 };
+    ok("active render shows Phase + temp", renderGoal(active).includes("Phase: explore") && /temp \d/.test(renderGoal(active)));
+    const concluded = { ...freshGoal(), objective: "x", status: "concluded", outcome: "partial", summary: "80% there, lighting unverified" };
+    ok("concluded render shows outcome + summary", renderGoal(concluded).includes("concluded — partial") && renderGoal(concluded).includes("80% there"));
+    ok("snapshot records the conclusion distinctly", buildSnapshot(concluded).includes("concluded — partial") && buildSnapshot(concluded).includes("80% there"));
+  }
+
+  console.log("goal_conclude (model-owned stop affordance):");
+  {
+    const h = makeHarness(); await h.hooks.session_start({}, h.ctx);
+    ok("registers goal_conclude + before_provider_request hook", !!h.tools.goal_conclude && !!h.hooks.before_provider_request);
+    let r = await h.tools.goal_conclude.execute("t", { outcome: "partial", summary: "x" });
+    ok("conclude with no goal → error", r.isError && r.content[0].text.includes("No goal"));
+    // early (explore) → gated
+    await h.tools.goal_set.execute("t", { objective: "render a pelican", max_cycles: 20 });
+    r = await h.tools.goal_conclude.execute("t", { outcome: "abandoned", summary: "nope" });
+    ok("conclude in explore phase → gated (too early)", r.isError && r.content[0].text.includes("Too early") && r.content[0].text.includes("explore"));
+    // tiny budget → cycle 0 is already the decide band → allowed
+    await h.tools.goal_set.execute("t", { objective: "tiny", max_cycles: 1 });
+    r = await h.tools.goal_conclude.execute("t", { outcome: "partial", summary: "" });
+    ok("empty summary → error", r.isError && r.content[0].text.includes("summary"));
+    r = await h.tools.goal_conclude.execute("t", { outcome: "partial", summary: "got 80% there; lighting unverified" });
+    ok("conclude in decide band → concluded", !r.isError && r.content[0].text.includes("concluded"));
+    ok("status concluded + outcome/summary surfaced", (await statusText(h.tools)).includes("concluded — partial") && (await statusText(h.tools)).includes("got 80%"));
+    const md = readFileSync(join(memoryDir(h.dir), "goal-status.md"), "utf8");
+    ok("snapshot persisted the conclusion", md.includes("concluded — partial") && md.includes("got 80%"));
+    r = await h.tools.goal_conclude.execute("t", { outcome: "partial", summary: "again" });
+    ok("conclude again → already concluded (idempotent-ish)", !r.isError && r.content[0].text.includes("already concluded"));
+    cleanup(h);
+  }
+
+  console.log("agent_end terminal ramp (decide before blocked; conclude stops the loop):");
+  {
+    const h = makeHarness(); await h.hooks.session_start({}, h.ctx);
+    await h.tools.goal_set.execute("t", { objective: "land it", max_cycles: 2 });
+    await h.hooks.agent_end({}); // cycle 0→1 → band(1,2)=explore
+    ok("first push is the explore phase", h.sent.at(-1).content.includes("phase: explore"));
+    await h.hooks.agent_end({}); // cycle 1→2 → band(2,2)=decide
+    ok("final push is the DECIDE phase (forced decision)", h.sent.at(-1).content.includes("phase: decide") && h.sent.at(-1).content.includes("goal_conclude"));
+    const r = await h.tools.goal_conclude.execute("t", { outcome: "partial", summary: "did what I could" });
+    ok("conclude accepted in the decide turn", !r.isError);
+    const sentAfter = h.sent.length;
+    await h.hooks.agent_end({}); // status concluded → must be a no-op
+    ok("a concluded goal neither re-engages nor blocks", h.sent.length === sentAfter && (await statusText(h.tools)).includes("concluded"));
+    cleanup(h);
+  }
+
+  console.log("agent_end: budget exhausted AFTER a decide turn → blocked (FR7):");
+  {
+    const h = makeHarness(); await h.hooks.session_start({}, h.ctx);
+    await h.tools.goal_set.execute("t", { objective: "land it", max_cycles: 2 });
+    await h.hooks.agent_end({}); // →1 explore
+    await h.hooks.agent_end({}); // →2 decide (the forced-decision turn)
+    await h.hooks.agent_end({}); // budget out → blocked
+    const st = await statusText(h.tools);
+    ok("blocked only after a decide turn, with a decide-aware reason", st.includes("blocked") && st.includes("decide-phase"));
+    cleanup(h);
+  }
+
+  console.log("Channel B: applyTempAnneal (pure guard logic, fail-open):");
+  {
+    const active = { ...freshGoal(), objective: "x", maxCycles: 20, cycle: 2 };
+    const body = { model: "gemma", messages: [{ role: "user", content: "hi" }] };
+    ok("tempOn=false → payload untouched (identity)", applyTempAnneal(body, active, { annealOn: true, tempOn: false }) === body);
+    ok("annealOn=false → payload untouched", applyTempAnneal(body, active, { annealOn: false, tempOn: true }) === body);
+    const out = applyTempAnneal(body, active, { annealOn: true, tempOn: true });
+    ok("on+active+valid body → temperature added on a COPY", out !== body && typeof out.temperature === "number" && Array.isArray(out.messages));
+    ok("input body is never mutated in place", !("temperature" in body));
+    const tEarly = applyTempAnneal(body, { ...active, cycle: 1 }, { annealOn: true, tempOn: true }).temperature;
+    const tLate = applyTempAnneal(body, { ...active, cycle: 19 }, { annealOn: true, tempOn: true }).temperature;
+    ok("sampling temperature cools across cycles", tEarly > tLate);
+    ok("no active goal → untouched", applyTempAnneal(body, { ...active, status: "done" }, { annealOn: true, tempOn: true }) === body);
+    ok("empty objective → untouched", applyTempAnneal(body, { ...active, objective: "" }, { annealOn: true, tempOn: true }) === body);
+    ok("non-object payload → untouched (fail-open)", applyTempAnneal("notabody", active, { annealOn: true, tempOn: true }) === "notabody");
+    const noMsgs = { model: "x" };
+    ok("body without messages[] → untouched (fail-open)", applyTempAnneal(noMsgs, active, { annealOn: true, tempOn: true }) === noMsgs);
+  }
+
+  console.log("env toggle: PI_GOAL_ANNEAL=0 → flat fallback (subprocess, real module flags):");
+  {
+    const probe = `import { buildContinue, freshGoal } from "./index.ts";` +
+      `const s = { ...freshGoal(), objective: "x", maxCycles: 5, cycle: 1 };` +
+      `process.stdout.write(buildContinue(s));`;
+    const runProbe = (env) => execFileSync(process.execPath,
+      ["--experimental-strip-types", "--input-type=module", "-e", probe],
+      { cwd: SRC, env: { ...process.env, ...env } }).toString();
+    const flat = runProbe({ PI_GOAL_ANNEAL: "0" });
+    const banded = runProbe({ PI_GOAL_ANNEAL: "1" });
+    ok("PI_GOAL_ANNEAL=0 → flat push, no bands", flat.includes("Keep working toward the goal") && !flat.includes("phase:"));
+    ok("default → banded push (Phase —)", banded.includes("phase:") && banded.includes("Phase —"));
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

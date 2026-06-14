@@ -3,6 +3,10 @@ import { Type } from "typebox";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import {
+  type Band, type AnnealConfig, bandFor, temperature, samplingTemperature, isColdBand,
+  annealConfigFromEnv, annealEnabled, tempAnnealEnabled,
+} from "./anneal.ts";
 
 // goal — the macro-loop manager. `plan` owns the steps (the HOW); `goal` holds the durable
 // objective + a machine-checkable done condition (the WHAT/DONE) and decides when the whole
@@ -33,13 +37,56 @@ export interface GoalState {
   check: string | null;   // self-judged completion criteria Gemma applies (null → DEFAULT_CHECK)
   maxCycles: number;
   cycle: number;
-  status: "active" | "done" | "blocked";
+  status: "active" | "done" | "blocked" | "concluded";
   blockedReason?: string;
+  // The model's own stop decision via goal_conclude (PRD FR6). status="concluded" means the model
+  // deliberately landed the work with a stated outcome — distinct from "blocked" (the loop ran out
+  // of road) and "done" (the verified goal_done path).
+  outcome?: "partial" | "abandoned";
+  summary?: string;
 }
 export interface LastCheck { cmd: string; code: number; output: string; }
 
 export function freshGoal(): GoalState {
   return { objective: "", doneWhen: null, check: null, maxCycles: DEFAULT_MAX_CYCLES, cycle: 0, status: "active" };
+}
+
+// The annealing config (env-overridable; pure defaults otherwise) and whether the cooling schedule
+// is on. Read once per process — the schedule itself is pure (see anneal.ts).
+const ANNEAL_CFG: AnnealConfig = annealConfigFromEnv();
+const ANNEAL_ON = annealEnabled();
+// Channel B (sampling-temperature annealing) is OFF by default — it rides an untyped provider seam
+// (PRD §6.4) and needs a live-model spike to confirm end-to-end. Opt in with PI_GOAL_TEMP_ANNEAL=1.
+const TEMP_ANNEAL_ON = tempAnnealEnabled();
+
+// The current teacher band for an active goal (decide for a non-active/empty goal is harmless — it
+// is only read while active). When annealing is off, the whole loop falls back to flat behavior.
+export function currentBand(s: GoalState, cfg: AnnealConfig = ANNEAL_CFG): Band {
+  return bandFor(Math.max(1, s.cycle), s.maxCycles, cfg);
+}
+
+// Channel B (PRD §6.4): set the provider request's sampling temperature from the loop's position.
+// PURE + FAIL-OPEN by construction so the goal test can assert the guard logic without a live model:
+//   • returns the payload UNTOUCHED unless both channels are on AND a goal is actively looping;
+//   • shape-guards the payload (only a chat-completions body with a messages[] array is touched);
+//   • returns a shallow copy so a shared/cached request object is never mutated in place.
+// What it CANNOT prove without a live-server spike: that the merged temperature actually reaches the
+// wire (PRD §6.4 acceptance — before_provider_request must run after the provider sets its own temp).
+export function applyTempAnneal(
+  payload: unknown,
+  s: GoalState,
+  opts: { annealOn?: boolean; tempOn?: boolean; cfg?: AnnealConfig } = {},
+): unknown {
+  const annealOn = opts.annealOn ?? ANNEAL_ON;
+  const tempOn = opts.tempOn ?? TEMP_ANNEAL_ON;
+  const cfg = opts.cfg ?? ANNEAL_CFG;
+  if (!annealOn || !tempOn) return payload; // channel off
+  if (!s || !s.objective || s.status !== "active") return payload; // no active goal → leave normal turns alone
+  if (!payload || typeof payload !== "object") return payload; // shape guard → fail open
+  const body = payload as Record<string, unknown>;
+  if (!Array.isArray(body.messages)) return payload; // not the body we expect → fail open
+  const temperature = samplingTemperature(Math.max(1, s.cycle), s.maxCycles, cfg);
+  return { ...body, temperature };
 }
 
 // True when the goal carries a machine-checkable stop condition (done_when). It's the AUTHORITATIVE
@@ -94,31 +141,92 @@ export function clip(text: string, maxLines = CLIP_LINES, maxChars = CLIP_CHARS)
 // does NOT render a checklist — plan injects the steps; goal shows the objective and loop state.
 export function renderGoal(s: GoalState, last?: LastCheck | null): string {
   const lines = [`## Goal status`, `Objective: ${s.objective}`];
-  if (s.status === "active") lines.push(`Cycle: ${s.cycle}/${s.maxCycles}`);
+  if (s.status === "active") {
+    lines.push(`Cycle: ${s.cycle}/${s.maxCycles}`);
+    if (ANNEAL_ON) {
+      const band = currentBand(s);
+      lines.push(`Phase: ${band} (temp ${temperature(Math.max(1, s.cycle), s.maxCycles, ANNEAL_CFG).toFixed(2)})`);
+    }
+  }
   if (isAutonomous(s) && last) {
     lines.push(`Last check: \`${last.cmd}\` exited ${last.code}` + (last.code === 0 ? "" : `:\n${clip(last.output)}`));
   }
   if (s.status === "active") {
     lines.push(`Completion check: ${checkText(s)}`);
     lines.push(`When it passes, call the goal_done tool${isAutonomous(s) ? " (it also runs done_when)" : ""} — invoke the tool, don't just say you're done, and never on assumption.`);
+    if (ANNEAL_ON && isColdBand(currentBand(s))) {
+      lines.push(`If the objective truly can't be fully met this cycle, call goal_conclude(outcome, summary) to land it honestly.`);
+    }
+  } else if (s.status === "concluded") {
+    lines.push(`Status: concluded — ${s.outcome ?? "partial"}${s.summary ? `: ${s.summary}` : ""}`);
   } else {
     lines.push(`Status: ${s.status}${s.blockedReason ? ` — ${s.blockedReason}` : ""}`);
   }
   return lines.join("\n");
 }
 
+// The banded coaching + verification register (PRD §6.2 / §6.6a). One block per teacher phase: the
+// nudge cools explore → consolidate → commit → decide, and the VERIFICATION ask cools with it —
+// from "establish broadly" to "verify what the decision hinges on, flag the rest". The honesty floor
+// (verified, or explicitly marked unverified) is constant across every band; only emphasis/triage
+// changes. goal_conclude is offered ONLY in the cold bands (commit/decide), matching FR6's gate.
+export function bandGuidance(band: Band, s: GoalState): string {
+  const check = checkText(s);
+  const done = (extra = "") =>
+    `When the completion check genuinely passes, call goal_done — invoke the tool, never claim done on assumption.${extra}`;
+  const cold =
+    " If the objective truly can't be fully met, you may call goal_conclude(outcome, summary) to land it honestly rather than thrash.";
+  switch (band) {
+    case "explore":
+      return (
+        `Phase — explore. You have budget to range widely; don't lock in yet. Consider more than one ` +
+        `approach, and question what you're assuming. Verification is cheap now: establish each claim ` +
+        `before you lean on it — derive it, run/simulate it, or read the real source — and be skeptical ` +
+        `of memory.\nCompletion check (must pass before you finish):\n${check}\n${done()}`
+      );
+    case "consolidate":
+      return (
+        `Phase — consolidate. You've explored; now converge. Pick the most promising line, deepen it, ` +
+        `and start closing open threads — don't open new directions unless the current one is failing. ` +
+        `Verify the claims this direction actually depends on.\nCompletion check (must pass before you ` +
+        `finish):\n${check}\n${done()}`
+      );
+    case "commit":
+      return (
+        `Phase — commit. Budget is nearly spent; commit to your best result and finish it. Spend your ` +
+        `remaining verification on what the outcome hinges on — derive/run/read; for anything you can't ` +
+        `establish, state it explicitly as "unverified". Don't open new threads.\nCompletion check ` +
+        `(must pass before you finish):\n${check}\n${done(cold)}`
+      );
+    case "decide":
+      return (
+        `Phase — DECIDE (final cycle). You cannot iterate further; land the best outcome you have now:\n` +
+        `- If the objective is met: verify it (derive/run/read) and call goal_done.\n` +
+        `- If it's only partially met: finish the solid parts, state plainly what is unverified or ` +
+        `incomplete, and call goal_conclude(outcome="partial", summary=...).\n` +
+        `- If it genuinely cannot be done: call goal_conclude(outcome="abandoned", summary=<the specific reason>).\n` +
+        `Decide now — invoke a tool; never claim more than you verified.\nCompletion check:\n${check}`
+      );
+  }
+}
+
 // Push message: the north-star restated at the tail each cycle for drift correction (R6 shape),
-// carrying the completion check so Gemma re-applies it — and, when the last goal_done was rejected,
-// the reason, so the loop hands back a gradient instead of a bare "not yet". plan re-injects its
-// own checklist, so lean. The check rides on its own line so the text reads cleanly whether it's a
-// noun clause ("the PNG is judged good") or an imperative ("re-render and look").
+// carrying the (now annealed) completion-check guidance so Gemma re-applies it — and, when the last
+// goal_done was rejected, the reason, so the loop hands back a gradient instead of a bare "not yet".
+// plan re-injects its own checklist, so lean. With annealing off (PI_GOAL_ANNEAL=0) it falls back to
+// the original flat push, byte-for-byte, so the schedule is a pure addition.
 export function buildContinue(s: GoalState, last?: LastCheck | null, doneError?: string | null): string {
-  const parts = [`Goal not yet met (cycle ${s.cycle}/${s.maxCycles}).`, `Objective: ${s.objective}`];
+  const header = ANNEAL_ON
+    ? `Goal not yet met (cycle ${s.cycle}/${s.maxCycles}, phase: ${currentBand(s)}).`
+    : `Goal not yet met (cycle ${s.cycle}/${s.maxCycles}).`;
+  const parts = [header, `Objective: ${s.objective}`];
   if (last && last.code !== 0) parts.push(`Last check: \`${last.cmd}\` exited ${last.code}:\n${clip(last.output)}`);
   if (doneError) parts.push(`Your last goal_done was rejected — ${doneError}`);
   parts.push(
-    `Keep working toward the goal. Completion check (must pass before you finish):\n${checkText(s)}\n` +
-      `When that check actually passes, call the goal_done tool to finish — invoke the tool, don't just say you're done, and never claim done on assumption.`,
+    ANNEAL_ON
+      ? bandGuidance(currentBand(s), s)
+      : `Keep working toward the goal. Completion check (must pass before you finish):\n${checkText(s)}\n` +
+          `When that check actually passes, call the goal_done tool to finish — invoke the tool, don't just say you're done, and never claim done on assumption.`,
   );
   return parts.join("\n");
 }
@@ -139,11 +247,15 @@ export function lastAssistantStopReason(messages: unknown): string | undefined {
 // mirroring the STATE.md autonomous-loop convention.
 export function buildSnapshot(s: GoalState, last?: LastCheck | null): string {
   const checkLine = last ? `\`${last.cmd}\` exited ${last.code}` : "—";
+  const statusLine =
+    s.status === "concluded"
+      ? `Status: concluded — ${s.outcome ?? "partial"}${s.summary ? `: ${s.summary}` : ""}`
+      : `Status: ${s.status}${s.blockedReason ? ` — ${s.blockedReason}` : ""}`;
   return [
     `# Goal status`,
     ``,
     `Objective: ${s.objective}`,
-    `Status: ${s.status}${s.blockedReason ? ` — ${s.blockedReason}` : ""}`,
+    statusLine,
     `Cycles: ${s.cycle}/${s.maxCycles}`,
     `Done-when: ${s.doneWhen ?? "—"}`,
     `Last check: ${checkLine}`,
@@ -233,14 +345,17 @@ export default function (pi: ExtensionAPI) {
       if (existsSync(goalFile)) {
         const loaded: any = JSON.parse(readFileSync(goalFile, "utf8"));
         if (loaded && typeof loaded.objective === "string") {
+          const terminal = loaded.status === "done" || loaded.status === "blocked" || loaded.status === "concluded";
           state = {
             objective: loaded.objective,
             doneWhen: typeof loaded.doneWhen === "string" ? loaded.doneWhen : null,
             check: typeof loaded.check === "string" ? loaded.check : null,
             maxCycles: Number.isFinite(loaded.maxCycles) ? loaded.maxCycles : DEFAULT_MAX_CYCLES,
             cycle: Number.isFinite(loaded.cycle) ? loaded.cycle : 0,
-            status: loaded.status === "done" || loaded.status === "blocked" ? loaded.status : "active",
+            status: terminal ? loaded.status : "active",
             blockedReason: loaded.blockedReason,
+            outcome: loaded.outcome === "partial" || loaded.outcome === "abandoned" ? loaded.outcome : undefined,
+            summary: typeof loaded.summary === "string" ? loaded.summary : undefined,
           };
         }
       }
@@ -323,6 +438,46 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // The model-owned stop affordance (PRD FR6 / §6.3b). goal_done is the VERIFIED finish; goal_conclude
+  // is the deliberate concession — "I've landed the best honest outcome and I'm stopping" — for when
+  // the objective is only partially met or genuinely can't be done. It is GATED to the cold bands
+  // (commit/decide): conceding early would be an escape hatch, so before the loop has spent most of
+  // its budget the tool refuses and tells the model to keep working. This is what lets the loop end
+  // on the model's own stated terms instead of a silent budget guillotine.
+  pi.registerTool({
+    name: "goal_conclude",
+    label: "Conclude Goal",
+    description:
+      "Deliberately stop the goal with a stated outcome when it's only partially met or can't be done (NOT the verified-done path — that's goal_done). Allowed only once the loop is near its budget (commit/decide phase).",
+    parameters: Type.Object({
+      outcome: Type.Union([Type.Literal("partial"), Type.Literal("abandoned")], {
+        description: "'partial' = some of the objective achieved; 'abandoned' = it genuinely can't be done",
+      }),
+      summary: Type.String({ description: "One line: what was achieved / what's unverified or blocking, and why you're stopping" }),
+    }),
+    async execute(_id, params) {
+      if (!state.objective) return errResult(`No goal set — nothing to conclude.`);
+      if (state.status !== "active") return okResult(`Goal already ${state.status}.`);
+      // Gate to the cold tail. When annealing is off there are no bands, so allow it (the loop is
+      // otherwise flat and the model still needs an honest exit).
+      if (ANNEAL_ON && !isColdBand(currentBand(state))) {
+        return errResult(
+          `Too early to conclude — you're in the ${currentBand(state)} phase (cycle ${state.cycle}/${state.maxCycles}). ` +
+            `Keep working; goal_conclude unlocks in the commit/decide phase near the budget. If it's truly met, call goal_done.`,
+        );
+      }
+      const summary = (params.summary ?? "").trim();
+      if (!summary) return errResult(`goal_conclude needs a one-line summary of what was achieved and why you're stopping.`);
+      state.status = "concluded";
+      state.outcome = params.outcome;
+      state.summary = summary.slice(0, 500);
+      lastDoneError = null;
+      persist();
+      snapshot();
+      return okResult(`Goal concluded (${state.outcome}): ${state.summary}`);
+    },
+  });
+
   // Human entry point: `/goal <task>` (set + START working on it), `/goal` (show), `/goal clear`.
   pi.registerCommand("goal", {
     description: "Set a goal and start working on it now: /goal <task>. Also /goal (show), /goal clear. A done_when (for cross-turn auto-re-looping) is set via goal_set; steps via plan_set.",
@@ -361,6 +516,20 @@ export default function (pi: ExtensionAPI) {
   pi.on("context", async (event) => {
     if (!state.objective || state.status !== "active") return;
     return { messages: foldReminder(event.messages as Msg[], renderGoal(state, lastCheck)) };
+  });
+
+  // Channel B (PRD §6.4, opt-in): cool the model's actual sampling temperature as the loop runs.
+  // The handler's return value replaces the outgoing request payload (sdk.ts onPayload →
+  // emitBeforeProviderRequest); applyTempAnneal is the pure, fail-open core (shape-guarded, active-
+  // goal-gated). Returning undefined leaves the request untouched.
+  pi.on("before_provider_request", async (event) => {
+    if (!ANNEAL_ON || !TEMP_ANNEAL_ON || !state.objective || state.status !== "active") return;
+    try {
+      const next = applyTempAnneal((event as { payload?: unknown }).payload, state);
+      if (next !== (event as { payload?: unknown }).payload) return next; // only replace if we changed it
+    } catch {
+      /* fail open — never break a request over the temperature seam */
+    }
   });
 
   // Yield to the human: when the user TYPES (input source "interactive"), the loop must not
@@ -407,9 +576,13 @@ export default function (pi: ExtensionAPI) {
         const doneErr = lastDoneError; lastDoneError = null; // surface a rejected goal_done once, then clear
         pi.sendUserMessage(buildContinue(state, lastCheck, doneErr), { deliverAs: "followUp" });
       } else {
-        // BLOCKED is durable, not silent — stop cleanly, never a silent runaway.
+        // BLOCKED is durable, not silent — stop cleanly, never a silent runaway. By now the model has
+        // already had its decide-phase turn (the last re-engagement used the decide band) and chose
+        // neither goal_done nor goal_conclude, so this is the hard backstop, not a surprise cut (FR7).
         state.status = "blocked";
-        state.blockedReason = `cycle budget exhausted (${state.maxCycles}) without the goal being reached`;
+        state.blockedReason = ANNEAL_ON
+          ? `cycle budget exhausted (${state.maxCycles}); the final decide-phase turn neither reached the goal nor called goal_conclude`
+          : `cycle budget exhausted (${state.maxCycles}) without the goal being reached`;
         persist(); snapshot();
       }
     } finally {
