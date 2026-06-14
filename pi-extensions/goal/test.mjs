@@ -35,8 +35,10 @@ const auto = { ...freshGoal(), objective: "all tests green", doneWhen: "pytest -
 const rg = renderGoal(auto);
 ok("renderGoal shows objective + cycle budget", rg.includes("all tests green") && rg.includes("Cycle: 0/20"));
 ok("renderGoal points at goal_done", rg.includes("goal_done"));
-ok("advisory render hides cycle", !renderGoal({ ...freshGoal(), objective: "x" }).includes("Cycle:"));
-ok("buildContinue restates objective + goal_done", buildContinue(auto).includes("all tests green") && buildContinue(auto).includes("goal_done"));
+ok("active (self-judged) render shows the loop cycle too", renderGoal({ ...freshGoal(), objective: "x" }).includes("Cycle: 0/"));
+ok("render shows a user-set completion check", renderGoal({ ...freshGoal(), objective: "x", check: "re-render and look at it" }).includes("re-render and look at it"));
+ok("render falls back to the default (verify, don't assume) check", /verify/i.test(renderGoal({ ...freshGoal(), objective: "x" })));
+ok("buildContinue restates objective + goal_done + the check", buildContinue(auto).includes("all tests green") && buildContinue(auto).includes("goal_done") && /verify/i.test(buildContinue(auto)));
 const snap = buildSnapshot({ ...auto, status: "blocked", blockedReason: "budget" });
 ok("snapshot has the R6 template keys", ["Objective:", "Status:", "Cycles:", "Done-when:", "Last check:"].every((k) => snap.includes(k)));
 ok("snapshot has no criteria line", !/criteria/i.test(snap));
@@ -80,7 +82,9 @@ const run = async () => {
     r = await h.tools.goal_set.execute("t", { objective: "all tests green", done_when: "pytest -q", max_cycles: 3 });
     ok("autonomous goal_set succeeds + persists", !r.isError && r.content[0].text.includes("Autonomous") && existsSync(join(h.dir, "goal-sess.json")));
     r = await h.tools.goal_set.execute("t", { objective: "ship it" });
-    ok("no done_when → advisory, points at plan_set", !r.isError && r.content[0].text.includes("Advisory") && r.content[0].text.includes("plan_set"));
+    ok("no done_when → self-judged loop", !r.isError && r.content[0].text.includes("Self-judged"));
+    r = await h.tools.goal_set.execute("t", { objective: "fix the svg", check: "re-render and confirm it reads right" });
+    ok("check is stored and surfaced", !r.isError && r.content[0].text.includes("re-render and confirm it reads right"));
     cleanup(h);
   }
 
@@ -129,19 +133,59 @@ const run = async () => {
     cleanup(h);
   }
 
-  console.log("agent_end auto-done + advisory no-push:");
+  console.log("agent_end auto-done + self-judged loop:");
   {
     let h = makeHarness(); await h.hooks.session_start({}, h.ctx);
     await h.tools.goal_set.execute("t", { objective: "go", done_when: "check" });
     h.ctl.execResult = { stdout: "ok", stderr: "", code: 0, killed: false };
     await h.hooks.agent_end({});
-    ok("passing check auto-marks done, no re-engage", (await statusText(h.tools)).includes("Status: done") && h.sent.length === 0);
+    ok("passing done_when auto-marks done, no re-engage", (await statusText(h.tools)).includes("Status: done") && h.sent.length === 0);
     cleanup(h);
 
+    // Self-judged (no done_when) now LOOPS: it re-engages each turn until goal_done or the cap.
     h = makeHarness(); await h.hooks.session_start({}, h.ctx);
-    await h.tools.goal_set.execute("t", { objective: "go" }); // advisory
+    await h.tools.goal_set.execute("t", { objective: "go" });
     await h.hooks.agent_end({});
-    ok("advisory goal → no exec, no re-engage", h.ctl.execCalls === 0 && h.sent.length === 0);
+    ok("self-judged goal re-engages without exec (loops)", h.ctl.execCalls === 0 && h.sent.length === 1 && h.sent[0].content.includes("go"));
+    cleanup(h);
+  }
+
+  console.log("yield to the human (input source 'interactive'):");
+  {
+    let h = makeHarness(); await h.hooks.session_start({}, h.ctx);
+    ok("registers an input hook", !!h.hooks.input);
+    await h.tools.goal_set.execute("t", { objective: "go" });
+    // user types → input(interactive) → that turn must NOT trigger a re-engagement
+    await h.hooks.input({ type: "input", source: "interactive", text: "actually do X instead" });
+    await h.hooks.agent_end({});
+    ok("a turn YOU started does not re-engage (no hijack)", h.sent.length === 0);
+    // the flag is one-shot: it suppresses only the turn you drove, so a later loop-driven turn pushes
+    await h.hooks.agent_end({});
+    ok("interjection is one-shot — a later loop-driven turn still pushes", h.sent.length === 1);
+    cleanup(h);
+
+    // extension-sourced input (the loop's own re-engagement) must NOT count as a human interjection
+    h = makeHarness(); await h.hooks.session_start({}, h.ctx);
+    await h.tools.goal_set.execute("t", { objective: "go" });
+    await h.hooks.input({ type: "input", source: "extension", text: "continue" });
+    await h.hooks.agent_end({});
+    ok("extension-sourced input still loops", h.sent.length === 1);
+    cleanup(h);
+
+    // setting a goal ARMS the loop even from a turn you typed (it's pursuit, not a redirect away)
+    h = makeHarness(); await h.hooks.session_start({}, h.ctx);
+    await h.hooks.input({ type: "input", source: "interactive", text: "set a goal to do X and work on it" });
+    await h.tools.goal_set.execute("t", { objective: "do X" });
+    await h.hooks.agent_end({});
+    ok("goal_set during a typed turn still arms the loop", h.sent.length === 1 && h.sent[0].content.includes("do X"));
+    cleanup(h);
+
+    // a CLEARED goal must not re-engage (freshGoal status is 'active' but the objective is empty)
+    h = makeHarness(); await h.hooks.session_start({}, h.ctx);
+    await h.tools.goal_set.execute("t", { objective: "go" });
+    await h.commands.goal.handler("clear", {});
+    await h.hooks.agent_end({});
+    ok("a cleared goal does not re-engage", h.sent.length === 0);
     cleanup(h);
   }
 
@@ -177,10 +221,13 @@ const run = async () => {
     ok("goal reloads from disk", (await statusText(h2.tools)).includes("survive restart") && (await statusText(h2.tools)).includes("0/4"));
     rmSync(h2.dir, { recursive: true, force: true });
 
+    const sentBefore = h1.sent.length;
     await h1.commands.goal.handler("just do it", {});
-    ok("/goal <text> sets advisory objective", (await statusText(h1.tools)).includes("just do it"));
+    ok("/goal <text> sets the objective", (await statusText(h1.tools)).includes("just do it"));
+    ok("/goal <text> STARTS the work (drives a turn with the full text)", h1.sent.length === sentBefore + 1 && h1.sent.at(-1).content === "just do it");
     await h1.commands.goal.handler("clear", {});
     ok("/goal clear clears it", (await statusText(h1.tools)).includes("No goal set"));
+    ok("/goal clear does not drive a turn", h1.sent.length === sentBefore + 1);
     cleanup(h1);
   }
 

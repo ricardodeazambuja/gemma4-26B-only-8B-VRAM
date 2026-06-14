@@ -13,30 +13,45 @@ worst-case wasted carbon.
 
 ## Tools
 
-- **`goal_set(objective, done_when?, max_cycles?)`** — set the north-star once. `done_when` is a
-  shell command (exit 0 ⇒ met); `max_cycles` bounds the auto-continue loop (default 20). Break
-  the work into steps with `plan_set`.
-- **`goal_status()`** — objective, cycle/budget, last `done_when` result.
-- **`goal_done()`** — claim completion. Verifies **`done_when`** *and* that **plan's steps are
-  complete** (it reads `plan-<id>.json`); returns a teaching error naming exactly what's unmet,
-  or marks the goal done.
+- **`goal_set(objective, check?, done_when?, max_cycles?)`** — set the north-star. `check` is *what
+  to verify before declaring done* (e.g. "re-render the SVG and confirm it reads as a pelican on a
+  bike"); it defaults to a MINDSET-grounded *"verify, don't assume."* `done_when` is an optional
+  shell command (exit 0 ⇒ met) for a machine stop; `max_cycles` bounds the loop (default 20).
+- **`goal_status()`** — objective, cycle/budget, the check, last `done_when` result.
+- **`goal_done()`** — claim completion. Verifies **`done_when`** (if set) *and* that **plan's steps
+  are complete** (it reads `plan-<id>.json`); else returns a teaching error, or marks the goal done.
 
-Plus a `/goal` command for a human: `/goal` (show), `/goal clear`, `/goal <text>` (set an
-advisory objective; `done_when` is set via the tool).
+Plus a `/goal` command for a human: **`/goal <task>` sets the objective *and starts the loop*** (the
+kickoff drives a turn with the full task text via `sendUserMessage`, the lever `pipe` uses); `/goal`
+(show); `/goal clear`.
 
-## Two modes (the safety line)
+## It's a self-judged loop
 
-Enforcement is **pull + bounded push** (rule R4), and the push is gated on a *trustworthy* signal:
+`/goal <task>` starts the work **and keeps it going across turns until the goal is reached** — the
+thing you actually wanted. After each turn an `agent_end` hook re-engages Gemma (restating the
+objective + the completion check), and it stops only when:
 
-- **Autonomous** — a `done_when` is set. After every agent run, the extension runs `done_when`;
-  while it fails *and* the cycle budget remains, it re-engages Gemma for another cycle
-  (`sendUserMessage`, restating the objective for drift correction). It stops when `done_when`
-  passes (→ **done**, even if Gemma forgot to call `goal_done`) or the budget is spent
-  (→ **blocked**, durable, never a silent runaway). `done_when` is authoritative for the
-  auto-stop — it's the machine signal, more trustworthy than self-reported checkboxes.
-- **Advisory** — no `done_when`. The extension never auto-continues (auto-continuing without a
-  machine signal would be unsafe and could hijack an interactive session). `goal_done` still
-  gates: it checks plan's steps are complete before accepting.
+- Gemma **applies the check, sees it pass, and calls `goal_done`** (self-judged — no external
+  reviewer; Gemma checks its own work, and for visual goals it can re-render and *look*); or
+- the **cycle cap** is hit → **blocked** (durable, never a silent runaway); or
+- **you type** — see below.
+
+**No hijack — it yields the instant you interject.** The loop's own re-engagements go through
+`sendUserMessage`, which pi tags with input `source: "extension"`; *your* typing is `source:
+"interactive"`. The `input` hook watches for `"interactive"` and, on that turn's `agent_end`, the
+loop **does not re-engage** — you've taken over. So it runs autonomously yet steps aside the moment
+you say something. (To stop it entirely: `/goal clear`, or `Esc`.)
+
+### Two stop signals
+
+- **Self-judged** (no `done_when` — the default). The loop runs until Gemma calls `goal_done` after
+  the check passes, or the cap. The rigor lives in the prompt: the north-star and each re-engagement
+  tell Gemma to *establish* the result (derive / simulate / read), not assume — then `goal_done`.
+- **Autonomous** (`done_when` set). Adds a *machine* stop on top: after each turn the extension runs
+  `done_when`; exit 0 → **done** even if Gemma forgot `goal_done`. Authoritative — a machine check
+  beats a self-reported checkbox.
+
+`goal_done` gates either way: `done_when` (if set) **and** plan steps complete before accepting.
 
 ## The `plan` ↔ `goal` seam
 
@@ -53,8 +68,10 @@ ticked, defers the *finish* to `goal_done` rather than declaring completion itse
   the trailing user turn as a `<reminder>` block (the shared fleet convention — see
   [`grounding`](../grounding/)'s `ANCHOR`); the steps are `plan`'s injection, not duplicated here.
   Once done/blocked, both fall silent.
-- **The loop driver.** An `agent_end` hook is the push. It is re-entrancy-guarded (fires at most
-  once per `agent_end`) and is the first extension in the set that *drives* the agent.
+- **The loop driver.** An `agent_end` hook is the push: it re-engages any *active* goal via
+  `sendUserMessage(deliverAs:"followUp")`. Re-entrancy-guarded (once per `agent_end`) and gated on
+  `!userInterjected` — an `input` hook sets that flag when input `source === "interactive"` (you
+  typed), so a turn you started never re-engages.
 - **R3 — output caps.** `done_when` output is clipped (~50 lines / 2 KB, keeping the tail) in any
   injection; the full output is saved to `~/.pi/memory/<project>/goal-last-check.log`.
 - **R6 — templates.** `goal_set` takes structured fields; the durable
@@ -64,9 +81,11 @@ ticked, defers the *finish* to `goal_done` rather than declaring completion itse
 
 `PI_GOAL_TIMEOUT_MS` overrides the `done_when` timeout (default 120 000 ms).
 
-> **Note (first agent-driving extension).** `goal` re-engages the agent with `sendUserMessage`
-> from inside `agent_end`. Validate that re-engagement in a real pi run before relying on
-> unattended loops; the fallback is `sendMessage(…, {deliverAs:"nextTurn", triggerTurn:true})`.
+> **Re-engagement is verified (2026-06-13).** A stub-capture run (pi pointed at a fake
+> OpenAI endpoint) confirmed `agent_end → sendUserMessage` genuinely re-drives turns in this pi
+> build: a goal with `done_when="false"` produced requests 3/4/5 *on their own* (each carrying the
+> `buildContinue` re-engagement), stopping at the cap. The `deliverAs:"followUp"` lever works; the
+> documented fallback `sendMessage(…, {deliverAs:"nextTurn", triggerTurn:true})` was not needed.
 
 ## Test
 
@@ -74,8 +93,10 @@ ticked, defers the *finish* to `goal_done` rather than declaring completion itse
 node --experimental-strip-types goal/test.mjs
 ```
 
-37 assertions: helpers (clip/render/snapshot), `readPlanRemaining` (the plan↔goal seam), the
-tools with validation, the `goal_done` pull gate (`done_when` **and** plan-steps-complete), the
-`agent_end` push (re-engage, budget → blocked, auto-done on pass, advisory no-push), R1
-prefix/tail injection, persistence reload, and `/goal`. No tmux, no live model — `exec`/
-`sendUserMessage` are stubbed and `plan-<id>.json` is simulated.
+47 assertions: helpers (clip/render/snapshot incl. the completion `check`), `readPlanRemaining`
+(the plan↔goal seam), the tools with validation, the `goal_done` pull gate (`done_when` **and**
+plan-steps-complete), the **self-judged loop** (`agent_end` re-engages without `done_when`,
+budget → blocked, auto-done on a passing `done_when`), the **yield-to-human** path (`input`
+`source:"interactive"` suppresses the next re-engagement; `"extension"` does not), R1 prefix/tail
+injection, persistence reload, and `/goal`. No tmux, no live model — `exec`/`sendUserMessage` are
+stubbed and `plan-<id>.json` is simulated.

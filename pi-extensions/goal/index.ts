@@ -30,6 +30,7 @@ const CLIP_CHARS = 2000;
 export interface GoalState {
   objective: string;
   doneWhen: string | null;
+  check: string | null;   // self-judged completion criteria Gemma applies (null → DEFAULT_CHECK)
   maxCycles: number;
   cycle: number;
   status: "active" | "done" | "blocked";
@@ -38,12 +39,24 @@ export interface GoalState {
 export interface LastCheck { cmd: string; code: number; output: string; }
 
 export function freshGoal(): GoalState {
-  return { objective: "", doneWhen: null, maxCycles: DEFAULT_MAX_CYCLES, cycle: 0, status: "active" };
+  return { objective: "", doneWhen: null, check: null, maxCycles: DEFAULT_MAX_CYCLES, cycle: 0, status: "active" };
 }
 
-// True when the goal carries a machine-checkable stop condition → push is licensed.
+// True when the goal carries a machine-checkable stop condition (done_when). It's the AUTHORITATIVE
+// auto-stop; without it the loop is self-judged (Gemma decides via goal_done). Either way an active
+// goal LOOPS — this only selects which stop signal governs.
 export function isAutonomous(s: GoalState): boolean {
   return !!s.doneWhen;
+}
+
+// The completion check Gemma must apply before declaring done. A user/Gemma-supplied `check` is the
+// specific criteria ("re-render the SVG and confirm it reads as a pelican on a bike"); the default
+// is the MINDSET-grounded "verify, don't assume" — no external advisor, Gemma checks its own work.
+export const DEFAULT_CHECK =
+  "verify the objective is genuinely achieved THIS turn — derive it, run/simulate it, or read the " +
+  "real result — never assume you're done from memory or hope.";
+export function checkText(s: GoalState): string {
+  return s.check?.trim() || DEFAULT_CHECK;
 }
 
 // Stable per-project memory dir (shared convention with plan/semantic-memory/stats).
@@ -81,24 +94,28 @@ export function clip(text: string, maxLines = CLIP_LINES, maxChars = CLIP_CHARS)
 // does NOT render a checklist — plan injects the steps; goal shows the objective and loop state.
 export function renderGoal(s: GoalState, last?: LastCheck | null): string {
   const lines = [`## Goal status`, `Objective: ${s.objective}`];
-  if (isAutonomous(s)) {
-    lines.push(`Cycle: ${s.cycle}/${s.maxCycles}`);
-    if (last) lines.push(`Last check: \`${last.cmd}\` exited ${last.code}` + (last.code === 0 ? "" : `:\n${clip(last.output)}`));
+  if (s.status === "active") lines.push(`Cycle: ${s.cycle}/${s.maxCycles}`);
+  if (isAutonomous(s) && last) {
+    lines.push(`Last check: \`${last.cmd}\` exited ${last.code}` + (last.code === 0 ? "" : `:\n${clip(last.output)}`));
   }
   if (s.status === "active") {
-    lines.push(`Next: when achieved, call goal_done — it verifies done_when and that your plan steps are complete.`);
+    lines.push(`Done when: ${checkText(s)}`);
+    lines.push(`Then call goal_done${isAutonomous(s) ? " (it also runs done_when)" : ""} — only after you have actually checked, not assumed.`);
   } else {
     lines.push(`Status: ${s.status}${s.blockedReason ? ` — ${s.blockedReason}` : ""}`);
   }
   return lines.join("\n");
 }
 
-// Push message: the north-star restated at the tail for drift correction (R6 shape). plan
-// re-injects its own checklist each turn, so this stays lean.
+// Push message: the north-star restated at the tail each cycle for drift correction (R6 shape),
+// carrying the completion check so Gemma re-applies it. plan re-injects its own checklist, so lean.
 export function buildContinue(s: GoalState, last?: LastCheck | null): string {
   const parts = [`Goal not yet met (cycle ${s.cycle}/${s.maxCycles}).`, `Objective: ${s.objective}`];
   if (last && last.code !== 0) parts.push(`Last check: \`${last.cmd}\` exited ${last.code}:\n${clip(last.output)}`);
-  parts.push(`Continue working toward the goal. When you believe it is achieved, call goal_done — it re-verifies before accepting.`);
+  parts.push(
+    `Keep working toward the goal. Before you finish you must ${checkText(s)} ` +
+      `Call goal_done only once that check actually passes — do not claim done on assumption.`,
+  );
   return parts.join("\n");
 }
 
@@ -157,6 +174,7 @@ export default function (pi: ExtensionAPI) {
   let cwd = process.cwd();
   let lastCheck: LastCheck | null = null;
   let inAgentEnd = false; // re-entrancy guard: process each agent_end at most once
+  let userInterjected = false; // set when the user TYPES (input source "interactive") → loop yields
 
   const persist = () => {
     if (goalFile) { try { writeFileSync(goalFile, JSON.stringify(state)); } catch {} }
@@ -200,6 +218,7 @@ export default function (pi: ExtensionAPI) {
           state = {
             objective: loaded.objective,
             doneWhen: typeof loaded.doneWhen === "string" ? loaded.doneWhen : null,
+            check: typeof loaded.check === "string" ? loaded.check : null,
             maxCycles: Number.isFinite(loaded.maxCycles) ? loaded.maxCycles : DEFAULT_MAX_CYCLES,
             cycle: Number.isFinite(loaded.cycle) ? loaded.cycle : 0,
             status: loaded.status === "done" || loaded.status === "blocked" ? loaded.status : "active",
@@ -213,26 +232,29 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "goal_set",
     label: "Set Goal",
-    description: "Set the objective. done_when (shell cmd, exit 0=done) runs it unattended until it passes; steps go in plan_set.",
+    description: "Set the objective and loop until done. check = what to verify before finishing (defaults to 'verify, don't assume'); done_when = optional shell cmd (exit 0 = done) for a machine stop; steps go in plan_set.",
     parameters: Type.Object({
       objective: Type.String({ description: "One-line objective, e.g. 'all unit tests pass'" }),
-      done_when: Type.Optional(Type.String({ description: "Shell command; exit 0 = met" })),
-      max_cycles: Type.Optional(Type.Number({ description: "Max auto-continue cycles (default 20)" })),
+      check: Type.Optional(Type.String({ description: "What to verify before declaring done, e.g. 're-render the SVG and confirm it reads as a pelican on a bike'" })),
+      done_when: Type.Optional(Type.String({ description: "Shell command; exit 0 = met (machine stop)" })),
+      max_cycles: Type.Optional(Type.Number({ description: "Max loop cycles before giving up (default 20)" })),
     }),
     async execute(_id, params) {
       const objective = (params.objective ?? "").trim();
       if (!objective) return errResult(`goal_set needs an objective, e.g. goal_set(objective="all tests green", done_when="pytest -q").`);
       if (objective.length > MAX_OBJECTIVE_LEN) return errResult(`Objective too long (${objective.length} chars). Keep it under ${MAX_OBJECTIVE_LEN} — one line; break the work into steps with plan_set.`);
       const doneWhen = (params.done_when ?? "").trim() || null;
+      const check = (params.check ?? "").trim() || null;
       let maxCycles = Number.isFinite(params.max_cycles) ? Math.floor(params.max_cycles as number) : DEFAULT_MAX_CYCLES;
       maxCycles = Math.max(1, Math.min(MAX_MAX_CYCLES, maxCycles));
-      state = { objective, doneWhen, maxCycles, cycle: 0, status: "active" };
+      state = { objective, doneWhen, check, maxCycles, cycle: 0, status: "active" };
       lastCheck = null;
+      userInterjected = false; // setting a goal ARMS the loop — even from a turn you typed (it's pursuit, not a redirect away)
       persist();
       snapshot();
       const mode = isAutonomous(state)
-        ? `Autonomous: after each turn I run \`${doneWhen}\`; while it fails I continue (up to ${maxCycles} cycles), and stop when it passes.`
-        : `Advisory: no done_when, so I will not auto-continue. Break the work into steps with plan_set; call goal_done when finished (it checks your plan is complete).`;
+        ? `Autonomous: after each turn I run \`${doneWhen}\`; while it fails I re-engage you (up to ${maxCycles} cycles), and stop when it passes.`
+        : `Self-judged: I re-engage you each turn (up to ${maxCycles} cycles) until you ${checkText(state)} then call goal_done. (Stops the moment you type, or on /goal clear.)`;
       return okResult(`Goal set.\n${renderGoal(state)}\n\n${mode}`);
     },
   });
@@ -276,9 +298,9 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // Human entry point: `/goal` (show), `/goal clear`, `/goal <objective>` (advisory set).
+  // Human entry point: `/goal <task>` (set + START working on it), `/goal` (show), `/goal clear`.
   pi.registerCommand("goal", {
-    description: "Show, set (objective only), or clear the goal. done_when is set via goal_set; steps via plan_set.",
+    description: "Set a goal and start working on it now: /goal <task>. Also /goal (show), /goal clear. A done_when (for cross-turn auto-re-looping) is set via goal_set; steps via plan_set.",
     handler: async (args, ctx) => {
       const notify = (msg: string) => { try { (ctx as any)?.ui?.notify?.(msg); } catch {} };
       const a = (args ?? "").trim();
@@ -288,9 +310,15 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       if (!a) { notify(state.objective ? renderGoal(state, lastCheck) : "No goal set."); return; }
+      // Set the north-star (concise) AND start the work: drive a turn with the FULL task text via
+      // sendUserMessage (source "extension"), the same lever `pipe` uses. The agent_end driver then
+      // re-engages each turn (self-judged loop) until Gemma checks the goal reached and calls
+      // goal_done, or the cycle cap. It yields the instant you type (input source "interactive").
       state = { ...freshGoal(), objective: a.slice(0, MAX_OBJECTIVE_LEN) };
+      userInterjected = false; // arm the loop (clear any stale interjection flag from a prior turn)
       persist(); snapshot();
-      notify(`Goal set (advisory): ${state.objective}`);
+      notify(`Goal set — working until reached (type to take over, /goal clear to stop): ${state.objective}`);
+      pi.sendUserMessage(a, { deliverAs: "followUp" });
     },
   });
 
@@ -298,7 +326,7 @@ export default function (pi: ExtensionAPI) {
   // a fixed instruction), so it is the always-present anchor and is paid once.
   pi.on("before_agent_start", async (event) => {
     if (!state.objective || state.status !== "active") return;
-    const block = `## Goal (north-star)\n${state.objective}\nWhen you believe this is achieved, call goal_done — it verifies before accepting.`;
+    const block = `## Goal (north-star)\n${state.objective}\nKeep working until reached. To finish you must first ${checkText(state)} Then call goal_done — only after that check actually passes, never on assumption.`;
     return { systemPrompt: `${event.systemPrompt}\n\n${block}` };
   });
 
@@ -309,25 +337,39 @@ export default function (pi: ExtensionAPI) {
     return { messages: foldReminder(event.messages as Msg[], renderGoal(state, lastCheck)) };
   });
 
-  // The loop driver (push). Only autonomous goals (done_when set) auto-continue. done_when is
-  // authoritative for the auto-stop — it's the machine signal, more trustworthy than ticks.
+  // Yield to the human: when the user TYPES (input source "interactive"), the loop must not
+  // re-engage after that turn — they've taken over. sendUserMessage drives turns with source
+  // "extension", so the loop's own re-engagements (and the /goal kickoff) are NOT flagged. This is
+  // what makes the cross-turn loop safe: it runs autonomously yet steps aside the instant you type.
+  pi.on("input", async (event) => {
+    if ((event as { source?: string }).source === "interactive") userInterjected = true;
+    return { action: "continue" as const };
+  });
+
+  // The loop driver (push) — CROSS-TURN re-engagement, for ANY active goal. The stop signal differs:
+  // autonomous goals stop when done_when passes; self-judged goals stop when Gemma calls goal_done
+  // after applying the completion check. Either way it re-engages until stop or the cycle cap. It is
+  // gated on !userInterjected so a turn YOU started never triggers a re-engagement (no hijack), and
+  // re-entrancy-guarded so each agent_end is processed once.
   pi.on("agent_end", async () => {
-    if (state.status !== "active" || !isAutonomous(state) || inAgentEnd) return;
+    if (state.status !== "active" || !state.objective || inAgentEnd) return; // no/cleared goal → nothing to drive
+    if (userInterjected) { userInterjected = false; return; } // you drove this turn → yield, don't push
     inAgentEnd = true;
     try {
-      const code = await runDoneWhen();
-      if (code === 0) {
-        // Machine-checkable termination: done even if Gemma forgot to call goal_done.
-        state.status = "done"; persist(); snapshot();
-        return;
+      // Autonomous: done_when is the authoritative machine stop — done even if Gemma forgot goal_done.
+      if (isAutonomous(state)) {
+        const code = await runDoneWhen();
+        if (code === 0) { state.status = "done"; persist(); snapshot(); return; }
       }
+      // Still active (self-judged Gemma hasn't called goal_done, or done_when still failing) →
+      // re-engage for another cycle, restating the objective + completion check for drift correction.
       if (state.cycle < state.maxCycles) {
         state.cycle++; persist(); snapshot();
         pi.sendUserMessage(buildContinue(state, lastCheck), { deliverAs: "followUp" });
       } else {
         // BLOCKED is durable, not silent — stop cleanly, never a silent runaway.
         state.status = "blocked";
-        state.blockedReason = `cycle budget exhausted (${state.maxCycles}) without done_when passing`;
+        state.blockedReason = `cycle budget exhausted (${state.maxCycles}) without the goal being reached`;
         persist(); snapshot();
       }
     } finally {
