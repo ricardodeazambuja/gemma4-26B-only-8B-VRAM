@@ -17,9 +17,13 @@ worst-case wasted carbon.
   to verify before declaring done* (e.g. "re-render the SVG and confirm it reads as a pelican on a
   bike"); it defaults to a MINDSET-grounded *"verify, don't assume."* `done_when` is an optional
   shell command (exit 0 ⇒ met) for a machine stop; `max_cycles` bounds the loop (default 20).
-- **`goal_status()`** — objective, cycle/budget, the check, last `done_when` result.
+- **`goal_status()`** — objective, cycle/budget, the current **phase**, the check, last `done_when` result.
 - **`goal_done()`** — claim completion. Verifies **`done_when`** (if set) *and* that **plan's steps
   are complete** (it reads `plan-<id>.json`); else returns a teaching error, or marks the goal done.
+- **`goal_conclude(outcome, summary)`** — the **model-owned stop affordance**: deliberately land the
+  work as `partial` or `abandoned` with a one-line `summary` when the objective can't be fully met.
+  *Not* the verified-done path (that's `goal_done`). **Gated** to the cold phase (commit/decide) so it
+  can't be used to bail early — see [Annealed nudging](#annealed-nudging-the-teacher-schedule).
 
 Plus a `/goal` command for a human: **`/goal <task>` sets the objective *and starts the loop*** (the
 kickoff drives a turn with the full task text via `sendUserMessage`, the lever `pipe` uses); `/goal`
@@ -61,6 +65,52 @@ good rather than just pause: `/goal clear`.)
   beats a self-reported checkbox.
 
 `goal_done` gates either way: `done_when` (if set) **and** plan steps complete before accepting.
+
+## Annealed nudging (the teacher schedule)
+
+A flat loop coaches cycle 1 and cycle 19 identically, and then cuts the work off at the budget. `goal`
+instead **anneals** the nudge over its own counter (`cycle / max_cycles`), like a good teacher who
+also respects the clock — generous and exploratory early, increasingly directive late, and at the end
+*insisting you land your best verified answer* rather than yanking the work away. Full rationale:
+[`docs/goal-annealing-prd.md`](../../docs/goal-annealing-prd.md).
+
+**Four phases**, chosen by *reserved cycle counts* (not raw temperature), so the arc stays sane at any
+budget — always ≥1 explore when the budget allows, the last cycle is **always** decide, and
+`max_cycles=1` is pure decide:
+
+| Phase | When (default) | The push cools… | …and so does the verification ask |
+|---|---|---|---|
+| **explore** | first ~half | range widely, question assumptions, don't lock in | *establish broadly* — derive/run/read, be skeptical of memory |
+| **consolidate** | middle | converge on the most promising line, close threads | verify what *this direction* depends on |
+| **commit** | last ~25% | commit to your best result, finish it | verify what the *outcome* hinges on; flag the rest unverified |
+| **decide** | final cycle | **you cannot iterate further — decide now** | verify the decision-critical claim; mark the rest unverified |
+
+The **honesty floor never melts**: every phase keeps "verified, or explicitly marked *unverified*" —
+only the *emphasis and effort-triage* cool, never the bar. (grounding's `MINDSET` enforces that bar on
+every call regardless; the cooling register rides here, in `goal`'s push, so grounding is untouched.)
+
+**Graceful stop, not a guillotine.** The terminal *ramps*: the final re-engagement is the **decide**
+phase — an explicit "this is your last cycle, land it" — and only if the model still neither finishes
+nor concludes does the hard `blocked` backstop fire (durable, never silent). The model's own exit is
+`goal_conclude`, unlocked in the cold phase: `partial` (some achieved, gaps flagged) or `abandoned`
+(can't be done, with the reason) → a new **`concluded`** status, distinct from `blocked` ("ran out of
+road") and `done` (verified). So an unattended run ends on a *stated decision*, not a silent cut.
+
+**Two channels, one schedule:**
+
+- **Channel A — prompt pressure** (default **on**, pure-prompt). The phases above, in `buildContinue`.
+- **Channel B — sampling temperature** (default **off**, `PI_GOAL_TEMP_ANNEAL=1`). Cools the model's
+  *actual* sampling temperature across cycles via `before_provider_request` — diverse/exploratory
+  early, greedy/decisive late, using a **cosine** curve (holds heat through explore, drops late;
+  classic geometric cooling is convex and would cool fastest at the *start*, backwards here). It is
+  fail-open and active-goal-gated, and rides an **untyped provider seam** — the end-to-end "the model
+  samples at this temperature" claim still needs a live-server spike, so it ships off by default.
+
+**Config (env):** `PI_GOAL_ANNEAL=0` disables Channel A (flat fallback, byte-for-byte the old push).
+`PI_GOAL_TEMP_ANNEAL=1` enables Channel B. `PI_GOAL_COMMIT_FRACTION` (0.25), `PI_GOAL_EXPLORE_FRACTION`
+(0.5), `PI_GOAL_ANNEAL_SHAPE` (`cosine`|`linear`), `PI_GOAL_TEMP_LO`/`PI_GOAL_TEMP_HI` (0.3 / 1.0) tune
+the schedule. Malformed values fall back to defaults — a typo never breaks the loop. The active phase
+and temperature show up in `goal_status` and the `goal-status.md` snapshot.
 
 ## The `plan` ↔ `goal` seam
 
@@ -107,13 +157,23 @@ ticked, defers the *finish* to `goal_done` rather than declaring completion itse
 node --experimental-strip-types goal/test.mjs
 ```
 
-63 assertions: helpers (clip/render/snapshot incl. the completion `check`, the rejection-gradient in
-`buildContinue`, `lastAssistantStopReason`), `readPlanRemaining` (the plan↔goal seam), the tools with
-validation, the `goal_done` pull gate (`done_when` **and** plan-steps-complete), the **self-judged
-loop** (`agent_end` re-engages without `done_when`, budget → blocked, auto-done on a passing
-`done_when`), the **yield-to-human** path (`input` `source:"interactive"` suppresses the next
+113 assertions. The original 63: helpers (clip/render/snapshot incl. the completion `check`, the
+rejection-gradient in `buildContinue`, `lastAssistantStopReason`), `readPlanRemaining` (the plan↔goal
+seam), the tools with validation, the `goal_done` pull gate (`done_when` **and** plan-steps-complete),
+the **self-judged loop** (`agent_end` re-engages without `done_when`, budget → blocked, auto-done on a
+passing `done_when`), the **yield-to-human** path (`input` `source:"interactive"` suppresses the next
 re-engagement; `"extension"` does not), the **Esc/abort stop** (`message_end` latch *and* `agent_end`
 message-scan backstop both yield; a normal finish still re-engages; one-shot), the **rejection
 gradient** (a refused `goal_done` names its reason in the next push, once), R1 prefix/tail injection,
-persistence reload, and `/goal`. No tmux, no live model — `exec`/`sendUserMessage` are stubbed and
-`plan-<id>.json` is simulated.
+persistence reload, and `/goal`.
+
+50 more cover **annealing**: the pure schedule (band boundaries for `max_cycles ∈ {1,2,3,20,…}`,
+reserved-tail math, monotone/normalized `temperature`, cosine-vs-linear, sampling-temp mapping, env
+config incl. fail-safe parsing), the **banded `buildContinue`** (phase markers, the honesty floor in
+every band, `goal_conclude` offered only in the cold phases), `renderGoal`/snapshot phase + `concluded`
+lines, the **`goal_conclude`** gate (refused in explore, accepted in decide, empty-summary guard,
+persistence), the **terminal ramp** (final push is the decide phase; conclude stops the loop; blocked
+only *after* a decide turn — FR7), **Channel B** `applyTempAnneal` (fail-open guards: off-by-default,
+shape-guard, active-goal gate, copy-not-mutate, cools across cycles), and a **subprocess** check that
+`PI_GOAL_ANNEAL=0` really gives the flat fallback. No tmux, no live model — `exec`/`sendUserMessage`
+are stubbed and `plan-<id>.json` is simulated.

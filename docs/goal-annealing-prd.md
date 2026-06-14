@@ -226,9 +226,17 @@ Channels driven by one shared schedule:
 
 ```
 p   = cycle / maxCycles                      // progress in [0,1]
-T   = T0 * pow(alpha, cycle)                 // geometric cooling (classic SA shape)
-                                             // alpha chosen so T≈threshold at the commit boundary
+T   = (1 + cos(pi * p)) / 2                  // cosine annealing: 1 at p=0, 0 at p=1
+                                             // holds heat early, steepest mid, flattens cool late
 ```
+
+> **Shape: cosine, not geometric (decided during implementation).** This PRD originally sketched
+> classic geometric cooling (`T0·alpha^cycle`). Implementing it surfaced a mismatch the tests caught:
+> geometric is *convex* — it cools fastest at the **start**, which is backwards for a schedule meant
+> to stay exploratory *while there's budget*. Cosine annealing (the ML LR-schedule curve) is concave
+> early: it holds heat through the explore half and drops into commit/decide, so Channel B's sampling
+> temperature actually tracks the bands. `linear` (`T=1−p`) remains available for A/B and tests. Bands
+> are unaffected — they're reserved-count based (below), not `T`-based.
 
 Banding is by **reserved cycle counts** (budget-relative, robust for tiny `maxCycles`) rather than
 raw `T`, with `T` still exported for Channel B and display:
@@ -388,18 +396,20 @@ way, **with no active goal nothing changes** — verification annealing is purel
 
 All defaults sane; overridable. v1 keeps the surface minimal.
 
-| Knob | Default | Where | Notes |
-|---|---|---|---|
-| goal annealing on/off | on (Channel A) | env `PI_GOAL_ANNEAL` / `goal_set` | Channel A is safe to default on |
-| `CHECK` annealing on/off | on | env `PI_GROUND_ANNEAL` | shares the schedule; **no-op without an active goal** |
-| `commitFraction` | 0.25 | cfg | reserved commit tail = `ceil(maxCycles * f)` |
-| `exploreFraction` | 0.5 | cfg | explore band upper bound on `p` |
-| schedule shape | geometric | cfg | `linear` alternative for testing |
-| Channel B on/off | **off** | env `PI_GOAL_TEMP_ANNEAL` | untyped seam → opt-in |
-| temp range `[lo, hi]` | `[0.3, 1.0]` | env | clamp for Channel B |
+Knobs **as shipped** (all env; malformed values fall back to the default so a typo never breaks the
+loop):
 
-Per-goal overrides can ride on `goal_set` (e.g. an optional `anneal` object) if needed; not required
-for v1.
+| Knob | Env var | Default | Notes |
+|---|---|---|---|
+| Channel A (prompt pressure) on/off | `PI_GOAL_ANNEAL` | on (`0`/`off` disables) | flat fallback is byte-for-byte the old push |
+| Channel B (sampling temp) on/off | `PI_GOAL_TEMP_ANNEAL` | **off** (`1`/`on` enables) | untyped provider seam → opt-in |
+| commit fraction | `PI_GOAL_COMMIT_FRACTION` | 0.25 | reserved cold tail = `ceil(maxCycles * f)` |
+| explore fraction | `PI_GOAL_EXPLORE_FRACTION` | 0.5 | explore band upper bound on `p` |
+| schedule shape | `PI_GOAL_ANNEAL_SHAPE` | `cosine` | `linear` alternative for A/B + tests |
+| Channel B temp range `[lo, hi]` | `PI_GOAL_TEMP_LO` / `PI_GOAL_TEMP_HI` | `0.3` / `1.0` | sampling-temp clamp |
+
+Channel A and B are independent flags on the goal extension; `grounding` is untouched (§6.6a), so
+there is no `PI_GROUND_ANNEAL`. Per-goal overrides on `goal_set` were not needed for v1.
 
 ## 9. Risks, edge cases & mitigations
 
@@ -482,6 +492,31 @@ for v1.
    secondary). Confirm we only ever cool the *act-now* register, never the standing principle.
 8. **`CHECK` outside a goal loop:** proposed to stay baseline (no budget/horizon ⇒ no schedule).
    Confirm additive-only is the desired contract.
+
+## 15. Decisions as implemented (v1 — `feat/goal-annealing`)
+
+How the open questions were resolved in the shipped Phase 1 + Channel B (all autonomous, since the
+user was away). Revisit any of these freely — they're choices, not constraints.
+
+1. **Stop affordance:** sibling tool **`goal_conclude(outcome, summary)`** (§6.3b), keeping `goal_done`
+   strictly the verified-done path. `outcome ∈ {partial, abandoned}` (a model that thinks it's *done*
+   uses `goal_done`, which runs the full gate). Gated to the cold (commit/decide) phase.
+2. **Bands:** four discrete bands (`explore/consolidate/commit/decide`), by reserved cycle counts.
+3. **Channel B:** **off** by default behind `PI_GOAL_TEMP_ANNEAL`; range `[0.3, 1.0]`. The end-to-end
+   "model samples at this temp" wire claim is **not yet spiked** (needs a live server) — flagged in
+   code + README. Schedule shape changed to **cosine** (see §6.1 callout).
+4. **Terminal vocabulary:** added a distinct **`concluded`** status (≠ `blocked` "ran out of road",
+   ≠ `done` verified), carrying `outcome` + `summary`, threaded through reload/render/snapshot.
+5. **Autonomous mode:** coaching bands apply in both modes; `done_when` stays authoritative; an
+   autonomous concede is the `partial`/`abandoned` path. (Not separately cooled — left as-is.)
+6. **Coupling:** **(a)** — `goal` owns the verification register in `buildContinue`; `grounding`
+   untouched. `anneal.ts` is co-located in `goal/` (not a shared extension dir), so no cross-extension
+   coupling and no jiti-shared-state problem.
+7. **Anneal `MINDSET`:** **no** — left fixed (honesty floor).
+8. **`CHECK` outside a loop:** unchanged — `grounding` is untouched, so this holds by construction.
+
+**Not done (deferred):** a live-model spike for Channel B's wire path (§6.4 acceptance); §6.6b
+(literally cooling `CHECK`) — unbuilt by design.
 
 ---
 
