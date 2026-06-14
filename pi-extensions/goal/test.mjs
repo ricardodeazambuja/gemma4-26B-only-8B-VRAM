@@ -11,7 +11,7 @@ import factory, {
   bandGuidance, currentBand, applyTempAnneal,
 } from "./index.ts";
 import {
-  bandFor, reservedCommit, temperature, samplingTemperature, isColdBand,
+  bandFor, reservedCommit, temperature, isColdBand,
   annealConfigFromEnv, annealEnabled, tempAnnealEnabled, DEFAULT_ANNEAL,
 } from "./anneal.ts";
 const SRC = new URL(".", import.meta.url).pathname;
@@ -326,8 +326,6 @@ const run = async () => {
     ok("temperature monotone non-increasing", mono);
     ok("temperature endpoints 1 → 0", temperature(0, 20) === 1 && temperature(20, 20) === 0);
     ok("cosine holds heat early (warmer than linear at p=0.25)", temperature(5, 20) > temperature(5, 20, { ...DEFAULT_ANNEAL, shape: "linear" }) && temperature(5, 20) > 0.8);
-    // sampling temperature maps into [lo,hi], cools with cycle
-    ok("samplingTemperature in [lo,hi], hot→cold", Math.abs(samplingTemperature(0, 20) - 1.0) < 1e-9 && Math.abs(samplingTemperature(20, 20) - 0.3) < 1e-9 && samplingTemperature(2, 20) > samplingTemperature(18, 20));
     // env config
     ok("annealEnabled default on, off via flag", annealEnabled({}) && !annealEnabled({ PI_GOAL_ANNEAL: "0" }) && !annealEnabled({ PI_GOAL_ANNEAL: "off" }));
     ok("tempAnnealEnabled default off, on via flag", !tempAnnealEnabled({}) && tempAnnealEnabled({ PI_GOAL_TEMP_ANNEAL: "1" }));
@@ -381,6 +379,13 @@ const run = async () => {
     ok("snapshot persisted the conclusion", md.includes("concluded — partial") && md.includes("got 80%"));
     r = await h.tools.goal_conclude.execute("t", { outcome: "partial", summary: "again" });
     ok("conclude again → already concluded (idempotent-ish)", !r.isError && r.content[0].text.includes("already concluded"));
+    // round-trip the concluded terminal status + outcome/summary through session_start reload
+    const h2 = makeHarness();
+    h2.ctx.cwd = h.dir; h2.ctx.sessionManager = { getSessionDir: () => h.dir, getSessionId: () => "sess" };
+    await h2.hooks.session_start({}, h2.ctx);
+    const reloaded = await statusText(h2.tools);
+    ok("concluded status + outcome/summary survive reload", reloaded.includes("concluded — partial") && reloaded.includes("got 80%"));
+    rmSync(h2.dir, { recursive: true, force: true });
     cleanup(h);
   }
 
@@ -424,6 +429,12 @@ const run = async () => {
     const tEarly = applyTempAnneal(body, { ...active, cycle: 1 }, { annealOn: true, tempOn: true }).temperature;
     const tLate = applyTempAnneal(body, { ...active, cycle: 19 }, { annealOn: true, tempOn: true }).temperature;
     ok("sampling temperature cools across cycles", tEarly > tLate);
+    // FR9: never clobber the request's own temperature upward — cool from it, down toward the floor.
+    const based = { model: "g", temperature: 0.6, messages: [{ role: "user", content: "hi" }] };
+    const hot = applyTempAnneal(based, { ...active, cycle: 1 }, { annealOn: true, tempOn: true }).temperature;
+    ok("hot end ≈ the request's own base temperature (no clobber)", Math.abs(hot - 0.6) < 0.02 && hot <= 0.6 + 1e-9);
+    ok("never raises temperature above the base, any cycle", [1, 5, 10, 19, 20].every((c) => applyTempAnneal(based, { ...active, cycle: c }, { annealOn: true, tempOn: true }).temperature <= 0.6 + 1e-9));
+    ok("a lower base yields a lower temp than a higher base", applyTempAnneal(based, { ...active, cycle: 5 }, { annealOn: true, tempOn: true }).temperature < applyTempAnneal(body, { ...active, cycle: 5 }, { annealOn: true, tempOn: true }).temperature);
     ok("no active goal → untouched", applyTempAnneal(body, { ...active, status: "done" }, { annealOn: true, tempOn: true }) === body);
     ok("empty objective → untouched", applyTempAnneal(body, { ...active, objective: "" }, { annealOn: true, tempOn: true }) === body);
     ok("non-object payload → untouched (fail-open)", applyTempAnneal("notabody", active, { annealOn: true, tempOn: true }) === "notabody");

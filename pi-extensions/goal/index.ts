@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import {
-  type Band, type AnnealConfig, bandFor, temperature, samplingTemperature, isColdBand,
+  type Band, type AnnealConfig, bandFor, temperature, isColdBand,
   annealConfigFromEnv, annealEnabled, tempAnnealEnabled,
 } from "./anneal.ts";
 
@@ -65,13 +65,16 @@ export function currentBand(s: GoalState, cfg: AnnealConfig = ANNEAL_CFG): Band 
   return bandFor(Math.max(1, s.cycle), s.maxCycles, cfg);
 }
 
-// Channel B (PRD §6.4): set the provider request's sampling temperature from the loop's position.
+// Channel B (PRD §6.4): cool the provider request's sampling temperature as the loop progresses.
 // PURE + FAIL-OPEN by construction so the goal test can assert the guard logic without a live model:
 //   • returns the payload UNTOUCHED unless both channels are on AND a goal is actively looping;
 //   • shape-guards the payload (only a chat-completions body with a messages[] array is touched);
 //   • returns a shallow copy so a shared/cached request object is never mutated in place.
-// What it CANNOT prove without a live-server spike: that the merged temperature actually reaches the
-// wire (PRD §6.4 acceptance — before_provider_request must run after the provider sets its own temp).
+// FR9 (no silent clobber): the hot end IS the request's OWN temperature — we only cool it DOWN toward
+// min(tempLo, base), never raise it. cycle 1 leaves it essentially untouched; it descends as T cools.
+// (When the request sets no temperature, tempHi is the assumed base.) The mutated field reaches the
+// wire: in pi's openai-completions provider onPayload runs AFTER buildParams sets temperature and its
+// return is sent as-is (openai-completions.ts:146-157) — only llama.cpp honoring the field is unspiked.
 export function applyTempAnneal(
   payload: unknown,
   s: GoalState,
@@ -85,8 +88,10 @@ export function applyTempAnneal(
   if (!payload || typeof payload !== "object") return payload; // shape guard → fail open
   const body = payload as Record<string, unknown>;
   if (!Array.isArray(body.messages)) return payload; // not the body we expect → fail open
-  const temperature = samplingTemperature(Math.max(1, s.cycle), s.maxCycles, cfg);
-  return { ...body, temperature };
+  const base = typeof body.temperature === "number" && Number.isFinite(body.temperature) ? body.temperature : cfg.tempHi;
+  const floor = Math.min(cfg.tempLo, base); // never cool ABOVE the base, even if tempLo > base
+  const t = temperature(Math.max(1, s.cycle), s.maxCycles, cfg); // 1 hot → 0 cold
+  return { ...body, temperature: floor + (base - floor) * t };
 }
 
 // True when the goal carries a machine-checkable stop condition (done_when). It's the AUTHORITATIVE

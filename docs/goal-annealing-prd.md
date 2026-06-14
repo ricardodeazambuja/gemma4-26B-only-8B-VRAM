@@ -289,22 +289,27 @@ cutting it off — the model is given a verb to end the work on its own stated t
 A `before_provider_request` handler, active only while an annealing goal is `active`:
 
 ```
-samplingTemp = lo + (hi - lo) * T          // T from §6.1, clamp to [lo, hi]
-if (payload looks like the expected chat-completions body) payload.temperature = samplingTemp
-return payload
+base = payload.temperature ?? tempHi        // the request's OWN temperature is the hot-end ceiling
+floor = min(tempLo, base)                    // FR9: only ever cool DOWN, never above the base
+samplingTemp = floor + (base - floor) * T    // T from §6.1: 1 hot → 0 cold
+if (payload looks like a chat-completions body) return { ...payload, temperature: samplingTemp }
 ```
 
 Guardrails: shape-check the payload and **fail open** (leave it untouched if it isn't the expected
-shape); never run when no annealing goal is active; clamp to `[lo, hi]` (defaults derived from the
-project's temperature findings, e.g. `hi ≈ 1.0`, `lo ≈ 0.3`). This is the only literal-annealing
-piece and rides an untyped seam, so it ships behind a flag (§8) and last (§12).
+shape); never run when no annealing goal is active; return a **copy** (never mutate a shared/cached
+object). FR9 is honored by construction — the hot end equals the request's own configured temperature
+(so cycle 1 is essentially untouched), and it only descends toward `min(tempLo, base)`; it never raises
+the temperature. This is the only literal-annealing piece and rides an untyped seam, so it ships behind
+a flag (§8) and last (§12).
 
-**Spike acceptance criterion.** The enabler is confirmed only at the *return path* (the returned
-payload replaces the request body). The spike must verify the *field*: that a mutated
-`payload.temperature` is honored **end-to-end on the wire** — i.e. `before_provider_request` runs
-*after* the provider has merged its own `temperature` option into the body, so a downstream merge
-cannot clobber the mutation. Acceptance = "the model samples at the annealed temperature," not "the
-returned payload reaches transport."
+**Spike status (the clobber-order half is now statically closed).** The acceptance is "the model
+samples at the annealed temperature." That splits in two: (i) *does the mutated field survive to the
+wire* — **confirmed by source**: in pi's openai-completions provider `onPayload` runs *after*
+`buildParams` sets `temperature`, and its return is sent to `client.chat.completions.create` as-is
+(`openai-completions.ts:146-157`), so the mutation is not clobbered downstream; (ii) *does llama.cpp
+honor the field* — it does (standard sampling param; the project's temperature findings rely on it).
+A live run is now belt-and-suspenders confirmation, not a gating unknown — but Channel B still ships
+off by default until that run is done.
 
 ### 6.5 Terminal flow (FR5/FR7)
 
@@ -502,9 +507,10 @@ user was away). Revisit any of these freely — they're choices, not constraints
    strictly the verified-done path. `outcome ∈ {partial, abandoned}` (a model that thinks it's *done*
    uses `goal_done`, which runs the full gate). Gated to the cold (commit/decide) phase.
 2. **Bands:** four discrete bands (`explore/consolidate/commit/decide`), by reserved cycle counts.
-3. **Channel B:** **off** by default behind `PI_GOAL_TEMP_ANNEAL`; range `[0.3, 1.0]`. The end-to-end
-   "model samples at this temp" wire claim is **not yet spiked** (needs a live server) — flagged in
-   code + README. Schedule shape changed to **cosine** (see §6.1 callout).
+3. **Channel B:** **off** by default behind `PI_GOAL_TEMP_ANNEAL`. Cools the request's **own**
+   temperature down toward `tempLo` (FR9 — never clobbers it upward). Wire path **statically
+   confirmed** (`openai-completions.ts:146-157`); only a live llama.cpp run is left as
+   belt-and-suspenders. Schedule shape changed to **cosine** (see §6.1 callout).
 4. **Terminal vocabulary:** added a distinct **`concluded`** status (≠ `blocked` "ran out of road",
    ≠ `done` verified), carrying `outcome` + `summary`, threaded through reload/render/snapshot.
 5. **Autonomous mode:** coaching bands apply in both modes; `done_when` stays authoritative; an
@@ -515,8 +521,8 @@ user was away). Revisit any of these freely — they're choices, not constraints
 7. **Anneal `MINDSET`:** **no** — left fixed (honesty floor).
 8. **`CHECK` outside a loop:** unchanged — `grounding` is untouched, so this holds by construction.
 
-**Not done (deferred):** a live-model spike for Channel B's wire path (§6.4 acceptance); §6.6b
-(literally cooling `CHECK`) — unbuilt by design.
+**Not done (deferred):** a live llama.cpp run to belt-and-suspenders Channel B (wire path already
+statically confirmed, §6.4); §6.6b (literally cooling `CHECK`) — unbuilt by design.
 
 ---
 

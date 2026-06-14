@@ -95,14 +95,9 @@ export function temperature(cycle: number, maxCycles: number, cfg: AnnealConfig 
   return clamp((1 + Math.cos(Math.PI * p)) / 2, 0, 1);
 }
 
-// Channel B (PRD §6.4): map the normalized T to an actual sampling temperature in [lo,hi].
-// Hot loop start → hi (diverse/exploratory); cold end → lo (greedy/decisive).
-export function samplingTemperature(cycle: number, maxCycles: number, cfg: AnnealConfig = DEFAULT_ANNEAL): number {
-  const lo = cfg.tempLo;
-  const hi = cfg.tempHi;
-  const t = temperature(cycle, maxCycles, cfg);
-  return clamp(lo + (hi - lo) * t, Math.min(lo, hi), Math.max(lo, hi));
-}
+// NOTE: Channel B's sampling temperature is computed in goal's applyTempAnneal, NOT here — it cools
+// the request's OWN temperature down toward tempLo (FR9: never clobber the user's base upward), which
+// this module can't do without the live request body. tempLo/tempHi live in the config for it.
 
 // Read overrides from the environment (single I/O seam; the rest of the module is pure). Unknown /
 // malformed values fall back to the default, so a typo never breaks the loop.

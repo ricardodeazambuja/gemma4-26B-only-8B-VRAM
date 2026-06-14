@@ -101,10 +101,13 @@ road") and `done` (verified). So an unattended run ends on a *stated decision*, 
 - **Channel A — prompt pressure** (default **on**, pure-prompt). The phases above, in `buildContinue`.
 - **Channel B — sampling temperature** (default **off**, `PI_GOAL_TEMP_ANNEAL=1`). Cools the model's
   *actual* sampling temperature across cycles via `before_provider_request` — diverse/exploratory
-  early, greedy/decisive late, using a **cosine** curve (holds heat through explore, drops late;
-  classic geometric cooling is convex and would cool fastest at the *start*, backwards here). It is
-  fail-open and active-goal-gated, and rides an **untyped provider seam** — the end-to-end "the model
-  samples at this temperature" claim still needs a live-server spike, so it ships off by default.
+  early, greedy/decisive late, on a **cosine** curve (holds heat through explore, drops late; classic
+  geometric cooling is convex and would cool fastest at the *start*, backwards here). It cools the
+  request's **own** temperature *downward* toward `PI_GOAL_TEMP_LO` — never raises it — so a base
+  temperature you've configured is the hot-end ceiling, not something it clobbers. Fail-open and
+  active-goal-gated. The mutation reaches the wire (in pi's openai-completions provider `onPayload`
+  runs after the params are built and its return is sent as-is, `openai-completions.ts:146-157`);
+  only "does llama.cpp honor the field" (it does) is left unspiked, so it ships off by default.
 
 **Config (env):** `PI_GOAL_ANNEAL=0` disables Channel A (flat fallback, byte-for-byte the old push).
 `PI_GOAL_TEMP_ANNEAL=1` enables Channel B. `PI_GOAL_COMMIT_FRACTION` (0.25), `PI_GOAL_EXPLORE_FRACTION`
@@ -157,7 +160,7 @@ ticked, defers the *finish* to `goal_done` rather than declaring completion itse
 node --experimental-strip-types goal/test.mjs
 ```
 
-113 assertions. The original 63: helpers (clip/render/snapshot incl. the completion `check`, the
+116 assertions. The original 63: helpers (clip/render/snapshot incl. the completion `check`, the
 rejection-gradient in `buildContinue`, `lastAssistantStopReason`), `readPlanRemaining` (the plan↔goal
 seam), the tools with validation, the `goal_done` pull gate (`done_when` **and** plan-steps-complete),
 the **self-judged loop** (`agent_end` re-engages without `done_when`, budget → blocked, auto-done on a
@@ -167,13 +170,14 @@ message-scan backstop both yield; a normal finish still re-engages; one-shot), t
 gradient** (a refused `goal_done` names its reason in the next push, once), R1 prefix/tail injection,
 persistence reload, and `/goal`.
 
-50 more cover **annealing**: the pure schedule (band boundaries for `max_cycles ∈ {1,2,3,20,…}`,
-reserved-tail math, monotone/normalized `temperature`, cosine-vs-linear, sampling-temp mapping, env
-config incl. fail-safe parsing), the **banded `buildContinue`** (phase markers, the honesty floor in
-every band, `goal_conclude` offered only in the cold phases), `renderGoal`/snapshot phase + `concluded`
-lines, the **`goal_conclude`** gate (refused in explore, accepted in decide, empty-summary guard,
-persistence), the **terminal ramp** (final push is the decide phase; conclude stops the loop; blocked
-only *after* a decide turn — FR7), **Channel B** `applyTempAnneal` (fail-open guards: off-by-default,
-shape-guard, active-goal gate, copy-not-mutate, cools across cycles), and a **subprocess** check that
-`PI_GOAL_ANNEAL=0` really gives the flat fallback. No tmux, no live model — `exec`/`sendUserMessage`
-are stubbed and `plan-<id>.json` is simulated.
+53 more cover **annealing**: the pure schedule (band boundaries for `max_cycles ∈ {1,2,3,20,…}`,
+reserved-tail math, monotone/normalized `temperature`, cosine-vs-linear, env config incl. fail-safe
+parsing), the **banded `buildContinue`** (phase markers, the honesty floor in every band,
+`goal_conclude` offered only in the cold phases), `renderGoal`/snapshot phase + `concluded` lines, the
+**`goal_conclude`** gate (refused in explore, accepted in decide, empty-summary guard, persistence,
+**reload round-trip** of the `concluded` status + outcome/summary), the **terminal ramp** (final push
+is the decide phase; conclude stops the loop; blocked only *after* a decide turn — FR7), **Channel B**
+`applyTempAnneal` (fail-open guards: off-by-default, shape-guard, active-goal gate, copy-not-mutate,
+cools across cycles, and **FR9 — never clobbers the request's own temperature upward**), and a
+**subprocess** check that `PI_GOAL_ANNEAL=0` really gives the flat fallback. No tmux, no live model —
+`exec`/`sendUserMessage` are stubbed and `plan-<id>.json` is simulated.
