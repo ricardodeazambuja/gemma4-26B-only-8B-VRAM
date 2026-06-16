@@ -108,8 +108,12 @@ _(appended incrementally as each quant completes, so a dropped session keeps fin
 
 | Quant | Size | Max `-ngl` @ 32k/q8_0 | VRAM used | pp tok/s | tg tok/s | Coherent? |
 |---|---|---|---|---|---|---|
-| Q2_K | 4.83 GB | 99 (fits fully) | 6.3 GB @ 4k ctx | 103 | 19.5 | **NO — degenerate** |
-| Q4_K_M | 7.38 GB | _testing_ | | | | _pending_ |
+| Q2_K | 4.83 GB | 99 (fits fully) | 6.3 GB | 103 | 19.5 | **NO — degenerate/unusable** |
+| Q4_K_M | 7.38 GB | **42** (44+ OOM) | 7.82 GB | 67.9 | **17.0** | **YES — excellent** |
+| Q6_K | 9.79 GB | _testing_ | | | | _pending_ |
+| Q8_0 | 12.67 GB | _testing_ | | | | _pending_ |
+
+(tg numbers measured *with* the Q6/Q8 download running — slight CPU contention; winner re-verified clean below.)
 
 ### Diagnostics log (the hard part)
 
@@ -128,8 +132,21 @@ The model **loads** as arch `gemma4` and runs at full speed, but **Q2_K output i
   (88a3927, Jun 12) and today's master — so rebuilding to latest would not change model output.
 - Load warnings are benign (token-type overrides for `</s>`, `<\|tool_response>`).
 
-**Leading hypothesis:** the **Q2_K quant is over-degraded / bad** (most aggressive quant of a 12B
-with unusual attention dims — `key_length=512`, per-layer MQA on global layers). The card only
-*recommends* Q4_K_M; Q2_K is listed as "tiniest, runs almost anywhere" with no quality promise.
-**Q4_K_M is the discriminator** — if it's coherent, Q2_K is simply unusable here; if it's also
-garbage, the arch isn't correctly supported by any available llama.cpp and that's the finding.
+**RESOLVED — two independent causes, the model itself is fine:**
+
+1. **Q2_K is genuinely over-degraded / unusable.** Tested three ways — raw `/completion`, jinja
+   `/v1/chat/completions` (temp 0.7), and the native `<\|turn>` format — all degenerate (`l. l. l.`,
+   CJK noise, or rambling to the token limit with empty content). Q2_K is the most aggressive quant
+   of a 12B with unusual attention dims; it collapses. The card only *recommends* Q4_K_M and lists
+   Q2_K as "tiniest, runs almost anywhere" with no quality promise. **Skip Q2_K on this model.**
+
+2. **Q4_K_M (and up) work perfectly — but the prompt must be chat-formatted.** Q4_K_M via the
+   standard `/v1/chat/completions` + `--jinja` path (exactly what `pi` uses) produces clean,
+   correct code with the thinking split into `reasoning_content` and the answer in `content`, **no
+   parser crash.** Feeding a *raw* unstructured prompt (no `<\|turn>` chat structure) drives even
+   Q4_K_M out of distribution into garbage — that is expected for an instruct/thinking model and is
+   not a defect. `enable_thinking` defaults to thinking-on through the OpenAI path; no special kwarg
+   needed.
+
+**Net:** the model is good. Use **Q4_K_M or larger**, always through the chat template. The early
+garbage was Q2_K + raw-prompt testing, not a llama.cpp/arch problem.
