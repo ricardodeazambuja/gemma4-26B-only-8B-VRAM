@@ -178,8 +178,17 @@ max `-ngl` per quant leaves only ~0.3–0.5 GB headroom — the per-quant *safe*
 OOM an unattended server.
 
 **Quality spot-check (Q4_K_M, greedy):** correct `is_prime` (edge cases + sqrt bound + even-skip),
-correct one-liners, and a correct **O(1) LRU cache** (hashmap + doubly-linked list with dummy
-head/tail nodes) with sound reasoning in the thinking channel. Genuinely usable for Python coding.
+correct one-liners, and well-architected **O(1) LRU cache** attempts — it reaches for the right
+designs (hashmap + doubly-linked list with dummy head/tail, or an `OrderedDict` variant) with sound
+reasoning in the thinking channel. Caveat: across runs the `put` method's final insertion line was
+sometimes dropped/truncated — a reminder this is a **fallible small model whose code you should
+review/run** (exactly the premise of this repo's pi-extensions layer), not a turn-key oracle.
+
+**Tool-calling works (the path `pi` uses).** A `/v1/chat/completions` request with a `tools` array
+returned a clean `finish_reason: tool_calls` and a well-formed call
+(`get_weather {"city":"Paris"}`) — no 500, no `peg-gemma4` parse crash. So Q4_K_M is usable as an
+agent backend, not just for plain chat.
+
 Note: it's a *thinking* model — give it generous `max_tokens` (the thinking goes to
 `reasoning_content`; with a tiny budget `content` comes back empty, the same gotcha as the 26B).
 
