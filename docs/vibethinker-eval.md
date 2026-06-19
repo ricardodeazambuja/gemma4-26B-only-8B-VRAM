@@ -98,7 +98,36 @@ chain-of-thought before boxing the answer; a first run capped at 4000 tokens got
 (`finish_reason: length`) and never reached `\boxed{}`. The launcher therefore defaults to
 `NPREDICT=38912` — keep generation budgets large.
 
-## 5. Method
+## 5. Using it with pi
+
+pi speaks the OpenAI API to the same `llama-server`, so it drives VibeThinker too. A
+`vibethinker-1.5b` model entry is registered under the existing `llamacpp` provider
+(`config/pi-provider.json` → `scripts/configure-pi.sh`).
+
+```bash
+bash scripts/run-vibethinker.sh                                   # terminal 1: the server
+bash scripts/configure-pi.sh                                      # once, registers the pi model
+MODEL_ID=vibethinker-1.5b bash scripts/run-pi.sh                  # terminal 2: interactive
+# or one-shot:
+pi --provider llamacpp --model vibethinker-1.5b -p "Write a Python function ..."
+```
+
+**Verified (one-shot):** asked for an O(n log n) `longest_increasing_subsequence`, it produced
+a correct patience-sorting solution (`bisect_left`, strict-increasing) and self-checked it on
+three examples in its reasoning.
+
+**Caveats — it's a reasoner, not an agent.**
+- **Best for self-contained problems** ("write a function / solve this"), *not* multi-file agentic
+  work. It reasons and emits code; it does not reliably drive pi's read/edit/bash tool loop.
+- **It dumps a long chain-of-thought first.** Under pi's coding system prompt it wraps the CoT in an
+  inline `<think>…</think>` block, then the answer. (On bare math prompts with the model's default
+  system prompt it instead reasons in plain text and boxes the answer — the format follows the
+  prompt.) The provider entry sets `reasoning: false`, so pi shows that block inline rather than
+  folding it. (To fold it as a thinking section, serve with `--reasoning-format deepseek` and flip
+  the entry to `reasoning: true`.)
+- Keep generation budget large (the launcher's `NPREDICT=38912`) — it thinks a lot.
+
+## 6. Method
 - Server backgrounded with a health-poll wait; VRAM verified freed (`nvidia-smi`) after the run.
 - Known-answer problems chosen so the `\boxed{}` result is checkable against a Python computation
   (`23` = least n with n!÷2024; `7` = 7^2025 mod 100).

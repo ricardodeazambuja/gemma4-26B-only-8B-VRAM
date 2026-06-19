@@ -16,6 +16,15 @@
         "image"
       ],
       "reasoning": true
+    },
+    {
+      "contextWindow": 40960,
+      "id": "vibethinker-1.5b",
+      "name": "VibeThinker 1.5B (Qwen2.5-Math reasoner; math/coding)",
+      "input": [
+        "text"
+      ],
+      "reasoning": false
     }
   ]
 }
