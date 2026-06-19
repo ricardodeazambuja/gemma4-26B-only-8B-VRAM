@@ -203,8 +203,46 @@ and the 100000-char scale check (0.15 s). This matches the model card's coding f
 3B is a much better one-shot coder, but still **not** a tool-driving agent — the §6 external
 verify-retry loop remains the way to "let it test its own code" (and it now passes round 1).
 
-## 8. Method
+## 8. Making llama.cpp recognise the `<think>` reasoning (the template fix)
+
+By default llama.cpp does **not** treat this model's `<think>…</think>` as a reasoning channel:
+`reasoning_content` stays empty, the CoT sits inline in `content`, and `--reasoning-budget` does
+nothing. Root cause, traced in this build's source (`common/chat.cpp` → the auto-parser in
+`common/chat-diff-analyzer.cpp:423`): reasoning detection is **template-driven**. The analyzer
+renders the template with a probe `reasoning_content` field and diffs to find the wrapping tags
+(`compare_reasoning_presence`). VibeThinker's stock Qwen2.5 template **never renders
+`reasoning_content`**, so the diff finds nothing → `reasoning.mode = NONE` → the `<think>` the model
+emits at inference passes through as content. The server logs this as `chat template, thinking = 0`.
+
+**Fix (no rebuild): a patched chat template**, in [`config/vibethinker-1.5b-think.jinja`](../config/vibethinker-1.5b-think.jinja)
+and [`config/vibethinker-3b-think.jinja`](../config/vibethinker-3b-think.jinja) — the stock template plus
+two edits: (1) the assistant branch renders `reasoning_content` wrapped in `<think>…</think>` (so the
+analyzer detects the tags), and (2) the generation prompt force-opens `<think>` (the model continues
+inside it). `run-vibethinker.sh` serves it by default (`THINK=1`) via `--chat-template-file`.
+
+**Verified on the 3B** (`thinking = 1` after the fix):
+
+| | stock template (`THINK=0`) | patched template (`THINK=1`) |
+|---|---|---|
+| `reasoning_content` | empty | **1441 chars** (the CoT) |
+| `content` for "17*23" | CoT wall + answer | clean **`391`** |
+| `--reasoning-budget 500` | ignored | **honoured** — 505 tokens total, thinking capped, answer still emitted |
+
+This fixes the two real pain points: pi now folds the CoT (provider entries flipped to
+`reasoning: true`), and **`REASONING_BUDGET` bounds the runaway thinking** that truncated the
+selfcheck loop (§6). What it does *not* fix is tool use — the OpenAI `tools`/`tool_choice` path still
+yields no `tool_calls` (§7); that's a model-training limit, not a parser one. (Curiosity: under pi's
+*text-based* tool protocol the 3B did emit a `<function>` bash call — worth a deeper look, but not the
+rigorous OpenAI path.)
+
+Alternative not taken: a `--reasoning-tags "<think>,</think>"` **source patch** near
+`chat.cpp:2392` to force the tags without a per-model template (no such CLI flag exists in this
+build). The template route needs no rebuild, so it wins for now.
+
+## 9. Method
 - Server backgrounded with a health-poll wait; VRAM verified freed (`nvidia-smi`) after the run.
+- Reasoning fix verified by diffing `reasoning_content`/`content` and the `thinking = 0|1` server log
+  with vs without `--chat-template-file`, and confirming `--reasoning-budget` caps completion tokens.
 - Known-answer problems chosen so the `\boxed{}` result is checkable against a Python computation
   (`23` = least n with n!÷2024; `7` = 7^2025 mod 100).
 - Tool-use probed with a `run_python` tool across `tool_choice` auto/required and `--reasoning-budget 0`.

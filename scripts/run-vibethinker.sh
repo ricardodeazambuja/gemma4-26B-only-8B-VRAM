@@ -23,6 +23,9 @@
 #
 # Config (override via env vars):
 #   SIZE     1.5B | 3B                             (default: 1.5B — picks dir/file/alias)
+#   THINK    1 | 0                                  (default: 1 — patched template: CoT ->
+#                                                    reasoning_content, clean answer in content)
+#   REASONING_BUDGET  tokens of thinking before </think> is forced  (default: unlimited)
 #   QUANT    Q8_0 | Q6_K | Q5_K_M | Q4_K_M | f16   (default: Q8_0 — near-lossless)
 #   NGL      transformer layers on GPU             (default: 99 = all of them)
 #   CTX      context window                        (default: 40960; native max 131072)
@@ -64,6 +67,14 @@ PORT="${PORT:-8080}"
 TEMP="${TEMP:-0.6}"
 TOP_P="${TOP_P:-0.95}"
 TOP_K="${TOP_K:-0}"   # 0 = top-k disabled (the card's top_k=-1)
+# THINK=1 (default) serves the patched chat template that makes llama.cpp recognise
+# this model's <think>…</think> as a reasoning channel: the CoT then lands in
+# `reasoning_content` (pi folds it) and `content` is the clean answer, and the
+# REASONING_BUDGET lever below works. THINK=0 uses the GGUF's stock template (CoT
+# inline in content, budget ignored — the old behaviour). See docs/vibethinker-eval.md §9.
+THINK="${THINK:-1}"
+THINK_TEMPLATE="${THINK_TEMPLATE:-$REPO_ROOT/config/vibethinker-${SIZE_LC}-think.jinja}"
+REASONING_BUDGET="${REASONING_BUDGET:-}"   # tokens of thinking before </think> is forced; empty = unlimited
 
 [ -f "$MODEL" ] || { echo "ERROR: model not found: $MODEL"; echo "Download it, e.g.:"; echo "  mamba run -n llamacpp hf download mradermacher/VibeThinker-${SIZE}-GGUF VibeThinker-${SIZE}.${QUANT}.gguf --local-dir $MODEL_DIR"; exit 1; }
 command -v mamba >/dev/null 2>&1 || { echo "ERROR: 'mamba' not found on PATH."; exit 1; }
@@ -91,11 +102,26 @@ esac
 KV_ARGS=()
 if [ -n "$KVQUANT" ]; then KV_ARGS=(-ctk "$KVQUANT" -ctv "$KVQUANT" -fa on); else KV_ARGS=(-fa on); fi
 
+# Reasoning template + budget (the §9 fix). THINK=1 swaps in the patched template so
+# llama.cpp extracts <think>…</think> into reasoning_content; REASONING_BUDGET caps it.
+THINK_ARGS=()
+case "$THINK" in
+  1|y|Y|yes|on)
+    if [ -f "$THINK_TEMPLATE" ]; then
+      THINK_ARGS+=(--chat-template-file "$THINK_TEMPLATE")
+      [ -n "$REASONING_BUDGET" ] && THINK_ARGS+=(--reasoning-budget "$REASONING_BUDGET")
+      echo ">> reasoning: ON — $THINK_TEMPLATE${REASONING_BUDGET:+  (budget $REASONING_BUDGET tok)}"
+    else
+      echo ">> WARNING: THINK=1 but template missing ($THINK_TEMPLATE) — using the GGUF's stock template."
+    fi ;;
+  *) echo ">> reasoning: OFF (stock template; CoT inline in content)" ;;
+esac
+
 echo ">> model:    $MODEL  (VibeThinker-$SIZE $QUANT, alias '$ALIAS')"
 echo ">> dense:    -ngl $NGL (all layers on GPU — no --cpu-moe; this model is dense, not MoE)"
 echo ">> context:  $CTX (native max 131072)   KV: ${KVQUANT:-f16} (flash-attn on)   max gen: $NPREDICT"
 echo ">> sampling: temp=$TEMP top-p=$TOP_P top-k=$TOP_K (0=off)   listening: http://$HOST:$PORT/v1"
-echo ">> NOTE: math/coding reasoner — long CoT is inline in 'content' (no reasoning_content). Not a general chatbot."
+echo ">> NOTE: math/coding reasoner (not a general chatbot). THINK=1: CoT -> reasoning_content, clean answer in content. THINK=0: CoT inline in content."
 echo
 
 exec "${RUN[@]}" "$SERVER_BIN" \
@@ -108,6 +134,7 @@ exec "${RUN[@]}" "$SERVER_BIN" \
   -n "$NPREDICT" \
   "${KV_ARGS[@]}" \
   --jinja \
+  "${THINK_ARGS[@]}" \
   --temp "$TEMP" --top-p "$TOP_P" --top-k "$TOP_K" \
   --host "$HOST" --port "$PORT" \
   "$@"

@@ -24,7 +24,7 @@
       "input": [
         "text"
       ],
-      "reasoning": false
+      "reasoning": true
     },
     {
       "contextWindow": 40960,
@@ -33,7 +33,7 @@
       "input": [
         "text"
       ],
-      "reasoning": false
+      "reasoning": true
     }
   ]
 }
