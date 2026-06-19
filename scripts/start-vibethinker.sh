@@ -9,15 +9,16 @@
 # exit — it's yours, not ours). Otherwise we start one and clean it up if asked.
 #
 # Settings (env vars; run-vibethinker.sh knobs like QUANT/CTX/TEMP pass through):
+#   SIZE           1.5B | 3B                  (default: 1.5B — sets server file + pi model id)
 #   HOST/PORT      server to use / start      (default: 127.0.0.1 / 8080)
-#   MODEL_ID       pi model id                (default: vibethinker-1.5b)
+#   MODEL_ID       pi model id                (default: vibethinker-<size>)
 #   STOP_ON_EXIT   1 = always stop on exit, 0 = never, unset = ask  (default: ask)
 #
 # Examples:
-#   bash scripts/start-vibethinker.sh                       # server + interactive pi
+#   bash scripts/start-vibethinker.sh                       # 1.5B: server + interactive pi
+#   SIZE=3B bash scripts/start-vibethinker.sh               # the 3B coder model
 #   bash scripts/start-vibethinker.sh -p "Write a function" # one-shot pi prompt
-#   QUANT=f16 bash scripts/start-vibethinker.sh             # lossless quant
-#   STOP_ON_EXIT=1 bash scripts/start-vibethinker.sh        # auto-stop server when pi exits
+#   STOP_ON_EXIT=1 SIZE=3B bash scripts/start-vibethinker.sh  # auto-stop server on exit
 #
 set -euo pipefail
 
@@ -28,7 +29,10 @@ esac; done
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8080}"
-export MODEL_ID="${MODEL_ID:-vibethinker-1.5b}"   # run-pi.sh reads this
+# SIZE picks the model (1.5B or 3B); it sets the server file/alias AND the pi model id.
+export SIZE="${SIZE:-1.5B}"
+SIZE_LC="$(echo "$SIZE" | tr '[:upper:]' '[:lower:]')"
+export MODEL_ID="${MODEL_ID:-vibethinker-${SIZE_LC}}"   # run-pi.sh reads this
 export HOST PORT
 
 STARTED_SERVER=0

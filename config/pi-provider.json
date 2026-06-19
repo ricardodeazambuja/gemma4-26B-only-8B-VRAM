@@ -25,6 +25,15 @@
         "text"
       ],
       "reasoning": false
+    },
+    {
+      "contextWindow": 40960,
+      "id": "vibethinker-3b",
+      "name": "VibeThinker 3B (Qwen2.5-Coder reasoner; math/coding/STEM)",
+      "input": [
+        "text"
+      ],
+      "reasoning": false
     }
   ]
 }

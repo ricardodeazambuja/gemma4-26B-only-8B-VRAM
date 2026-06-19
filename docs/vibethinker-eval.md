@@ -173,7 +173,37 @@ reasoner is a strong **draft generator** but a weak **self-debugger** on hard da
 one I/O counterexample isn't enough signal to pin a suffix-automaton bug. (Richer feedback — multiple
 counterexamples, or which substrings are mis-counted — might help; not yet tried.)
 
-## 7. Method
+## 7. VibeThinker-3B (Qwen2.5-Coder-3B)
+
+WeiboAI also shipped a **3B** model, built on **Qwen2.5-Coder-3B** and post-trained for
+competitive math, coding, STEM, and *instruction-following with explicit constraints*. Same
+plumbing — the launcher and pi wiring are size-parameterised:
+
+```bash
+mamba run -n llamacpp hf download mradermacher/VibeThinker-3B-GGUF \
+  VibeThinker-3B.Q8_0.gguf --local-dir models/vibethinker-3b      # ~3.3 GB, same safety profile as §2
+SIZE=3B bash scripts/run-vibethinker.sh                            # serve it (alias vibethinker-3b)
+SIZE=3B bash scripts/start-vibethinker.sh                          # server + pi, all-in-one
+pi --provider llamacpp --model vibethinker-3b -p "..."             # or drive pi directly
+```
+
+Verified metadata: arch `qwen2`, **36 layers**, native context 131072 (rope base 1e6, no
+scaling), Q8_0 ≈ 3.3 GB, **5.4 GB VRAM** at 40k ctx (`-ngl 99`, all on GPU). Default system
+prompt is the generic *"You are a helpful assistant."* (the 1.5B's is the math `\boxed{}` nudge),
+so the 3B reads more like a normal assistant.
+
+**Result — markedly stronger at coding.** Given the suffix-automaton task the 1.5B failed (buggy
+`last` update) and then could **not** self-correct over 3 selfcheck rounds, the **3B solved it
+correctly in ONE shot through pi**: a clean O(n) suffix automaton that passed all 509 oracle cases
+and the 100000-char scale check (0.15 s). This matches the model card's coding focus
+(LiveCodeBench / LeetCode).
+
+**Tool use — still none.** Re-probed the 3B with a `run_python` tool: no `tool_calls` under
+`tool_choice` auto *or* required (same `<think>`-and-answer behaviour as the 1.5B). So in pi the
+3B is a much better one-shot coder, but still **not** a tool-driving agent — the §6 external
+verify-retry loop remains the way to "let it test its own code" (and it now passes round 1).
+
+## 8. Method
 - Server backgrounded with a health-poll wait; VRAM verified freed (`nvidia-smi`) after the run.
 - Known-answer problems chosen so the `\boxed{}` result is checkable against a Python computation
   (`23` = least n with n!÷2024; `7` = 7^2025 mod 100).
