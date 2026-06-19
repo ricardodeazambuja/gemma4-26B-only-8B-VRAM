@@ -138,7 +138,45 @@ three examples in its reasoning.
   the entry to `reasoning: true`.)
 - Keep generation budget large (the launcher's `NPREDICT=38912`) — it thinks a lot.
 
-## 6. Method
+## 6. Letting the model test its own code (`scripts/selfcheck.py`)
+
+**It can't drive pi's tools.** Verified directly: with a `tools` payload it emits **no** tool
+calls — not under `tool_choice:"auto"`, not under `"required"`, not even with `--reasoning-budget 0`.
+It always slides into a `<think>` block, reasons, and boxes an answer. (Root cause: llama.cpp
+doesn't recognise this Qwen template's `<think>` as a reasoning channel — `reasoning_content` stays
+empty and the reasoning-budget lever never engages — so the tool-call grammar is never reached.)
+So an agentic "model calls a run-code tool" loop is a dead end for this model.
+
+**Instead, close the loop outside the model.** `selfcheck.py` is a Reflexion-style harness — *it*
+runs the code and feeds failures back:
+
+```
+ask -> extract the ```python -> RUN it against a verifier -> feed the concrete
+failure (smallest counterexample) back -> repeat up to N rounds
+```
+
+```bash
+python scripts/selfcheck.py scripts/selfcheck_problems/distinct_substrings.py --rounds 3
+```
+
+A problem module defines `TASK`, `ENTRY`, and `verify(ns) -> (ok, feedback)`. Candidates run in a
+subprocess under `RLIMIT_AS` (an O(n²) attempt OOMs cleanly into feedback instead of crashing the
+box) plus a wall-clock timeout. Token budget matters a lot: `VT_MAXTOK=16000` truncated every round
+mid-`<think>` before the model reached its final code fence — use `≥32000` and give the server CTX
+headroom (`CTX=65536`) for the growing multi-round prompt.
+
+**Result on the suffix-automaton task (honest):** the loop works end-to-end — the model finishes
+(`finish_reason=stop`), emits code, the harness catches every broken version with a counterexample,
+and the model revises in response. But it did **not converge** in 3 rounds: `banana` → 18, then 20,
+then 18 (correct 15). It oscillates near the answer without localising the bug. Takeaway: a 1.5B
+reasoner is a strong **draft generator** but a weak **self-debugger** on hard data-structure code —
+one I/O counterexample isn't enough signal to pin a suffix-automaton bug. (Richer feedback — multiple
+counterexamples, or which substrings are mis-counted — might help; not yet tried.)
+
+## 7. Method
 - Server backgrounded with a health-poll wait; VRAM verified freed (`nvidia-smi`) after the run.
 - Known-answer problems chosen so the `\boxed{}` result is checkable against a Python computation
   (`23` = least n with n!÷2024; `7` = 7^2025 mod 100).
+- Tool-use probed with a `run_python` tool across `tool_choice` auto/required and `--reasoning-budget 0`.
+- Self-check verifier checks against a brute-force `set()` oracle (≈500 random + hand-picked strings)
+  plus a 100000-char scale/timing check.

@@ -148,6 +148,7 @@ def main():
         code = extract_code(reply)
         if not code:
             print("  no ```python code block found in the reply; nudging.")
+            print(f"  reply tail: ...{reply[-160:].strip()!r}")
             messages += [{"role": "assistant", "content": reply[-1500:]},
                          {"role": "user", "content": "I could not find a Python code block. "
                           "Reply with the complete function in a single ```python block."}]
