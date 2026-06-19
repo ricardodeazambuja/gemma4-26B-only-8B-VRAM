@@ -104,12 +104,23 @@ pi speaks the OpenAI API to the same `llama-server`, so it drives VibeThinker to
 `vibethinker-1.5b` model entry is registered under the existing `llamacpp` provider
 (`config/pi-provider.json` → `scripts/configure-pi.sh`).
 
+Easiest — one command starts the server, waits for it, launches pi, and offers to stop
+the server when pi exits (a minimal sibling of `start.sh`):
+
+```bash
+bash scripts/configure-pi.sh                          # once, registers the pi model
+bash scripts/start-vibethinker.sh                     # server + pi, then "Stop the server? [y/N]"
+bash scripts/start-vibethinker.sh -p "Write a ..."    # one-shot prompt
+STOP_ON_EXIT=1 bash scripts/start-vibethinker.sh      # auto-stop the server on exit
+```
+
+It reuses a server already on the port (and leaves that one running); only a server it
+started itself is offered for shutdown. Or drive the pieces by hand:
+
 ```bash
 bash scripts/run-vibethinker.sh                                   # terminal 1: the server
-bash scripts/configure-pi.sh                                      # once, registers the pi model
 MODEL_ID=vibethinker-1.5b bash scripts/run-pi.sh                  # terminal 2: interactive
-# or one-shot:
-pi --provider llamacpp --model vibethinker-1.5b -p "Write a Python function ..."
+pi --provider llamacpp --model vibethinker-1.5b -p "Write a Python function ..."  # one-shot
 ```
 
 **Verified (one-shot):** asked for an O(n log n) `longest_increasing_subsequence`, it produced
