@@ -10,13 +10,18 @@
 #
 # Settings (env vars; run-vibethinker.sh knobs like QUANT/CTX/TEMP pass through):
 #   SIZE           1.5B | 3B                  (default: 1.5B — sets server file + pi model id)
+#   TOOLS          1 to ALSO run the tool-call recovery shim and route pi through it,
+#                  so VibeThinker's tool calls execute (sets REASONING_BUDGET=600 +
+#                  PROVIDER=vtshim). See docs/vibethinker-eval.md §9.   (default: 0)
 #   HOST/PORT      server to use / start      (default: 127.0.0.1 / 8080)
+#   SHIM_PORT      port for the recovery shim (default: 8088, only with TOOLS=1)
 #   MODEL_ID       pi model id                (default: vibethinker-<size>)
 #   STOP_ON_EXIT   1 = always stop on exit, 0 = never, unset = ask  (default: ask)
 #
 # Examples:
 #   bash scripts/start-vibethinker.sh                       # 1.5B: server + interactive pi
 #   SIZE=3B bash scripts/start-vibethinker.sh               # the 3B coder model
+#   TOOLS=1 SIZE=3B bash scripts/start-vibethinker.sh       # + tool calls (server+shim+pi)
 #   bash scripts/start-vibethinker.sh -p "Write a function" # one-shot pi prompt
 #   STOP_ON_EXIT=1 SIZE=3B bash scripts/start-vibethinker.sh  # auto-stop server on exit
 #
@@ -34,6 +39,18 @@ export SIZE="${SIZE:-1.5B}"
 SIZE_LC="$(echo "$SIZE" | tr '[:upper:]' '[:lower:]')"
 export MODEL_ID="${MODEL_ID:-vibethinker-${SIZE_LC}}"   # run-pi.sh reads this
 export HOST PORT
+
+# TOOLS=1: also run the tool-call recovery shim and route pi THROUGH it, so
+# VibeThinker's tool calls actually execute (it emits correct intent in a wrapper
+# llama.cpp won't parse; the shim recovers it). Needs a reasoning budget or the
+# model ruminates and emits no call. See docs/vibethinker-eval.md §9.
+TOOLS="${TOOLS:-0}"
+SHIM_PORT="${SHIM_PORT:-8088}"
+SHIM_PID=""
+if [ "$TOOLS" = 1 ]; then
+  export REASONING_BUDGET="${REASONING_BUDGET:-600}"   # required for the model to emit tool calls
+  export PROVIDER="vtshim"                             # run-pi.sh routes pi at the shim
+fi
 
 STARTED_SERVER=0
 
@@ -93,8 +110,49 @@ else
   STARTED_SERVER=1
 fi
 
+# --- 1b. (TOOLS=1) register the shim provider in pi + start the recovery shim ---
+if [ "$TOOLS" = 1 ]; then
+  echo ">> TOOLS=1: registering pi provider 'vtshim' + starting the tool-call recovery shim ..."
+  python3 - "$SHIM_PORT" "$MODEL_ID" <<'PY'
+import json, os, sys
+port, model_id = sys.argv[1], sys.argv[2]
+path = os.path.expanduser("~/.pi/agent/models.json")
+d = json.load(open(path)) if os.path.exists(path) else {"providers": {}}
+d.setdefault("providers", {})["vtshim"] = {
+    "api": "openai-completions", "apiKey": "dummy",
+    "baseUrl": f"http://127.0.0.1:{port}/v1",
+    "compat": {"supportsDeveloperRole": False},
+    "models": [{"contextWindow": 40960, "id": model_id,
+                "name": f"{model_id} (via tool-shim)", "input": ["text"], "reasoning": True}],
+}
+os.makedirs(os.path.dirname(path), exist_ok=True)
+json.dump(d, open(path, "w"), indent=2)
+print(f">> pi provider 'vtshim' -> :{port} (model {model_id})")
+PY
+  if curl -fsS "http://127.0.0.1:$SHIM_PORT/health" >/dev/null 2>&1; then
+    echo ">> a service is already on :$SHIM_PORT — reusing it as the shim."
+  else
+    SHIM_LOG="$(mktemp -t vibethinker-shim.XXXXXX.log)"
+    echo ">> starting tool-shim on :$SHIM_PORT (upstream :$PORT, logs: $SHIM_LOG) ..."
+    UPSTREAM="http://$HOST:$PORT" PORT="$SHIM_PORT" HOST="$HOST" \
+      setsid python3 "$REPO_ROOT/scripts/vibethinker-toolshim.py" > "$SHIM_LOG" 2>&1 < /dev/null &
+    SHIM_PID=$!
+    # always stop the shim we started, on any exit
+    trap '[ -n "${SHIM_PID:-}" ] && kill "$SHIM_PID" 2>/dev/null || true' EXIT
+    for _ in $(seq 1 20); do
+      if curl -fsS "http://127.0.0.1:$SHIM_PORT/health" >/dev/null 2>&1; then break; fi
+      sleep 0.5
+    done
+    if ! curl -fsS "http://127.0.0.1:$SHIM_PORT/health" >/dev/null 2>&1; then
+      echo "ERROR: the shim did not come up. Last log lines:"; tail -10 "$SHIM_LOG"; exit 1
+    fi
+    echo ">> shim up on :$SHIM_PORT (PID $SHIM_PID)."
+  fi
+fi
+
 # --- 2. launch pi (foreground; control returns here when it exits) ----------
-echo ">> launching pi (--model $MODEL_ID) ..."
+[ "$TOOLS" = 1 ] && echo ">> launching pi (--provider vtshim --model $MODEL_ID — tool calls via the shim) ..." \
+                 || echo ">> launching pi (--model $MODEL_ID) ..."
 PI_RC=0
 bash "$REPO_ROOT/scripts/run-pi.sh" "$@" || PI_RC=$?
 

@@ -261,6 +261,16 @@ RL-baked dialect ignores the instruction), so the fix has to be downstream.
    (the model sometimes makes one up) are rejected. Works for streaming and non-streaming; misses are
    logged to stderr.
 
+One command brings up the whole chain (server with budget + shim + pi routed through it,
+all cleaned up on exit):
+
+```bash
+TOOLS=1 SIZE=3B bash scripts/start-vibethinker.sh                 # interactive
+TOOLS=1 SIZE=3B bash scripts/start-vibethinker.sh -p "<task>"     # one-shot
+```
+
+Or by hand:
+
 ```bash
 REASONING_BUDGET=600 SIZE=3B bash scripts/run-vibethinker.sh   # server WITH a budget (required)
 python scripts/vibethinker-toolshim.py                          # shim on :8088
@@ -274,15 +284,16 @@ pi --provider vtshim --model vibethinker-3b "<task that needs a tool>"
 - **Full multi-turn loop closes**, streaming, on sha256 (a task the model cannot fake): the shim
   recovers the `run_python` call → it executes → the result is fed back → the model returns the
   **correct digest** (`STREAMING MULTI-TURN LOOP CLOSED: True`).
-- Under pi, the model calls pi's **real** tools correctly (observed: a `bash` call with a valid
-  command; the user observed a correct `plan_set` call) — these are exactly what the shim recovers.
+- **pi end-to-end (one command).** `TOOLS=1 SIZE=3B bash scripts/start-vibethinker.sh -p "Use the
+  bash tool to compute 7**13 …"` brought up server+shim+pi, pi executed the shim-recovered `bash`
+  call (`echo $((7**13))`), and returned the correct **96889010407** — then cleaned up. The model
+  calls pi's real tools (`bash`, `plan_set`) correctly; the shim recovers them.
 
 **Honest ceiling.** This is ~80%, not 100%: ~1/6 of the time on tool-requiring tasks the model emits
-nothing recoverable or goes fully off-format (nested XML, invented tool name). And it depends on the
-reasoning budget being set. A pi end-to-end run within a single timeout wasn't captured here (pi's
-multi-turn loop on this slow model is lengthy; every *component* is proven, including the streaming
-path with pi's exact client). The shim makes VibeThinker a *usable* tool-caller, not a reliable
-agent — pair it with verification, and prefer a tool-trained model for heavy agentic work.
+nothing recoverable or goes fully off-format (nested XML, invented tool name), and it can wrap the
+final answer in junk (e.g. a stray `<html>` around the right number). It depends on the reasoning
+budget being set. The shim makes VibeThinker a *usable* tool-caller, not a reliable agent — pair it
+with verification, and prefer a tool-trained model for heavy agentic work.
 
 ## 10. Method
 - Server backgrounded with a health-poll wait; VRAM verified freed (`nvidia-smi`) after the run.
