@@ -343,16 +343,41 @@ Run totals: **28 `write` + 5 `bash` + 1 `read` recovered, 3 misses.** Read this 
   once a multi-turn session has accumulated — the model's weak point is multi-turn coherence, not the
   call format. On the misses it **simulates** execution (computes the answer in its head, or
   hallucinates an `ls`) instead of calling the tool. This is the 3B's ceiling, not the shim's.
-- **Neither lever moved it.** `--no-extensions` was marginal; a prompt-level **anti-simulation line had
-  zero measured benefit** (it was tried and dropped). Don't expect a config knob to fix the bash
-  tendency — it's behavioral.
+- **A prompt-level anti-simulation line had zero benefit** on the bash *tendency* (tried and dropped).
+  A raw clean-context prompt sweep *did* find framing matters (one reached bash 4/4 vs 3/4 baseline),
+  but wired into the real deep context it didn't transfer — the bash-call tendency is behavioral, not
+  promptable. (The winning framing survives as an opt-in shim knob, `VT_SYSTEM_NUDGE=1`, default off.)
 - **Format recovery itself is no longer the bottleneck** (misses fell from the old ~1/6 to ~3/35 once
   the XML dialects were handled). The reasoning budget must still be set (TOOLS=1 does this).
 
-**Bottom line.** With the recovery shim, VibeThinker-3B is a genuinely useful *one-shot / few-step*
-tool-caller — excellent at producing and editing files — but **not a reliable many-turn bash agent**.
-Use it for "write/fix this code" loops, keep sessions short, and **verify** anything it claims to have
-run. For heavy multi-turn shell automation, prefer a tool-trained model.
+### Using the result, not hallucinating it — and why TOOLS=1 runs *lean*
+
+A separate failure mode matters more for "is it really an agent": even when the model **calls the right
+tool and gets a real result**, pi's **reminder-injecting extensions** (grounding / operating-manual /
+semantic-memory) can stop it from *using* that result. Observed directly: with extensions on, the 3B
+**thrashed** (8 redundant `read` calls) or **deflected** — *"keeping my response minimal as instructed"*,
+a reminder leaking verbatim into the answer. Turning extensions off fixed it. So **`TOOLS=1` runs pi
+`--no-extensions` by default** (opt back in with `KEEP_EXTENSIONS=1`); the core tools
+(`bash`/`read`/`write`/`edit`/`ls`/`find`/`grep`) are built-in and stay.
+
+**The repeatable test:** [`scripts/test-vibethinker-agent.sh`](../scripts/test-vibethinker-agent.sh)
+catches hallucination *by construction* — it plants an **unguessable random token** in a file and via
+`echo $TOKEN`, then requires the model to retrieve and report it. The token can only appear in the
+answer if the real tool result was used. It brings up server+shim, runs both probes through pi, and
+cleans up:
+
+```bash
+bash scripts/test-vibethinker-agent.sh      # SIZE=3B; expects 2/2 lean, 0/2 with extensions
+```
+
+Measured: **2/2 lean, 0/2 with extensions.** (Also surfaced: the 3B mangles dotted filenames —
+`secret.txt`→`secretxt` — so the test uses a dot-free name.)
+
+**Bottom line.** With the recovery shim **+ the lean profile**, VibeThinker-3B genuinely works as an
+agent: it calls tools and uses their real results (verified end-to-end). It's strongest at *one-shot /
+few-step* work — excellent at producing/editing files — and weakest at *many-turn* bash (it can
+simulate execution as context piles up). Use it for "write/fix/run this" loops, keep sessions short,
+and **verify** shell work. For heavy multi-turn shell automation, prefer a tool-trained model.
 
 ## 10. Method
 - Server backgrounded with a health-poll wait; VRAM verified freed (`nvidia-smi`) after the run.
