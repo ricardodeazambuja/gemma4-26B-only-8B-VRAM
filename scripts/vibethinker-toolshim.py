@@ -187,6 +187,38 @@ def sse(obj):
     return f"data: {json.dumps(obj)}\n\n".encode()
 
 
+# A measured system-prompt nudge. OPT-IN (VT_SYSTEM_NUDGE=1), default OFF.
+# In a raw *clean-context* prompt sweep this framing took the 3B's bash-call rate
+# to 4/4 (vs 3/4 baseline) and a careless "emit the call first" variant dropped it
+# to 2/4 — framing matters. BUT in the real DEEP pi context (full system prompt +
+# accumulated turns) an A/B showed no clear win: bash-run 1/4→2/4 (noise) and write
+# actually dropped 4/4→2/4. The deep-context bash-simulation is *contextual*, not
+# promptable — keep sessions short instead. Left as a knob for experimentation;
+# the shim owns the upstream request, so it can inject this whatever pi sends.
+NUDGE = ("Important: your text replies are shown to the user but are NEVER executed. "
+         "The ONLY way to actually run a command, read a file, or change the filesystem is to "
+         "emit a tool call. Any command output you write yourself without calling a tool is a "
+         "hallucination — to run something, call the bash tool with the exact command.")
+
+
+def inject_nudge(req):
+    if os.environ.get("VT_SYSTEM_NUDGE", "0") != "1" or not req.get("tools"):
+        return
+    msgs = req.get("messages")
+    if not isinstance(msgs, list):
+        return
+    for m in msgs:
+        if isinstance(m, dict) and m.get("role") == "system":
+            c = m.get("content")
+            if isinstance(c, str) and NUDGE not in c:
+                m["content"] = c.rstrip() + "\n\n" + NUDGE
+            elif isinstance(c, list) and not any(
+                    isinstance(p, dict) and p.get("text") == NUDGE for p in c):
+                c.append({"type": "text", "text": NUDGE})
+            return
+    msgs.insert(0, {"role": "system", "content": NUDGE})
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -229,6 +261,7 @@ class Handler(BaseHTTPRequestHandler):
         specs = tool_specs(req_obj.get("tools"))
         upstream_req = dict(req_obj)
         upstream_req["stream"] = False   # buffer upstream so we can recover on full content
+        inject_nudge(upstream_req)       # measured anti-simulation system nudge (VT_SYSTEM_NUDGE=0 off)
         try:
             r = urllib.request.urlopen(urllib.request.Request(
                 UPSTREAM + "/v1/chat/completions",
