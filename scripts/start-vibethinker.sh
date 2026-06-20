@@ -12,7 +12,9 @@
 #   SIZE           1.5B | 3B                  (default: 1.5B — sets server file + pi model id)
 #   TOOLS          1 to ALSO run the tool-call recovery shim and route pi through it,
 #                  so VibeThinker's tool calls execute (sets REASONING_BUDGET=600 +
-#                  PROVIDER=vtshim). See docs/vibethinker-eval.md §9.   (default: 0)
+#                  PROVIDER=vtshim, and runs pi LEAN / --no-extensions — the reminder
+#                  extensions derail this 3B's result-reporting). §9.   (default: 0)
+#   KEEP_EXTENSIONS 1 to keep pi's extensions under TOOLS=1 (default: 0 = lean).
 #   HOST/PORT      server to use / start      (default: 127.0.0.1 / 8080)
 #   SHIM_PORT      port for the recovery shim (default: 8088, only with TOOLS=1)
 #   MODEL_ID       pi model id                (default: vibethinker-<size>)
@@ -151,10 +153,21 @@ PY
 fi
 
 # --- 2. launch pi (foreground; control returns here when it exits) ----------
-[ "$TOOLS" = 1 ] && echo ">> launching pi (--provider vtshim --model $MODEL_ID — tool calls via the shim) ..." \
-                 || echo ">> launching pi (--model $MODEL_ID) ..."
+# TOOLS=1 runs LEAN by default (--no-extensions). The reminder-injecting extensions
+# (grounding / operating-manual / semantic-memory) leak meta-instructions ("keep your
+# response minimal", "verify this turn") that derail this small model into NOT
+# reporting tool results — it thrashes (repeat calls) or deflects. Measured by
+# scripts/test-vibethinker-agent.sh: with extensions 0/2, lean 2/2. Opt back in with
+# KEEP_EXTENSIONS=1. (Core tools bash/read/write/edit/ls/find/grep are built-in and stay.)
+PI_LEAN=()
+[ "$TOOLS" = 1 ] && [ "${KEEP_EXTENSIONS:-0}" != 1 ] && PI_LEAN=(--no-extensions)
+if [ "$TOOLS" = 1 ]; then
+  echo ">> launching pi (--provider vtshim --model $MODEL_ID — tool calls via the shim${PI_LEAN:+, lean: no extensions}) ..."
+else
+  echo ">> launching pi (--model $MODEL_ID) ..."
+fi
 PI_RC=0
-bash "$REPO_ROOT/scripts/run-pi.sh" "$@" || PI_RC=$?
+bash "$REPO_ROOT/scripts/run-pi.sh" ${PI_LEAN[@]+"${PI_LEAN[@]}"} "$@" || PI_RC=$?
 
 # --- 3. offer to shut the server down ---------------------------------------
 # Only when we started it this run and it's still up. A reused server is left alone.
