@@ -145,6 +145,21 @@ More symptoms and the deeper caveats are in [TECHNICAL.md §11](docs/TECHNICAL.m
 
 ---
 
+## Experimental branches (not merged into `main`)
+
+Some explorations live on their own branches rather than in `main` — each is self-contained
+with its own eval/doc. Check them out to dig in:
+
+| Branch | What it explores |
+|---|---|
+| [`feat/test-gemma4-12b-coder-fable5`](../../tree/feat/test-gemma4-12b-coder-fable5) | Evaluating yuxinlu1's **Gemma-4 12B "coder" (fable5)** on the 8 GB card — it's *dense*, so `-ngl 42` (not `--cpu-moe`); Q4_K_M fits at ~17 t/s, Q2_K is broken, tool-calls work via `--jinja`. See `docs/gemma4-12b-coder-eval.md`. |
+| [`feat/spec-exec-branch-prediction`](../../tree/feat/spec-exec-branch-prediction) | A speculative-execution **"branch prediction" agent** — a local Gemma draft tier (`/gemma-draft`) with per-session stats. Design in `docs/PRD-speculative-agent.md`. |
+| [`feat/diffusiongemma`](../../tree/feat/diffusiongemma) | Experimental **DiffusionGemma** (diffusion-style generation) integration through `pi`, plus lessons learned. See `docs/DIFFUSION.md`. |
+
+> VibeThinker (1.5B/3B as a tool-using agent) graduated into its own standalone repo.
+
+---
+
 ## Repository layout
 
 ```
