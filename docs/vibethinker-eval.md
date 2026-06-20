@@ -239,7 +239,52 @@ Alternative not taken: a `--reasoning-tags "<think>,</think>"` **source patch** 
 `chat.cpp:2392` to force the tags without a per-model template (no such CLI flag exists in this
 build). The template route needs no rebuild, so it wins for now.
 
-## 9. Method
+## 9. Making VibeThinker call tools (the recovery shim)
+
+§6 found VibeThinker won't drive tools natively. A closer look shows *why*, and that it's
+recoverable. The model **reliably produces correct tool intent** — the right tool name and valid
+JSON arguments — but wraps it in a hallucinated tag (`<fulfil>`, `<function call>`, `<xml>`, …)
+instead of the `<tool_call>` llama.cpp greps for, and labels the name with either `"name"` (OpenAI
+tools framing) or `"function"` (pi's framing). So llama.cpp never populates `tool_calls` and clients
+see text. Prompt-anchoring to the canonical `<tool_call>` form does **not** fix emission (0/5 — the
+RL-baked dialect ignores the instruction), so the fix has to be downstream.
+
+**Two things make it work:**
+1. **Reasoning budget** (`REASONING_BUDGET`, the §8 lever). On a genuinely tool-requiring task
+   (e.g. a hash it can't fake), *without* a budget the model ruminates past the token limit and
+   emits **nothing**. *With* a budget it stops thinking and emits the call — measured **5/6** on
+   sha256/md5 tasks.
+2. **[`scripts/vibethinker-toolshim.py`](../scripts/vibethinker-toolshim.py)** — an OpenAI-compatible
+   recovery proxy (`client → shim:8088 → llama-server:8080`). When a response has no native
+   `tool_calls` but its content carries a recoverable `{name|function, arguments}` object whose name
+   is one of the *declared* tools, it rewrites the response into proper `tool_calls`. Invented names
+   (the model sometimes makes one up) are rejected. Works for streaming and non-streaming; misses are
+   logged to stderr.
+
+```bash
+REASONING_BUDGET=600 SIZE=3B bash scripts/run-vibethinker.sh   # server WITH a budget (required)
+python scripts/vibethinker-toolshim.py                          # shim on :8088
+# register a pi provider 'vtshim' with baseUrl http://127.0.0.1:8088/v1, then:
+pi --provider vtshim --model vibethinker-3b "<task that needs a tool>"
+```
+
+**Verified:**
+- Recovery into `tool_calls`: non-streaming and streaming (SSE carries the `tool_calls` delta +
+  `finish_reason: tool_calls`), confirmed via curl and the **OpenAI Python SDK** (the library pi uses).
+- **Full multi-turn loop closes**, streaming, on sha256 (a task the model cannot fake): the shim
+  recovers the `run_python` call → it executes → the result is fed back → the model returns the
+  **correct digest** (`STREAMING MULTI-TURN LOOP CLOSED: True`).
+- Under pi, the model calls pi's **real** tools correctly (observed: a `bash` call with a valid
+  command; the user observed a correct `plan_set` call) — these are exactly what the shim recovers.
+
+**Honest ceiling.** This is ~80%, not 100%: ~1/6 of the time on tool-requiring tasks the model emits
+nothing recoverable or goes fully off-format (nested XML, invented tool name). And it depends on the
+reasoning budget being set. A pi end-to-end run within a single timeout wasn't captured here (pi's
+multi-turn loop on this slow model is lengthy; every *component* is proven, including the streaming
+path with pi's exact client). The shim makes VibeThinker a *usable* tool-caller, not a reliable
+agent — pair it with verification, and prefer a tool-trained model for heavy agentic work.
+
+## 10. Method
 - Server backgrounded with a health-poll wait; VRAM verified freed (`nvidia-smi`) after the run.
 - Reasoning fix verified by diffing `reasoning_content`/`content` and the `thinking = 0|1` server log
   with vs without `--chat-template-file`, and confirming `--reasoning-budget` caps completion tokens.
