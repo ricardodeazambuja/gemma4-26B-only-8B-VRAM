@@ -22,7 +22,7 @@ Usage:
     UPSTREAM=http://127.0.0.1:8080 PORT=8088 python scripts/vibethinker-toolshim.py
 Then point pi's provider baseUrl at http://127.0.0.1:8088/v1.
 """
-import json, os, re, sys, urllib.request
+import json, os, re, sys, textwrap, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 UPSTREAM = os.environ.get("UPSTREAM", "http://127.0.0.1:8080").rstrip("/")
@@ -74,11 +74,60 @@ def infer_tool(args, specs):
     return None
 
 
+# Terminate the function block tolerantly: VibeThinker frequently MISMATCHES its
+# XML — closing </content></args></call> but omitting </function>, or truncating
+# mid-content. So accept </function>, </call>, or end-of-string as the boundary.
+_FUNC_RE   = re.compile(r"<function\b([^>]*)>(.*?)(?:</function>|</call>|$)", re.DOTALL)
+_ATTR_NAME = re.compile(r'name\s*=\s*"([^"]+)"')
+_EL_NAME   = re.compile(r"<name>\s*([A-Za-z_]\w*)\s*</name>")
+
+
+def _coerce(raw):
+    """Turn an XML element's inner text into a Python value. Multi-line bodies
+    (e.g. a write's `content`) are dedented and kept as a string; scalars like
+    null / 0 / true / "x" are JSON-decoded so types are right."""
+    if "\n" in raw.strip("\n"):
+        return textwrap.dedent(raw.strip("\n")).rstrip()
+    t = raw.strip()
+    try:
+        return json.loads(t)
+    except Exception:
+        return t
+
+
+def recover_xml(content, specs):
+    """Recover a tool call from VibeThinker's two natural XML dialects:
+      (A) <function name="bash"><args><command>ls</command></args></function>
+      (B) <function><name>bash</name><arguments><object><command>ls</command>...
+    Schema-driven: once the tool name is known, pull each DECLARED param out of
+    the block by its own <tag>…</tag>. Tolerant of unescaped code in <content>."""
+    by_name = {s["name"]: s for s in specs}
+    for mo in _FUNC_RE.finditer(content):
+        attrs, inner = mo.group(1), mo.group(2)
+        m = _ATTR_NAME.search(attrs) or _EL_NAME.search(inner)
+        if not m:
+            continue
+        spec = by_name.get(m.group(1))
+        if not spec:
+            continue
+        args = {}
+        for prop in spec["props"]:
+            # tolerant close: a truncated/mismatched body still yields the value
+            pm = re.search(r"<%s>(.*?)(?:</%s>|$)" % (re.escape(prop), re.escape(prop)),
+                           inner, re.DOTALL)
+            if pm and pm.group(1).strip():
+                args[prop] = _coerce(pm.group(1))
+        if spec["required"] <= set(args.keys()):
+            return spec["name"], json.dumps(args)
+    return None
+
+
 def recover_tool_call(content, specs):
     """Recover (name, args_json_str) from the model's free-text tool call. Handles:
       (a) inline {name|function, arguments}     — OpenAI / pi 'function' framing
       (b) <function>NAME</function> + args      — pi's XML framing with a name
       (c) a BARE args object, name absent       — infer the tool from the arg shape
+      (d) <function name=…>/<function><name>…   — schema-driven XML (recover_xml)
     """
     if not content or not specs:
         return None
@@ -106,7 +155,7 @@ def recover_tool_call(content, specs):
                 if inferred:
                     return inferred, json.dumps(obj)
         i = j + 1
-    return None
+    return recover_xml(content, specs)                                     # (d)
 
 
 def maybe_recover(resp, specs):
