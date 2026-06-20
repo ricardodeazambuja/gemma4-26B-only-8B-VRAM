@@ -13,6 +13,31 @@ code/math it emits, as you would for any model.
 
 ---
 
+## 0. Quick start — VibeThinker-3B as a tool-using agent in pi
+
+The stronger **3B** (Qwen2.5-Coder-3B base) is the one to use as a coding agent. Prereqs:
+the vendored llama.cpp built into a `llamacpp`/`llamacpp-cuda` mamba env, and `pi` installed
+(`npm i -g @mariozechner/pi-coding-agent`).
+
+```bash
+# 1. one-time model download (Q8_0 ≈ 3.3 GB; fits 8 GB GPU fully)
+mamba run -n llamacpp hf download mradermacher/VibeThinker-3B-GGUF \
+  VibeThinker-3B.Q8_0.gguf --local-dir models/vibethinker-3b
+
+# 2. one command: server + tool-call recovery shim + pi, cleaned up on exit
+TOOLS=1 SIZE=3B bash scripts/start-vibethinker.sh                  # interactive
+TOOLS=1 SIZE=3B bash scripts/start-vibethinker.sh -p "<task>"      # one-shot
+```
+
+`TOOLS=1` is what makes tool calls actually fire: VibeThinker emits correct tool *intent* but in
+its own dialects (XML `<function>`, fenced JSON, …) that llama.cpp won't parse, so the flow routes
+pi through a small recovery shim that rewrites them into real `tool_calls`. See **§9** for how that
+works and **its honest limits** (it's a capable one-shot tool-caller — strong at `write`/`edit` file
+ops — but weaker at multi-step bash; verify its work). Without `TOOLS=1` you get a plain chat/coding
+model on `:8080` (§5).
+
+---
+
 ## 1. What this model is — and why the repo's headline tricks do NOT apply
 
 Verified from the GGUF metadata (`utils/inspect-gguf.sh` + a metadata dump):
@@ -257,13 +282,21 @@ RL-baked dialect ignores the instruction), so the fix has to be downstream.
 2. **[`scripts/vibethinker-toolshim.py`](../scripts/vibethinker-toolshim.py)** — an OpenAI-compatible
    recovery proxy (`client → shim:8088 → llama-server:8080`). When a response has no native
    `tool_calls` but its content carries a tool call, it rewrites the response into proper `tool_calls`.
-   It handles the three formats the model actually emits: (a) inline `{name|function, arguments}`
-   (OpenAI / pi `function` framing); (b) `<function>NAME</function>` + args (pi's XML framing); and
-   (c) — the common one under pi — a **nameless** `<function><args-json-object>{…}</args-json-object>`
-   where the tool name is dropped entirely: the shim **infers the tool from the argument shape**,
-   matching the bare args against the declared tools' parameter schemas (`{command}`→`bash`,
-   `{path,content}`→`write`, `{code}`→`run_python`, …). Ambiguous/invented matches are rejected.
-   Works for streaming and non-streaming; misses are logged to stderr.
+   It handles every format the model actually emits, observed across live pi sessions:
+   (a) inline `{name|function, arguments}` (OpenAI / pi `function` framing); (b) `<function>NAME</function>`
+   + args (pi's XML framing); (c) a **nameless** `<function><args-json-object>{…}</args-json-object>`
+   where the tool name is dropped — the shim **infers the tool from the argument shape**, matching bare
+   args against the declared tools' parameter schemas (`{command}`→`bash`, `{path,content}`→`write`, …);
+   and the two **natural XML dialects** the 3B falls into when given real coding tasks:
+   (d) attribute form `<function name="write"><args><path>…</path><content>…</content></args></function>`
+   and (e) element form `<function><name>write</name><arguments><object><command>…</command></object>…`.
+   The XML path is **schema-driven**: once the name is read (from the `name=` attribute or a `<name>`
+   element), each *declared* param is pulled out by its own `<tag>`. Crucially it is **tolerant of the
+   model's mangled XML** — VibeThinker routinely closes `</content></args></call>` but omits
+   `</function>`, or truncates mid-`content`; a tolerant terminator still recovers the call.
+   Ambiguous/invented matches are rejected. Works for streaming and non-streaming; misses log to stderr.
+   Regression-tested against real captures: [`scripts/test-toolshim.py`](../scripts/test-toolshim.py)
+   (`python3 scripts/test-toolshim.py` → 12/12, one documented xfail: an `edit` emitted as malformed JSON).
 
 One command brings up the whole chain (server with budget + shim + pi routed through it,
 all cleaned up on exit):
@@ -293,11 +326,33 @@ pi --provider vtshim --model vibethinker-3b "<task that needs a tool>"
   call (`echo $((7**13))`), and returned the correct **96889010407** — then cleaned up. The model
   calls pi's real tools (`bash`, `plan_set`) correctly; the shim recovers them.
 
-**Honest ceiling.** This is ~80%, not 100%: ~1/6 of the time on tool-requiring tasks the model emits
-nothing recoverable or goes fully off-format (nested XML, invented tool name), and it can wrap the
-final answer in junk (e.g. a stray `<html>` around the right number). It depends on the reasoning
-budget being set. The shim makes VibeThinker a *usable* tool-caller, not a reliable agent — pair it
-with verification, and prefer a tool-trained model for heavy agentic work.
+**What actually works as an agent (measured).** A faithful multi-turn coding loop — *write fib.py →
+run it via bash → list files* — chained through real pi sessions (`--session-id` resume), default
+stack vs a lean one (`--no-extensions` + an anti-simulation system line), 3 reps each, budget 600:
+
+| turn / tool        | DEFAULT | LEAN  | one-shot (fresh context) |
+|--------------------|---------|-------|--------------------------|
+| T1 `write` fib.py  | 2/3     | 3/3   | —                        |
+| T2 run via `bash`  | 1/3     | 1/3   | —                        |
+| T3 `ls` via `bash` | 1/3     | 0/3   | ~3/4                     |
+
+Run totals: **28 `write` + 5 `bash` + 1 `read` recovered, 3 misses.** Read this honestly:
+- **File ops are reliable.** `write`/`edit`/`read` recover essentially every time — VibeThinker-3B is
+  a solid *file-writing* agent.
+- **`bash` degrades with context.** It calls `bash` ~3/4 in a **fresh** single-turn context, but ~1/3
+  once a multi-turn session has accumulated — the model's weak point is multi-turn coherence, not the
+  call format. On the misses it **simulates** execution (computes the answer in its head, or
+  hallucinates an `ls`) instead of calling the tool. This is the 3B's ceiling, not the shim's.
+- **Neither lever moved it.** `--no-extensions` was marginal; a prompt-level **anti-simulation line had
+  zero measured benefit** (it was tried and dropped). Don't expect a config knob to fix the bash
+  tendency — it's behavioral.
+- **Format recovery itself is no longer the bottleneck** (misses fell from the old ~1/6 to ~3/35 once
+  the XML dialects were handled). The reasoning budget must still be set (TOOLS=1 does this).
+
+**Bottom line.** With the recovery shim, VibeThinker-3B is a genuinely useful *one-shot / few-step*
+tool-caller — excellent at producing and editing files — but **not a reliable many-turn bash agent**.
+Use it for "write/fix this code" loops, keep sessions short, and **verify** anything it claims to have
+run. For heavy multi-turn shell automation, prefer a tool-trained model.
 
 ## 10. Method
 - Server backgrounded with a health-poll wait; VRAM verified freed (`nvidia-smi`) after the run.
