@@ -256,10 +256,14 @@ RL-baked dialect ignores the instruction), so the fix has to be downstream.
    sha256/md5 tasks.
 2. **[`scripts/vibethinker-toolshim.py`](../scripts/vibethinker-toolshim.py)** — an OpenAI-compatible
    recovery proxy (`client → shim:8088 → llama-server:8080`). When a response has no native
-   `tool_calls` but its content carries a recoverable `{name|function, arguments}` object whose name
-   is one of the *declared* tools, it rewrites the response into proper `tool_calls`. Invented names
-   (the model sometimes makes one up) are rejected. Works for streaming and non-streaming; misses are
-   logged to stderr.
+   `tool_calls` but its content carries a tool call, it rewrites the response into proper `tool_calls`.
+   It handles the three formats the model actually emits: (a) inline `{name|function, arguments}`
+   (OpenAI / pi `function` framing); (b) `<function>NAME</function>` + args (pi's XML framing); and
+   (c) — the common one under pi — a **nameless** `<function><args-json-object>{…}</args-json-object>`
+   where the tool name is dropped entirely: the shim **infers the tool from the argument shape**,
+   matching the bare args against the declared tools' parameter schemas (`{command}`→`bash`,
+   `{path,content}`→`write`, `{code}`→`run_python`, …). Ambiguous/invented matches are rejected.
+   Works for streaming and non-streaming; misses are logged to stderr.
 
 One command brings up the whole chain (server with budget + shim + pi routed through it,
 all cleaned up on exit):

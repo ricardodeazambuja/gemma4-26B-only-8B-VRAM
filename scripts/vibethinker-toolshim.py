@@ -22,7 +22,7 @@ Usage:
     UPSTREAM=http://127.0.0.1:8080 PORT=8088 python scripts/vibethinker-toolshim.py
 Then point pi's provider baseUrl at http://127.0.0.1:8088/v1.
 """
-import json, os, sys, urllib.request
+import json, os, re, sys, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 UPSTREAM = os.environ.get("UPSTREAM", "http://127.0.0.1:8080").rstrip("/")
@@ -35,10 +35,56 @@ def log(*a):
     print("[toolshim]", *a, file=sys.stderr, flush=True)
 
 
-def recover_tool_call(content, valid_names):
-    """First balanced {...} that JSON-decodes to {name in valid_names, arguments}."""
-    if not content:
+def tool_specs(tools_field):
+    """[{name, props:set, required:set}] from the request's `tools` array."""
+    specs = []
+    for t in tools_field or []:
+        if not isinstance(t, dict) or t.get("type") != "function":
+            continue
+        fn = t.get("function") or {}
+        name = fn.get("name")
+        if not name:
+            continue
+        params = fn.get("parameters") or {}
+        specs.append({"name": name,
+                      "props": set((params.get("properties") or {}).keys()),
+                      "required": set(params.get("required") or [])})
+    return specs
+
+
+def infer_tool(args, specs):
+    """Pick the unique declared tool whose schema best fits a BARE args object.
+    Hard requirement: the tool's required params are all present. Among those, the
+    fewest 'foreign' keys (keys not in the tool's properties) wins; ties → give up."""
+    if not isinstance(args, dict) or not args:
         return None
+    keys = set(args.keys())
+    cands = []
+    for s in specs:
+        if not s["required"] <= keys:
+            continue
+        if not s["required"] and not (keys and keys <= s["props"]):
+            continue  # a no-required tool would match anything — only take an exact fit
+        cands.append((len(keys - s["props"]), s["name"]))
+    if not cands:
+        return None
+    cands.sort()
+    if len(cands) == 1 or cands[0][0] < cands[1][0]:
+        return cands[0][1]
+    return None
+
+
+def recover_tool_call(content, specs):
+    """Recover (name, args_json_str) from the model's free-text tool call. Handles:
+      (a) inline {name|function, arguments}     — OpenAI / pi 'function' framing
+      (b) <function>NAME</function> + args      — pi's XML framing with a name
+      (c) a BARE args object, name absent       — infer the tool from the arg shape
+    """
+    if not content or not specs:
+        return None
+    names = {s["name"] for s in specs}
+    m = re.search(r"<function>\s*([A-Za-z_]\w*)\s*</function>", content)
+    tag_name = m.group(1) if m and m.group(1) in names else None
     dec = json.JSONDecoder()
     i = 0
     while i < len(content):
@@ -50,32 +96,32 @@ def recover_tool_call(content, valid_names):
         except json.JSONDecodeError:
             i = j + 1
             continue
-        if isinstance(obj, dict) and "arguments" in obj:
-            # the model uses "name" under the OpenAI tools API and "function" under
-            # pi's prompt framing — accept either as the tool-name key.
+        if isinstance(obj, dict):
             name = obj.get("name") or obj.get("function")
-            if name in valid_names:
-                args = obj["arguments"]
-                if not isinstance(args, str):
-                    args = json.dumps(args)
-                return name, args
+            if name in names and "arguments" in obj:                      # (a)
+                a = obj["arguments"]
+                return name, a if isinstance(a, str) else json.dumps(a)
+            if "arguments" not in obj and "name" not in obj and "function" not in obj:
+                inferred = tag_name or infer_tool(obj, specs)             # (b)/(c)
+                if inferred:
+                    return inferred, json.dumps(obj)
         i = j + 1
     return None
 
 
-def maybe_recover(resp, valid_names):
+def maybe_recover(resp, specs):
     """Mutate resp in place if a tool call is recovered. Returns True if it did."""
     try:
         ch = resp["choices"][0]
         msg = ch["message"]
     except (KeyError, IndexError):
         return False
-    if not valid_names or msg.get("tool_calls"):
+    if not specs or msg.get("tool_calls"):
         return False
-    rec = recover_tool_call(msg.get("content") or "", valid_names)
+    rec = recover_tool_call(msg.get("content") or "", specs)
     if not rec:
         c = (msg.get("content") or "")
-        if any(k in c for k in ('"name"', "<function", "<tool", "arguments")):
+        if any(k in c for k in ('"name"', "<function", "<tool", "arguments", "args-json")):
             log("MISS: looked like a call but unrecoverable:", repr(c[:160]))
         return False
     name, args = rec
@@ -131,8 +177,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(400, f"bad json: {e}")
             return
         want_stream = bool(req_obj.get("stream"))
-        valid = {t["function"]["name"] for t in req_obj.get("tools", [])
-                 if isinstance(t, dict) and t.get("type") == "function"}
+        specs = tool_specs(req_obj.get("tools"))
         upstream_req = dict(req_obj)
         upstream_req["stream"] = False   # buffer upstream so we can recover on full content
         try:
@@ -144,7 +189,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             self.send_error(502, str(e))
             return
-        maybe_recover(resp, valid)
+        maybe_recover(resp, specs)
         if want_stream:
             self._stream_down(resp)
         else:
