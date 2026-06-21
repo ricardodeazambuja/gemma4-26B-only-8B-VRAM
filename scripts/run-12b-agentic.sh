@@ -25,7 +25,9 @@
 #   QUANT   Q3_K_M | Q4_K_M | Q6_K | Q8_0   (default: Q4_K_M)
 #   NGL     transformer layers on GPU       (default: per-quant safe value below)
 #   CTX     context window                  (default: 32768)
-#   KVQUANT KV cache type                   (default: q8_0; use q4_0 for ~2x context)
+#   KVQUANT KV cache type (both K and V)    (default: q8_0; use q4_0 for ~2x context)
+#   TURBO   1 = use the turboquant build + turbo3 V cache (see below)  (default: 0)
+#   CTK/CTV per-side KV types (override KVQUANT; TURBO sets q8_0 / turbo3)
 #   PORT/HOST                               (default: 8080 / 127.0.0.1)
 #   TEMP/TOP_P/TOP_K  sampling   (default: 1.0 / 0.95 / 64 — model card's rec;
 #                                 for deterministic coding set TEMP=0)
@@ -40,16 +42,19 @@
 #   NGL=42 bash scripts/run-12b-agentic.sh                # squeeze max layers (faster, tighter)
 #   CTX=65536 KVQUANT=q4_0 NGL=38 bash scripts/run-12b-agentic.sh   # longer context
 #   TEMP=0 bash scripts/run-12b-agentic.sh                # greedy / deterministic coding
+#   TURBO=1 bash scripts/run-12b-agentic.sh               # full offload via turbo3 V cache (8 GB)
+#   TURBO=1 CTX=25000 bash scripts/run-12b-agentic.sh     # the author's exact recipe
 #
-# TurboQuant V-cache (model author's own 8 GB recipe, from @analogalok on X):
-#   llama-server -m gemma4-v2-Q4_K_M.gguf -ngl 99 -c 25000 \
-#     --cache-type-k q8_0 --cache-type-v turbo3 --port 8080
-#   The trick is `--cache-type-v turbo3` — V cache at ~3-bit (Walsh-Hadamard rotated
+# TurboQuant V-cache (TURBO=1) — model author's own 8 GB recipe (from @analogalok on X):
+#   The win is `--cache-type-v turbo3`: V cache at ~3.5-bit (Walsh-Hadamard rotated
 #   polar quant, Google KV-compression research). It shrinks the KV cache enough to
-#   FULLY offload all 48 layers (-ngl 99) + 25K ctx on an 8 GB card at ~30 tok/s.
-#   `turbo3` is NOT in mainline llama.cpp — needs the TheTom/llama-cpp-turboquant
-#   fork, which is NOT what this repo builds. With our stock CUDA/Vulkan build, use
-#   the partial-offload defaults below (KVQUANT=q8_0/q4_0); -ngl 99 will OOM on 8 GB.
+#   FULLY offload all layers (-ngl 99) + a big context on an 8 GB card (~30 tok/s on
+#   the author's RTX 4060). K stays q8_0 (K is sensitive; V tolerates aggression).
+#   `turbo3` is NOT in mainline llama.cpp — it needs the TheTom/llama-cpp-turboquant
+#   fork. Build it once into vendor/llama-cpp-turboquant (see the ERROR hint TURBO=1
+#   prints if it's missing); then TURBO=1 here uses it + sets K=q8_0 V=turbo3 + -ngl 99.
+#   Without TURBO, the stock build's partial-offload defaults apply (-ngl 99 OOMs at 8 GB).
+#   Verified on this RTX 2070 (sm_75): q8_0-K + turbo3-V decodes coherently for gemma4.
 #
 # Speculative decoding (MTP draft): the repo ships MTP/ drafts. See the model card —
 # only llama.cpp b9553 (commit 9e3b928fd) loads the gemma4-assistant draft cleanly;
@@ -76,27 +81,56 @@ TOP_P="${TOP_P:-0.95}"
 TOP_K="${TOP_K:-64}"
 REP_PEN="${REP_PEN:-1.1}"
 
+# TurboQuant V-cache mode (TURBO=1): use the TheTom/llama-cpp-turboquant build and
+# its ~3.5-bit `turbo3` V cache. The codec is a runtime cache type (the GGUF is a
+# plain quant — nothing special), and it shrinks KV enough to FULLY offload Q3_K_M/
+# Q4_K_M (-ngl 99) on an 8 GB card. K stays at q8_0 (K is sensitive, V is not).
+# Verified on this RTX 2070 (sm_75): q8_0-K + turbo3-V decodes coherently at gemma4's
+# head_dim 256. turbo3 needs the turbo build + CUDA backend (not stock / Vulkan).
+TURBO="${TURBO:-0}"
+TURBO_BIN="$REPO_ROOT/vendor/llama-cpp-turboquant/build/bin/llama-server"
+if [ "$TURBO" = 1 ]; then
+  CTK="${CTK:-q8_0}"
+  CTV="${CTV:-turbo3}"
+else
+  CTK="${CTK:-$KVQUANT}"
+  CTV="${CTV:-$KVQUANT}"
+fi
+
+# Reject the dropped quant early (whatever the mode).
+[ "$QUANT" = Q2_K ] && { echo "ERROR: no Q2_K in this release (failed stress-testing) — pick Q3_K_M/Q4_K_M/Q6_K/Q8_0."; exit 1; }
+
 # Safe default -ngl per quant (leaves VRAM headroom on an 8 GB card next to the
 # desktop). Bump NGL to the measured/estimated max for the top speed, at the cost
 # of headroom. Q3_K_M is smaller than Q4_K_M -> likely fits more; confirm & bump.
 if [ -z "${NGL:-}" ]; then
-  case "$QUANT" in
-    Q3_K_M) NGL=44 ;;
-    Q4_K_M) NGL=40 ;;
-    Q6_K)   NGL=30 ;;
-    Q8_0)   NGL=22 ;;
-    Q2_K)   echo "ERROR: no Q2_K in this release (failed stress-testing) — pick Q3_K_M/Q4_K_M/Q6_K/Q8_0."; exit 1 ;;
-    *)      NGL=40 ;;
-  esac
+  if [ "$TURBO" = 1 ] && { [ "$QUANT" = Q3_K_M ] || [ "$QUANT" = Q4_K_M ]; }; then
+    NGL=99   # turbo3 V cache frees enough VRAM to fully offload these on 8 GB
+  else
+    case "$QUANT" in
+      Q3_K_M) NGL=44 ;;
+      Q4_K_M) NGL=40 ;;
+      Q6_K)   NGL=30 ;;   # weights (>9 GB) still exceed 8 GB -> partial even with turbo3
+      Q8_0)   NGL=22 ;;
+      *)      NGL=40 ;;
+    esac
+  fi
 fi
 
 [ -f "$MODEL" ] || { echo "ERROR: model not found: $MODEL"; echo "Download it, e.g.:"; echo "  mamba run -n llamacpp hf download yuxinlu1/gemma-4-12B-agentic-fable5-composer2.5-v2-3.5x-tau2-GGUF gemma4-v2-${QUANT}.gguf --local-dir $MODEL_DIR"; exit 1; }
 command -v mamba >/dev/null 2>&1 || { echo "ERROR: 'mamba' not found on PATH."; exit 1; }
 
-# Backend: prefer the locally-built CUDA binary, else conda Vulkan.
-CUDA_BIN="${CUDA_BIN:-$REPO_ROOT/vendor/llama.cpp/build/bin/llama-server}"
+# Backend: prefer the locally-built CUDA binary, else conda Vulkan. In TURBO mode
+# the turboquant build is required (turbo3 isn't in the stock build).
+if [ "$TURBO" = 1 ]; then
+  CUDA_BIN="${CUDA_BIN:-$TURBO_BIN}"
+  [ -x "$CUDA_BIN" ] || { echo "ERROR: TURBO=1 needs the turboquant CUDA build at $CUDA_BIN"; echo "  build it: SRC_DIR=\$PWD/vendor/llama-cpp-turboquant LLAMA_REF=feature/turboquant-kv-cache ENV_NAME=llamacpp-cuda bash scripts/build-llama-cuda.sh"; exit 1; }
+else
+  CUDA_BIN="${CUDA_BIN:-$REPO_ROOT/vendor/llama.cpp/build/bin/llama-server}"
+fi
 BACKEND="${BACKEND:-}"
 if [ -z "$BACKEND" ]; then [ -x "$CUDA_BIN" ] && BACKEND=cuda || BACKEND=vulkan; fi
+[ "$TURBO" = 1 ] && [ "$BACKEND" != cuda ] && { echo "ERROR: TURBO=1 (turbo3) requires the CUDA backend; got BACKEND=$BACKEND."; exit 1; }
 case "$BACKEND" in
   cuda)
     [ -x "$CUDA_BIN" ] || { echo "ERROR: CUDA build not found at $CUDA_BIN (run scripts/build-llama-cuda.sh)"; exit 1; }
@@ -114,7 +148,7 @@ esac
 
 echo ">> model:   $MODEL ($QUANT)"
 echo ">> dense:   -ngl $NGL of 48 layers on GPU, rest on CPU/RAM (no --cpu-moe — this model is dense)"
-echo ">> context: $CTX   KV cache: $KVQUANT (flash-attn on)"
+echo ">> context: $CTX   KV cache: K=$CTK V=$CTV (flash-attn on)$([ "$TURBO" = 1 ] && echo '   [TurboQuant build]')"
 echo ">> sampling: temp=$TEMP top-p=$TOP_P top-k=$TOP_K rep-pen=$REP_PEN   listening: http://$HOST:$PORT/v1"
 echo
 
@@ -125,7 +159,7 @@ exec "${RUN[@]}" "$SERVER_BIN" \
   -ngl "$NGL" \
   --no-mmap \
   -c "$CTX" \
-  -ctk "$KVQUANT" -ctv "$KVQUANT" -fa on \
+  -ctk "$CTK" -ctv "$CTV" -fa on \
   --jinja \
   --temp "$TEMP" --top-p "$TOP_P" --top-k "$TOP_K" --repeat-penalty "$REP_PEN" \
   --host "$HOST" --port "$PORT" \
