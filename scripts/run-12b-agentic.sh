@@ -41,6 +41,16 @@
 #   CTX=65536 KVQUANT=q4_0 NGL=38 bash scripts/run-12b-agentic.sh   # longer context
 #   TEMP=0 bash scripts/run-12b-agentic.sh                # greedy / deterministic coding
 #
+# TurboQuant V-cache (model author's own 8 GB recipe, from @analogalok on X):
+#   llama-server -m gemma4-v2-Q4_K_M.gguf -ngl 99 -c 25000 \
+#     --cache-type-k q8_0 --cache-type-v turbo3 --port 8080
+#   The trick is `--cache-type-v turbo3` — V cache at ~3-bit (Walsh-Hadamard rotated
+#   polar quant, Google KV-compression research). It shrinks the KV cache enough to
+#   FULLY offload all 48 layers (-ngl 99) + 25K ctx on an 8 GB card at ~30 tok/s.
+#   `turbo3` is NOT in mainline llama.cpp — needs the TheTom/llama-cpp-turboquant
+#   fork, which is NOT what this repo builds. With our stock CUDA/Vulkan build, use
+#   the partial-offload defaults below (KVQUANT=q8_0/q4_0); -ngl 99 will OOM on 8 GB.
+#
 # Speculative decoding (MTP draft): the repo ships MTP/ drafts. See the model card —
 # only llama.cpp b9553 (commit 9e3b928fd) loads the gemma4-assistant draft cleanly;
 # newer builds crash. Not wired into this script; run llama-server manually with
