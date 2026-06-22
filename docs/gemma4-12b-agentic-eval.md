@@ -13,11 +13,27 @@ successor to the v1 coder ([gemma4-12b-coder-eval.md](gemma4-12b-coder-eval.md))
 
 **Use `TURBO=1` — the TurboQuant `turbo3` V-cache lets Q4_K_M fully offload (`-ngl 99`) on 8 GB.**
 
+Three ways to launch (server only → server+pi → zero-config preset):
+
 ```bash
+# 1. Server only (run-12b-agentic.sh -h for all knobs)
 TURBO=1 bash scripts/run-12b-agentic.sh             # -ngl 99, K=q8_0 V=turbo3, 16K ctx -> ~28 t/s
-TURBO=1 CTX=25000 bash scripts/run-12b-agentic.sh   # author's exact recipe (tighter on this card)
+TURBO=1 CTX=25000 bash scripts/run-12b-agentic.sh   # author's exact recipe (marginal on 8 GB — see below)
 bash scripts/run-12b-agentic.sh                     # stock build, partial offload -ngl 40 (no turbo3)
+
+# 2. Server + pi + stop-on-exit offer (start.sh-style)
+TURBO=1 bash scripts/start-agentic.sh
+
+# 3. Zero-config: the tweet recipe baked in (just run it)  <-- the easy button
+bash scripts/start-turbo.sh                         # = TURBO=1 QUANT=Q4_K_M CTX=16384, then pi
+bash scripts/start-turbo.sh -p "explain @README.md" # one-shot
 ```
+
+> **CTX note for 8 GB:** the tweet uses `-c 25000`, but on this RTX 2070 25k is on the
+> knife-edge — it fit once and OOM'd once (a ~148 MiB compute-buffer alloc), depending on
+> momentary desktop VRAM. **16384 is the reliable default** (what `start-turbo.sh` uses).
+> For the literal 25k: `CTX=25000 bash scripts/start-turbo.sh` (close other GPU apps, or
+> add `BATCH=256 UBATCH=256`).
 
 | Mode (Q4_K_M) | Build | offload | KV (K/V) | ctx | VRAM | tok/s | Verdict |
 |---|---|---|---|---|---|---|---|
