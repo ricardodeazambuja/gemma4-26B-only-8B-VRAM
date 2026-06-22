@@ -146,6 +146,15 @@ case "$BACKEND" in
   *) echo "ERROR: unknown BACKEND='$BACKEND'"; exit 1 ;;
 esac
 
+# Memory-saving defaults for full-offload TURBO mode on an 8 GB card: the default
+# n_parallel=4 + n_batch=2048 inflate the CUDA compute buffer by ~0.5 GB and OOM at
+# -ngl 99. One slot + a 512 batch fit comfortably (verified: 7.76/8 GB, ~28 t/s).
+# Override via NP / BATCH / UBATCH; harmless to set in non-turbo mode too.
+EXTRA_ARGS=()
+if [ "$TURBO" = 1 ]; then
+  EXTRA_ARGS=(--parallel "${NP:-1}" -b "${BATCH:-512}" -ub "${UBATCH:-512}")
+fi
+
 echo ">> model:   $MODEL ($QUANT)"
 echo ">> dense:   -ngl $NGL of 48 layers on GPU, rest on CPU/RAM (no --cpu-moe — this model is dense)"
 echo ">> context: $CTX   KV cache: K=$CTK V=$CTV (flash-attn on)$([ "$TURBO" = 1 ] && echo '   [TurboQuant build]')"
@@ -162,5 +171,6 @@ exec "${RUN[@]}" "$SERVER_BIN" \
   -ctk "$CTK" -ctv "$CTV" -fa on \
   --jinja \
   --temp "$TEMP" --top-p "$TOP_P" --top-k "$TOP_K" --repeat-penalty "$REP_PEN" \
+  "${EXTRA_ARGS[@]}" \
   --host "$HOST" --port "$PORT" \
   "$@"
