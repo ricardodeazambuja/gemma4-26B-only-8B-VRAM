@@ -21,7 +21,8 @@
 #   CTX        context window                          (default: 131072 MoE / 32768 dense)
 #   NCMOE      MoE only: keep only the first N layers' experts on CPU, rest on GPU
 #              (faster, more VRAM). Empty = all experts on CPU.  (default: empty)
-#   NGL        dense only: transformer layers on GPU   (default: 36 of 64)
+#   NGL        dense only: transformer layers on GPU   (default: 30 of 64; 36 OOMs
+#              on the first request at 32K ctx — see docs/qwen-bakeoff.md)
 #   KVQUANT    KV-cache type, both K and V             (default: q8_0; forces -fa on)
 #   MTP        dense only: 1 = speculative decoding with the GGUF's embedded MTP head
 #              (untested on this llama.cpp build)      (default: 0)
@@ -82,7 +83,7 @@ MODEL="${MODEL:-$_model}"
 MMPROJ="${MMPROJ:-$_mmproj}"
 if [ "$KIND" = moe ]; then CTX="${CTX:-131072}"; else CTX="${CTX:-32768}"; fi
 NCMOE="${NCMOE:-}"
-NGL="${NGL:-36}"
+NGL="${NGL:-30}"
 KVQUANT="${KVQUANT:-q8_0}"
 MTP="${MTP:-0}"
 TEMP="${TEMP:-$_temp}"

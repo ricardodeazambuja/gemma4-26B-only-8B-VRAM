@@ -14,7 +14,7 @@
 #   QMODEL   qwen36 | qwen38 | distill    (default qwen36)
 #   CTX      context window, in tokens    (default: 131072 MoE / 32768 dense qwen38)
 #   NCMOE    MoE: first N layers' experts on CPU, rest on GPU  (default: all on CPU)
-#   NGL      dense qwen38: layers on GPU  (default 36 of 64)
+#   NGL      dense qwen38: layers on GPU  (default 30 of 64; 36 OOMs at 32K)
 #   KVQUANT  KV type both sides           (default q8_0)
 #   MTP      qwen38 only: 1 = MTP speculative decoding (default 0)
 #   TEMP / TOP_P / TOP_K / PRESENCE_PENALTY  sampling (defaults per model card)

@@ -7,6 +7,9 @@
 #   qwen38   Qwen3.8-27B (dense)      ISTA-DASLab GSQ-RCO      ~10.4 GB  IQ3_XXS + MTP head
 #   distill  Qwen3.8-35B-A3B-Distill  empero-ai IQ4_XS         ~19.6 GB  3.6 base, 3.8 traces
 #
+# Optional (not in the default set): dflash — DFlash2 block-diffusion drafter for the
+# 27B (z-lab, Q4_K_M, ~1.1 GB), for speculative decoding on builds that support it.
+#
 # Each file is checked against its Hugging Face LFS sha256 (the API's lfs.oid).
 # A GGUF can have the right size and a valid header and still be corrupt
 # (see docs/TECHNICAL.md), so a mismatch deletes the file and exits non-zero.
@@ -14,7 +17,7 @@
 #
 # Usage:
 #   bash scripts/download-qwen-bakeoff.sh              # all three
-#   bash scripts/download-qwen-bakeoff.sh qwen38       # just one (qwen36 | qwen38 | distill)
+#   bash scripts/download-qwen-bakeoff.sh qwen38       # just one (qwen36 | qwen38 | distill | dflash)
 #
 # Overrides: ENV_NAME (env with the `hf` CLI, default llamacpp).
 #
@@ -33,6 +36,7 @@ MODELS=(
   "qwen36|unsloth/Qwen3.6-35B-A3B-GGUF|qwen36-35b-a3b|Qwen3.6-35B-A3B-UD-IQ4_XS.gguf mmproj-F16.gguf"
   "qwen38|ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF|qwen38-27b-gsq|Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf mmproj-Qwen3.8-27B-BF16.gguf"
   "distill|empero-ai/Qwen3.8-35B-A3B-Distill-GGUF|qwen38-35b-a3b-distill|Qwen3.8-35B-A3B-IQ4_XS.gguf mmproj-Qwen3.8-35B-A3B-F16.gguf"
+  "dflash|z-lab/Qwen3.8-27B-DFlash2-GGUF|qwen38-27b-gsq|Qwen3.8-27B-DFlash2-Q4_K_M.gguf"
 )
 
 WANT=("$@")
@@ -84,7 +88,7 @@ for want in "${WANT[@]}"; do
       fi
     done
   done
-  [ "$found" = 1 ] || { echo "ERROR: unknown model '$want' (use qwen36 | qwen38 | distill)"; FAIL=1; }
+  [ "$found" = 1 ] || { echo "ERROR: unknown model '$want' (use qwen36 | qwen38 | distill | dflash)"; FAIL=1; }
 done
 
 exit "$FAIL"
