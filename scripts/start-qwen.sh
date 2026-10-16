@@ -13,7 +13,7 @@
 # Server knobs (forwarded via env to run-qwen.sh — see its -h for all of them):
 #   QMODEL   qwen36 | qwen38 | distill    (default qwen36)
 #   CTX      context window, in tokens    (default: 131072 MoE / 32768 dense qwen38)
-#   NCMOE    MoE: first N layers' experts on CPU, rest on GPU  (default: all on CPU)
+#   NCMOE    MoE: first N layers' experts on CPU, rest on GPU  (default: qwen36 32, distill 34)
 #   NGL      dense qwen38: layers on GPU  (default 30 of 64; 36 OOMs at 32K)
 #   KVQUANT  KV type both sides           (default q8_0)
 #   MTP      qwen38 only: 1 = MTP speculative decoding (default 0)

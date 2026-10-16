@@ -20,12 +20,14 @@
 #   MMPROJ     vision projector                        (default: per QMODEL; used with --image)
 #   CTX        context window                          (default: 131072 MoE / 32768 dense)
 #   NCMOE      MoE only: keep only the first N layers' experts on CPU, rest on GPU
-#              (faster, more VRAM). Empty = all experts on CPU.  (default: empty)
+#              (faster, more VRAM). NCMOE= (empty) = all experts on CPU.
+#              (default: measured fit at 128K — qwen36 32, distill 34; the distill's
+#              experts are bigger and OOM at 32. See docs/qwen-bakeoff.md)
 #   NGL        dense only: transformer layers on GPU   (default: 30 of 64; 36 OOMs
 #              on the first request at 32K ctx — see docs/qwen-bakeoff.md)
 #   KVQUANT    KV-cache type, both K and V             (default: q8_0; forces -fa on)
 #   MTP        dense only: 1 = speculative decoding with the GGUF's embedded MTP head
-#              (untested on this llama.cpp build)      (default: 0)
+#              (measured SLOWER here: 2.0 vs 2.5 tok/s)  (default: 0)
 #   TEMP / TOP_P / TOP_K / PRESENCE_PENALTY  sampling  (default: per QMODEL, from the
 #              model cards: qwen38 1.0/0.95/20/0, qwen36 + distill 0.6/0.95/20/0, the
 #              "precise coding" thinking preset)
@@ -39,7 +41,8 @@
 #
 # Examples:
 #   bash scripts/run-qwen.sh                           # Qwen3.6-35B-A3B, 128K ctx
-#   QMODEL=distill NCMOE=30 bash scripts/run-qwen.sh   # distill, 10 layers' experts on GPU
+#   QMODEL=distill bash scripts/run-qwen.sh            # the 3.8-distilled 35B-A3B
+#   NCMOE= bash scripts/run-qwen.sh                    # all experts on CPU (least VRAM)
 #   QMODEL=qwen38 NGL=40 CTX=16384 bash scripts/run-qwen.sh
 #   QMODEL=qwen38 MTP=1 bash scripts/run-qwen.sh       # try the MTP head
 #
@@ -60,6 +63,7 @@ case "$QMODEL" in
     _model="$_dir/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf"
     _mmproj="$_dir/mmproj-F16.gguf"
     ALIAS=qwen3.6-35b-a3b
+    _ncmoe=32
     _temp=0.6 ;;
   qwen38)
     KIND=dense
@@ -67,6 +71,7 @@ case "$QMODEL" in
     _model="$_dir/Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf"
     _mmproj="$_dir/mmproj-Qwen3.8-27B-BF16.gguf"
     ALIAS=qwen3.8-27b
+    _ncmoe=
     _temp=1.0 ;;
   distill)
     KIND=moe
@@ -74,6 +79,7 @@ case "$QMODEL" in
     _model="$_dir/Qwen3.8-35B-A3B-IQ4_XS.gguf"
     _mmproj="$_dir/mmproj-Qwen3.8-35B-A3B-F16.gguf"
     ALIAS=qwen3.8-35b-a3b-distill
+    _ncmoe=34
     _temp=0.6 ;;
   *)
     echo "ERROR: unknown QMODEL='$QMODEL' (use qwen36 | qwen38 | distill)"; exit 1 ;;
@@ -82,7 +88,7 @@ esac
 MODEL="${MODEL:-$_model}"
 MMPROJ="${MMPROJ:-$_mmproj}"
 if [ "$KIND" = moe ]; then CTX="${CTX:-131072}"; else CTX="${CTX:-32768}"; fi
-NCMOE="${NCMOE:-}"
+NCMOE="${NCMOE-$_ncmoe}"   # unset -> per-model default; set-but-empty -> all on CPU
 NGL="${NGL:-30}"
 KVQUANT="${KVQUANT:-q8_0}"
 MTP="${MTP:-0}"

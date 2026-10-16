@@ -1,6 +1,6 @@
 # Qwen bake-off — can a Qwen model replace Gemma 4 on this rig?
 
-**Started:** 2026-10-16 · **Branch:** `feat/test-qwen-bakeoff` · **Status:** in progress
+**Started:** 2026-10-16 · **Branch:** `feat/test-qwen-bakeoff` · **Status:** smoke tests done; real-task comparison pending
 **Scripts:** [`download-qwen-bakeoff.sh`](../scripts/download-qwen-bakeoff.sh) ·
 [`run-qwen.sh`](../scripts/run-qwen.sh) · [`start-qwen.sh`](../scripts/start-qwen.sh) ·
 [`qwen-bench.py`](../scripts/qwen-bench.py)
@@ -21,7 +21,12 @@ Rig: RTX 2070 Max-Q **8 GB**, i7-8750H (6C/12T), **32 GB DDR4**, vendored llama.
   More GPU layers, hyperthreads and MTP don't fix it (details below).
 - **ik_llama.cpp doesn't help:** same file is slower there (1.75 vs 2.63 tok/s at NGL 30),
   CPU-only it's no faster (0.93 vs 1.01). **Next:** a K-quant build (unsloth `UD-Q2_K_XL`).
-- The empero-ai distill is downloaded and verified but **not yet tested**.
+- **The empero-ai Qwen3.8-35B-A3B distill is the fastest and tersest:** 26.2 tok/s at
+  128K (`NCMOE=34`), tool calls ✓, and it answers in ~6× fewer tokens than Qwen3.6 on
+  the same coding task (557 vs 3,558) — both produced a correct function. One sample
+  each: a smoke test, not a quality verdict.
+- **Decision (2026-10-16): keep Qwen3.6 + the GSQ 27B + the distill; stop chasing 27B
+  speed** (the K-quant test was cancelled before it ran).
 
 ## Candidates
 
@@ -84,6 +89,30 @@ Single runs unless stated — read against the ±13 % noise floor.
 - Thinks a lot: both 1500-token speed runs ended in `finish=length` with no answer yet.
 - `NCMOE=32` leaves ~0.5 GB VRAM headroom; `NCMOE=34` is the fallback if the desktop grabs VRAM.
 - Used interactively through pi by the user: works fine.
+
+### Qwen3.8-35B-A3B-Distill (empero-ai) IQ4_XS
+
+| Config | VRAM | Load | Gen tok/s | Prefill (15.6K tok) | Tool call |
+|---|---:|---:|---:|---:|---|
+| `NCMOE=32`, 128K | — | — | — | — | **OOM at load** (`cudaMalloc failed` on a 545 MiB buffer) |
+| `NCMOE=34`, 128K | 7.2–7.3 GB | 10 s ² | **26.2** | 167 tok/s (93 s) | ✓ |
+
+² warm page cache. Its experts are bigger than Qwen3.6's (file 19.6 vs 17.7 GB), hence
+`NCMOE=34`. Speed run finished in 759 tokens (`finish=stop`, short thinking).
+
+### Head-to-head code check (same prompt, `merge_intervals` + 5 doctests, max 6000 tokens)
+
+The function was executed: its own doctests, plus 500 random inputs against a
+reference implementation.
+
+| | tokens | gen tok/s | own doctests | 500 random vs reference | time |
+|---|---:|---:|---|---|---:|
+| distill (`NCMOE=34`) | **557** | 25.9 | 5/5 | **0 wrong** | ~22 s |
+| Qwen3.6 (`NCMOE=32`) | 3,558 | 17.8 ³ | 4/5 (its own expected value wrong: `[[1, 6]]` for `[[1, 7]]`) | **0 wrong** | ~200 s |
+
+³ lower than the earlier 22.8 single run — within the rig's run-to-run spread (thermals);
+not re-measured. **n = 1 per model**: shows the distill's terse thinking is real, not that it
+is the better coder.
 
 ### Qwen3.8-27B GSQ-RCO IQ3_XXS (dense), mainline llama.cpp
 
@@ -163,17 +192,21 @@ briefly before the decline arrived; it only fetched URLs).
 
 1. ~~ik_llama.cpp vs mainline~~ — done, slower (2026-10-16).
 2. ~~ik_llama.cpp spec decoding~~ — skipped: CPU kernels no faster, so verification still scales.
-3. unsloth `UD-Q2_K_XL` (K-quant mix) on mainline: CPU-only + NGL sweep. Downloading.
-4. Test the empero-ai distill (`QMODEL=distill`) with `qwen-bench.py`.
-5. Real-task comparison through pi (the benchmarks above are smoke tests, not quality).
+3. ~~unsloth `UD-Q2_K_XL`~~ — cancelled by decision (keep the current files). Still the
+   one untested lever if the 27B speed matters again.
+4. ~~Test the distill~~ — done (above).
+5. **Real-task comparison through pi: Qwen3.6 vs the distill** (the numbers above are
+   smoke tests, not quality). The distill's card only reports MMLU/ARC, and its training
+   traces were math/code-weighted — watch tool use and long sessions specifically.
 
 ## Reproduce
 
 ```bash
 bash scripts/download-qwen-bakeoff.sh                 # ~52 GB, sha256-verified
-QMODEL=qwen36 NCMOE=32 bash scripts/run-qwen.sh       # then, in another shell:
+QMODEL=qwen36 bash scripts/run-qwen.sh                # NCMOE=32 default; then, in another shell:
 python3 scripts/qwen-bench.py
-QMODEL=qwen38 NGL=30 bash scripts/run-qwen.sh         # NGL=36 OOMs at 32K
+QMODEL=distill bash scripts/run-qwen.sh               # NCMOE=34 default (32 OOMs)
+QMODEL=qwen38 bash scripts/run-qwen.sh                # NGL=30 default (36 OOMs at 32K)
 mamba run -n llamacpp-cuda vendor/llama.cpp/build/bin/llama-bench \
   -m models/qwen38-27b-gsq/Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf \
   -ngl 30,34,38,42 -t 6,12 -p 0 -n 48 -fa 1 -ctk q8_0 -ctv q8_0 -r 2
