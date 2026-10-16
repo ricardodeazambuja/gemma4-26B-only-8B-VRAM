@@ -19,8 +19,8 @@ Rig: RTX 2070 Max-Q **8 GB**, i7-8750H (6C/12T), **32 GB DDR4**, vendored llama.
   The CPU half is **compute-bound** (6 cores at 600 %, GPU at 20 %) because the
   GSQ-RCO file is mostly IQ1/IQ2/IQ3 i-quants, which are costly to decode on a CPU.
   More GPU layers, hyperthreads and MTP don't fix it (details below).
-- **Next experiment:** the **ik_llama.cpp** fork (faster CPU i-quant kernels, MTP + DFlash
-  speculative decoding). Building at `vendor/ik_llama.cpp` (`cea2d61`, 2026-10-16).
+- **ik_llama.cpp doesn't help:** same file is slower there (1.75 vs 2.63 tok/s at NGL 30),
+  CPU-only it's no faster (0.93 vs 1.01). **Next:** a K-quant build (unsloth `UD-Q2_K_XL`).
 - The empero-ai distill is downloaded and verified but **not yet tested**.
 
 ## Candidates
@@ -117,13 +117,35 @@ is expensive. **My pre-test estimate (6–8 tok/s from bandwidth) was wrong by ~
 exactly this reason.** MTP hurts because verifying k drafted tokens costs the CPU ~k×
 when it is compute-bound.
 
+### Qwen3.8-27B on ik_llama.cpp (`cea2d61`, built 2026-10-16) — no help
+
+Same file, same flags (`-fa 1 -ctk q8_0 -ctv q8_0 -t 6 -p 0 -n 48`):
+
+| | mainline | ik_llama.cpp | ik + `-rtr 1` (212 tensors repacked) |
+|---|---:|---:|---:|
+| NGL 30 | 2.63 | **1.75** | 1.77 |
+| NGL 38 | 3.11 | 2.02 | — |
+
+CPU-only isolation (`-ngl 0 -t 6 -p 128 -n 16`, one rep):
+
+| | tg16 | pp128 |
+|---|---:|---:|
+| mainline | 1.01 | 57.0 |
+| ik_llama.cpp | 0.93 | 56.1 |
+
+**Verdict:** ik_llama.cpp's CPU i-quant kernels are *not* faster than this mainline build
+on this file, and its hybrid path is ~1/3 slower. Repacking doesn't change it. Spec
+decoding on ik is therefore not worth testing for this file (CPU cost still scales with
+drafted tokens). Mainline CPU-only reads the 9.7 GB file at ~10 GB/s — far below DDR4
+bandwidth — which re-confirms the i-quant decode cost and motivates the K-quant test.
+
 ## Research log — making the 27B faster (2026-10-16)
 
 Verified against primary sources (HF cards / GitHub) unless marked *unverified*.
 
 | Lead | Verdict |
 |---|---|
-| **ik_llama.cpp** (`ikawrakow/ik_llama.cpp`) | **Testing.** README: "better CPU performance"; faster CPU kernels for IQ1_M (PR 327), IQ2_XS (PR 312); "much faster CPU prompt processing" (batched → may make speculative verification cheap); supports `qwen35`/`qwen35moe` with fused delta-net (PR 1315/1333/1362); `--fit` auto-fit; `-rtr` CPU repacking (README warns against it only for MoE hybrid); speculative `--spec-type mtp` and `draft` (+ DFlash impl in `common/speculative-dflash-impl.h`), `--spec-autotune`. |
+| **ik_llama.cpp** (`ikawrakow/ik_llama.cpp`) | **Tested — slower** (see above). Claimed: README: "better CPU performance"; faster CPU kernels for IQ1_M (PR 327), IQ2_XS (PR 312); "much faster CPU prompt processing" (batched → may make speculative verification cheap); supports `qwen35`/`qwen35moe` with fused delta-net (PR 1315/1333/1362); `--fit` auto-fit; `-rtr` CPU repacking (README warns against it only for MoE hybrid); speculative `--spec-type mtp` and `draft` (+ DFlash impl in `common/speculative-dflash-impl.h`), `--spec-autotune`. |
 | **DFlash2** drafter (`z-lab/Qwen3.8-27B-DFlash2-GGUF`) | Merged in mainline llama.cpp **2026-08-27** (PR #27342) — our vendored build predates it. Drafter downloaded (1.1 GB, verified). Test on ik_llama.cpp. |
 | **K-quant build** (unsloth `UD-Q2_K_XL`, 9.8 GB) | Untested fallback: K-quants are cheaper to decode on CPU. Unverified whether the UD mix still contains i-quants. |
 | **Swift-1.5 Qwen3.8-27B** (UkisAI, also in GSQ-RCO) | Fewer thinking tokens: GPQA −42 % mean, LiveCodeBench −24.5 %, but **Terminal-Bench 2.1 only −16 % mean / ~0 % median** → little gain for agent loops. License: free non-commercial; commercial terms above a $1M revenue threshold. Cards disagree on headline speed-up (1.95× vs 9.18×). |
@@ -139,10 +161,9 @@ briefly before the decline arrived; it only fetched URLs).
 
 ## Next steps
 
-1. ik_llama.cpp vs mainline on the same file: `llama-bench` NGL × threads; then `-rtr`.
-2. ik_llama.cpp server with `--spec-type mtp:n_max=1..3,p_min=0.0` and with the DFlash2
-   drafter (`-md ... --spec-type draft`), recording acceptance.
-3. If still < ~6 tok/s: try unsloth `UD-Q2_K_XL` on both engines.
+1. ~~ik_llama.cpp vs mainline~~ — done, slower (2026-10-16).
+2. ~~ik_llama.cpp spec decoding~~ — skipped: CPU kernels no faster, so verification still scales.
+3. unsloth `UD-Q2_K_XL` (K-quant mix) on mainline: CPU-only + NGL sweep. Downloading.
 4. Test the empero-ai distill (`QMODEL=distill`) with `qwen-bench.py`.
 5. Real-task comparison through pi (the benchmarks above are smoke tests, not quality).
 
