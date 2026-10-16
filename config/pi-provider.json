@@ -16,6 +16,36 @@
         "image"
       ],
       "reasoning": true
+    },
+    {
+      "contextWindow": 32768,
+      "id": "qwen3.6-35b-a3b",
+      "name": "Qwen3.6 35B-A3B (llama.cpp -cmoe)",
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoning": true
+    },
+    {
+      "contextWindow": 32768,
+      "id": "qwen3.8-27b",
+      "name": "Qwen3.8 27B GSQ-RCO (llama.cpp, dense)",
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoning": true
+    },
+    {
+      "contextWindow": 32768,
+      "id": "qwen3.8-35b-a3b-distill",
+      "name": "Qwen3.8 35B-A3B Distill (llama.cpp -cmoe)",
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoning": true
     }
   ]
 }

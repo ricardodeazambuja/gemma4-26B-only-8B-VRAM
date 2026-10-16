@@ -24,11 +24,12 @@
 #
 # This script's own knobs:
 #   STOP_ON_EXIT  shutdown offer after pi exits: unset = ask (interactive) · 1 = always · 0 = never
-#   SYNC_PI       1 = sync pi's contextWindow to CTX so pi can't overrun the server
-#                 (default 1; only when we start the server) · 0 = leave pi config alone
+#   SYNC_PI       1 = sync pi's contextWindow to the server's actual n_ctx so pi can't
+#                 overrun it (default 1, also for a reused server) · 0 = leave pi config alone
 #   SERVER_LOG    server log path            (default /tmp/qwen-bakeoff-server.log)
-#   PROVIDER / MODEL_ID  pi provider/model   (forwarded to run-pi.sh; llama.cpp serves
-#                 whatever is loaded, so the default gemma id works unchanged)
+#   PROVIDER / MODEL_ID  pi provider/model   (forwarded to run-pi.sh; MODEL_ID defaults to
+#                 the id the server reports in /v1/models, so pi's label shows the model
+#                 that is really loaded — the ids are registered in config/pi-provider.json)
 #
 # Examples:
 #   bash scripts/start-qwen.sh                          # Qwen3.6-35B-A3B, 128K ctx
@@ -148,21 +149,35 @@ else
   fi
   echo ">> server up at http://$HOST:$PORT  (PID $SRV_PID · CTX=$CTX). Stop later: bash scripts/stop-server.sh"
   STARTED_SERVER=1
+fi
 
-  # Keep pi's client context window in lockstep with the server's -c. pi silently caps
-  # the context at its own configured contextWindow, so a 16K server + a 32K pi entry
-  # would overrun the server. We only do this when WE started the server (we know CTX).
-  if [ "$SYNC_PI" = 1 ]; then
-    echo ">> syncing pi's context window to $CTX (edits ~/.pi/agent/models.json; SYNC_PI=0 to skip) ..."
-    if CTX="$CTX" bash "$REPO_ROOT/scripts/configure-pi.sh" >/dev/null 2>&1; then
-      echo ">> pi context window set to $CTX."
-    else
-      echo ">> WARNING: could not sync pi automatically. Run it yourself: CTX=$CTX bash scripts/configure-pi.sh"
-    fi
+# Ask the server what it is actually running, so pi's label and context match it —
+# also when we reused a server started by someone else (possibly another QMODEL).
+# llama.cpp ignores the model id pi requests, so without this pi would show whatever
+# id it was launched with (the gemma default) no matter which model is loaded.
+SERVED_ID="$(curl -fsS "http://$HOST:$PORT/v1/models" 2>/dev/null \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"][0]["id"])' 2>/dev/null || true)"
+SERVED_CTX="$(curl -fsS "http://$HOST:$PORT/props" 2>/dev/null \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["default_generation_settings"]["n_ctx"])' 2>/dev/null || true)"
+[ -n "$SERVED_CTX" ] && CTX="$SERVED_CTX"
+if [ -z "${MODEL_ID:-}" ] && [ -n "$SERVED_ID" ]; then
+  export MODEL_ID="$SERVED_ID"
+fi
+echo ">> server is running: ${SERVED_ID:-unknown model} · n_ctx=${SERVED_CTX:-unknown}"
+
+# Keep pi's client context window in lockstep with the server's -c. pi silently caps
+# the context at its own configured contextWindow, so a 16K server + a 32K pi entry
+# would overrun the server. This also (re)registers the Qwen model ids in pi.
+if [ "$SYNC_PI" = 1 ]; then
+  echo ">> syncing pi's context window to $CTX (edits ~/.pi/agent/models.json; SYNC_PI=0 to skip) ..."
+  if CTX="$CTX" bash "$REPO_ROOT/scripts/configure-pi.sh" >/dev/null 2>&1; then
+    echo ">> pi context window set to $CTX."
+  else
+    echo ">> WARNING: could not sync pi automatically. Run it yourself: CTX=$CTX bash scripts/configure-pi.sh"
   fi
 fi
 
-echo ">> launching pi ..."
+echo ">> launching pi (model ${MODEL_ID:-gemma-4-26b-a4b-qat}) ..."
 PI_RC=0
 bash "$REPO_ROOT/scripts/run-pi.sh" "${PI_ARGS[@]}" || PI_RC=$?
 
