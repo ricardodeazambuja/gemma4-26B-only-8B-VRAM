@@ -96,6 +96,25 @@ Notes:
 - Downloads use the **pinned revisions** in the script, so you get the exact bytes tested
   here even if a repo is updated later; `FOLLOW_MAIN=1` opts into the latest uploads.
 
+### Reproduction verified (clean room, 2026-10-16)
+
+The steps above were run verbatim in a fresh clone of this branch, with fresh conda envs
+created from the lock (`qwen-repro-cuda`) and from conda-forge (`qwen-repro-hf`,
+huggingface_hub 1.29.0), and a `PATH` stripped of user tools (no `hf` on it):
+
+| Step | Result |
+|---|---|
+| 1. env from lock | created (36 s, warm package cache) |
+| 2. build `b9606` | built in 9 min 50 s at `88a39274…`; CUDA 12.2 toolkit, gcc 12, `sm_75` auto-detected |
+| 4. pinned download (`dflash`, 1.1 GB) | fetched at `2d9571f`, **sha256 OK** |
+| 5. serve `QMODEL=distill` | default `NCMOE=34`, loaded in 20 s from the clean build |
+| 6. `qwen-bench.py` | **29.0 tok/s**, tool call ✓, prefill 197 tok/s (15.6K tokens) |
+| 6. `qwen-codecheck.py` | 555 tokens, doctests pass, **0/500 wrong** |
+
+Same behaviour as the original build (26.2 tok/s / 167 tok/s prefill), within the rig's
+run-to-run spread. The 19.6 GB distill file was linked in rather than re-downloaded
+(identical bytes, same pinned sha256).
+
 ### Tuning for *your* card — the values above fit *this* laptop
 
 The defaults (`NCMOE=32` qwen36, `NCMOE=34` distill, `NGL=30` qwen38, 128K / 128K / 32K
