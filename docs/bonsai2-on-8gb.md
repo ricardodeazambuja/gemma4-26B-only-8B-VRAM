@@ -15,6 +15,9 @@
   for `QMODEL=bonsai2`).
 - **Context is capped at ~16K** on 8 GB (7.45 GB used with f16 KV); 32K does not fit.
   The 35B-A3B MoEs in [`qwen-bakeoff.md`](qwen-bakeoff.md) keep 128K.
+- **From pi:** Bonsai's chat template rejects pi's `reasoning_effort: "high"` (HTTP 500); the
+  pi model entry now maps pi's thinking levels onto the values it accepts. Use pi's
+  **`medium`** thinking level — `xhigh` thinks for minutes at 27 tok/s.
 
 ## Why this model
 
@@ -67,7 +70,7 @@ CUDA_VER=12.2 LLAMA_REPO=https://github.com/PrismML-Eng/llama.cpp \
 bash scripts/download-qwen-bakeoff.sh bonsai2
 
 # Serve (all layers on GPU, 16K ctx, f16 KV, card sampling incl. min-p 0.05) and open pi
-QMODEL=bonsai2 bash scripts/start-qwen.sh
+QMODEL=bonsai2 bash scripts/start-qwen.sh --thinking medium
 ```
 
 `build-llama-cuda.sh` gained `LLAMA_REPO` for this, and now always checks out exactly
@@ -131,12 +134,59 @@ Bonsai is the only way here to run the actual Qwen3.8-27B at a usable speed. The
 context: 16K vs 128K for the MoEs — tight for long agent sessions with a large system
 prompt (pi + extensions).
 
+## Using it from pi
+
+### `reasoning_effort` must be mapped
+
+pi sends its thinking level as `reasoning_effort`. The mainline llama.cpp build used in the
+Qwen bake-off ignored that field; the PrismML fork passes it into the chat template, and
+Bonsai's template only accepts three values:
+
+```
+Jinja Exception: Unexpected reasoning effort high. Supported types are xhigh (default), medium, and low.
+```
+
+Every request from pi at its `high` level failed with HTTP 500. Fix: a `thinkingLevelMap` on
+the `bonsai2-27b` entry in [`config/pi-provider.json`](../config/pi-provider.json) (synced into
+pi by `start-qwen.sh` / `configure-pi.sh`):
+
+| pi thinking level | sent as `reasoning_effort` |
+|---|---|
+| minimal, low, medium | `medium` |
+| high, xhigh | `xhigh` |
+
+`low` is deliberately not used: the card says `low` "is not supported and … the model will
+behave close to `xhigh`". (pi's `max` level is left unmapped — a value outside the template's
+list fails the same way.) Checked directly against the server: `xhigh` and `medium` work,
+`high` returns the error above.
+
+### Prefer pi's `medium` thinking level
+
+At `xhigh` (the template default, and what pi's `high` maps to), the model thinks at great
+length; at 27 tok/s that is minutes per turn. Use `--thinking medium` (or switch inside pi).
+
+### Open: slow pi side-requests
+
+In one-shot mode (`pi -p`), the main answer arrived quickly — server log: pi's 5,468-token
+prompt in 17.7 s (308 tok/s), the reply in 8.4 s — but pi then sent further small requests
+(292- and 130-token prompts), one of which generated 1,255 tokens (48 s), and `pi -p` had not
+exited after 400 s, at both `high` and `medium`. Runs with `--no-session` finished promptly.
+Not yet confirmed which pi feature issues these requests (session-related side calls are the
+working guess). The server has one slot (`--parallel 1`), so a long side-request delays the
+next turn.
+
+Debugging note: when a client gives up (e.g. a `timeout`), llama-server keeps generating the
+abandoned request; later requests queue behind it on the single slot and look like hangs.
+Check `curl -s http://127.0.0.1:8080/slots` (`is_processing`) before blaming the client.
+
 ## Next steps
 
-1. Real-task trial through pi (`QMODEL=bonsai2 bash scripts/start-qwen.sh`), especially how
-   far 16K context goes with pi's system prompt and tools.
-2. Optional: `PQ2_0` (7.21 GB) is not an option on 8 GB with any useful context.
-3. Optional: report the q8_0-KV flash-attention gap on Turing to PrismML.
+1. Real-task trial through pi (`QMODEL=bonsai2 bash scripts/start-qwen.sh --thinking medium`),
+   especially how far 16K context goes with pi's system prompt and tools.
+2. Identify pi's slow side-requests (see "Open: slow pi side-requests") and give them short
+   thinking.
+3. Optional: `PQ2_0` (7.21 GB) is not an option on 8 GB with any useful context.
+4. Optional: report the q8_0-KV flash-attention gap on Turing to PrismML.
 
 ## References
 

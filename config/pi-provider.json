@@ -55,7 +55,14 @@
         "text",
         "image"
       ],
-      "reasoning": true
+      "reasoning": true,
+      "thinkingLevelMap": {
+        "minimal": "medium",
+        "low": "medium",
+        "medium": "medium",
+        "high": "xhigh",
+        "xhigh": "xhigh"
+      }
     }
   ]
 }
