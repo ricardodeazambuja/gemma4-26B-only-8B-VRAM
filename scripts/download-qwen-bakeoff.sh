@@ -7,8 +7,10 @@
 #   qwen38   Qwen3.8-27B (dense)      ISTA-DASLab GSQ-RCO      ~10.4 GB  IQ3_XXS + MTP head
 #   distill  Qwen3.8-35B-A3B-Distill  empero-ai IQ4_XS         ~19.6 GB  3.6 base, 3.8 traces
 #
-# Optional (not in the default set): dflash — DFlash2 block-diffusion drafter for the
-# 27B (z-lab, Q4_K_M, ~1.1 GB), for speculative decoding on builds that support it.
+# Optional (not in the default set):
+#   dflash   DFlash2 block-diffusion drafter for the 27B (z-lab, Q4_K_M, ~1.1 GB)
+#   bonsai2  Ternary-Bonsai-2-27B PTQ1_0 (PrismML, ~5.95 GB + 0.63 GB vision) — Qwen3.8-27B
+#            in ternary weights; needs the PrismML llama.cpp fork (docs/bonsai2-on-8gb.md)
 #
 # Reproducible by construction: every file is downloaded at a PINNED Hugging Face repo
 # revision and checked against a PINNED sha256 (the exact bytes tested in
@@ -24,7 +26,7 @@
 #
 # Usage:
 #   bash scripts/download-qwen-bakeoff.sh              # all three
-#   bash scripts/download-qwen-bakeoff.sh qwen38       # just one (qwen36 | qwen38 | distill | dflash)
+#   bash scripts/download-qwen-bakeoff.sh qwen38       # just one (qwen36 | qwen38 | distill | dflash | bonsai2)
 #
 # Overrides: ENV_NAME (env with huggingface_hub, default llamacpp), FOLLOW_MAIN=1.
 #
@@ -44,6 +46,7 @@ MODELS=(
   "qwen36|unsloth/Qwen3.6-35B-A3B-GGUF|a483e9e6cbd595906af30beda3187c2663a1118c|qwen36-35b-a3b|Qwen3.6-35B-A3B-UD-IQ4_XS.gguf:649d7508507b84638732c4f52c24c8b15843c6dca2f3ff793ae07c14a67ebbb3 mmproj-F16.gguf:8971ee4f331ff0a4c609374f32984b3d4e6dc086c0aa35f1d637fad1829e887f"
   "qwen38|ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF|d562806dbafae37109975e970aae91b43e73b440|qwen38-27b-gsq|Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf:63f29a2189a6b4cc31f81e093d3856ad293a5583114439f41ae1ed7af4093262 mmproj-Qwen3.8-27B-BF16.gguf:13cb7bebccbd04afc8f4090cb949ecf8937cdf7377c5799b1a0c594e7c0d3e16"
   "distill|empero-ai/Qwen3.8-35B-A3B-Distill-GGUF|b1f9d1dcc3de8aa867669b0ab919384aeeb9b8d5|qwen38-35b-a3b-distill|Qwen3.8-35B-A3B-IQ4_XS.gguf:b645af45431ef9b41f43cae51c9323b2d0ca84f23031d483d2105c643ae58d65 mmproj-Qwen3.8-35B-A3B-F16.gguf:4381cb5110074396c2c7b39221fffae0c31886aa95b674de8e103d97edf58b94"
+  "bonsai2|prism-ml/Ternary-Bonsai-2-27B-gguf|b072e1d3b35a0a630cece372c2127528e0994386|bonsai2-27b|Ternary-Bonsai-2-27B-PTQ1_0.gguf:53107f530aa52eb00912263ab1ee29bd199261c87cd7b4ad4ca1318c1fe33ee3 Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf:6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903"
   "dflash|z-lab/Qwen3.8-27B-DFlash2-GGUF|2d9571f8ce46e151f61c6499c99dee6079e1d610|qwen38-27b-gsq|Qwen3.8-27B-DFlash2-Q4_K_M.gguf:1a25c56858e1ebe93f2718ac1d49d1151f9323325c1bbfd6209370f4db131ebd"
 )
 
@@ -106,7 +109,7 @@ for want in "${WANT[@]}"; do
       fi
     done
   done
-  [ "$found" = 1 ] || { echo "ERROR: unknown model '$want' (use qwen36 | qwen38 | distill | dflash)"; FAIL=1; }
+  [ "$found" = 1 ] || { echo "ERROR: unknown model '$want' (use qwen36 | qwen38 | distill | dflash | bonsai2)"; FAIL=1; }
 done
 
 exit "$FAIL"

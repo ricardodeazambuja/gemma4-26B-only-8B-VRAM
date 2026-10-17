@@ -7,6 +7,7 @@
 #   qwen36   Qwen3.6-35B-A3B UD-IQ4_XS        MoE, 3B active -> experts in RAM (--cpu-moe)
 #   qwen38   Qwen3.8-27B GSQ-RCO IQ3_XXS      DENSE          -> split by layers (-ngl)
 #   distill  Qwen3.8-35B-A3B-Distill IQ4_XS   MoE, 3B active -> experts in RAM (--cpu-moe)
+#   bonsai2  Ternary-Bonsai-2-27B PTQ1_0      DENSE, 5.95 GB -> all on GPU (-ngl 99), PrismML fork
 #
 # Both MoE candidates are Qwen3.6-class hybrids (30 Gated DeltaNet + 10 full-attention
 # layers), so the KV cache is small: 128K ctx at q8_0 is ~1.4 GB. Qwen recommends at
@@ -15,26 +16,27 @@
 # the 8 GB card with its weights, so it defaults to 32K.
 #
 # Config (override via env vars):
-#   QMODEL     qwen36 | qwen38 | distill               (default: qwen36)
+#   QMODEL     qwen36 | qwen38 | distill | bonsai2     (default: qwen36)
 #   MODEL      path to the .gguf                       (default: per QMODEL)
 #   MMPROJ     vision projector                        (default: per QMODEL; used with --image)
-#   CTX        context window                          (default: 131072 MoE / 32768 dense)
+#   CTX        context window                          (default: 131072 MoE / 32768 qwen38 / 16384 bonsai2)
 #   NCMOE      MoE only: keep only the first N layers' experts on CPU, rest on GPU
 #              (faster, more VRAM). NCMOE= (empty) = all experts on CPU.
 #              (default: measured fit at 128K — qwen36 32, distill 34; the distill's
 #              experts are bigger and OOM at 32. See docs/qwen-bakeoff.md)
-#   NGL        dense only: transformer layers on GPU   (default: 30 of 64; 36 OOMs
-#              on the first request at 32K ctx — see docs/qwen-bakeoff.md)
+#   NGL        dense only: transformer layers on GPU   (default: qwen38 30 of 64 — 36 OOMs
+#              on the first request at 32K ctx, see docs/qwen-bakeoff.md; bonsai2 99 = all)
 #   KVQUANT    KV-cache type, both K and V             (default: q8_0; forces -fa on)
 #   MTP        dense only: 1 = speculative decoding with the GGUF's embedded MTP head
 #              (measured SLOWER here: 2.0 vs 2.5 tok/s)  (default: 0)
-#   TEMP / TOP_P / TOP_K / PRESENCE_PENALTY  sampling  (default: per QMODEL, from the
+#   TEMP / TOP_P / TOP_K / MIN_P / PRESENCE_PENALTY  sampling  (default: per QMODEL, from the
 #              model cards: qwen38 1.0/0.95/20/0, qwen36 + distill 0.6/0.95/20/0, the
-#              "precise coding" thinking preset)
+#              "precise coding" thinking preset; bonsai2 1.0/0.95/20, min-p 0.05 per its card)
 #   NP / BATCH / UBATCH  slots / batch sizes           (default: 1 / 512 / 512)
 #   EXTRA_ARGS any extra llama-server flags
 #   HOST/PORT  bind address                            (default: 127.0.0.1 / 8080)
-#   CUDA_BIN / CUDA_ENV  CUDA build + its env          (default: vendor/llama.cpp, llamacpp-cuda)
+#   CUDA_BIN / CUDA_ENV  CUDA build + its env          (default: vendor/llama.cpp — bonsai2:
+#              vendor/prism-llama.cpp — and env llamacpp-cuda)
 #
 # Flags (CLI args, not env vars):
 #   --image    load the vision projector ($MMPROJ) on the CPU. Other args pass through.
@@ -63,6 +65,7 @@ case "$QMODEL" in
     _model="$_dir/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf"
     _mmproj="$_dir/mmproj-F16.gguf"
     ALIAS=qwen3.6-35b-a3b
+    _ngl=30; _ctx=; _minp=0; _bin=
     _ncmoe=32
     _temp=0.6 ;;
   qwen38)
@@ -71,6 +74,7 @@ case "$QMODEL" in
     _model="$_dir/Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf"
     _mmproj="$_dir/mmproj-Qwen3.8-27B-BF16.gguf"
     ALIAS=qwen3.8-27b
+    _ngl=30; _ctx=; _minp=0; _bin=
     _ncmoe=
     _temp=1.0 ;;
   distill)
@@ -79,22 +83,36 @@ case "$QMODEL" in
     _model="$_dir/Qwen3.8-35B-A3B-IQ4_XS.gguf"
     _mmproj="$_dir/mmproj-Qwen3.8-35B-A3B-F16.gguf"
     ALIAS=qwen3.8-35b-a3b-distill
+    _ngl=30; _ctx=; _minp=0; _bin=
     _ncmoe=34
     _temp=0.6 ;;
+  bonsai2)
+    # Qwen3.8-27B in ternary weights (5.95 GB) — fits fully on an 8 GB GPU. Needs the
+    # PrismML llama.cpp fork (stock llama.cpp rejects PTQ1_0). See docs/bonsai2-on-8gb.md.
+    KIND=dense
+    _dir="$REPO_ROOT/models/bonsai2-27b"
+    _model="$_dir/Ternary-Bonsai-2-27B-PTQ1_0.gguf"
+    _mmproj="$_dir/Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf"
+    ALIAS=bonsai2-27b
+    _ngl=99; _ctx=16384; _minp=0.05
+    _bin="$REPO_ROOT/vendor/prism-llama.cpp/build/bin/llama-server"
+    _ncmoe=
+    _temp=1.0 ;;
   *)
-    echo "ERROR: unknown QMODEL='$QMODEL' (use qwen36 | qwen38 | distill)"; exit 1 ;;
+    echo "ERROR: unknown QMODEL='$QMODEL' (use qwen36 | qwen38 | distill | bonsai2)"; exit 1 ;;
 esac
 
 MODEL="${MODEL:-$_model}"
 MMPROJ="${MMPROJ:-$_mmproj}"
-if [ "$KIND" = moe ]; then CTX="${CTX:-131072}"; else CTX="${CTX:-32768}"; fi
+if [ "$KIND" = moe ]; then CTX="${CTX:-131072}"; else CTX="${CTX:-${_ctx:-32768}}"; fi
 NCMOE="${NCMOE-$_ncmoe}"   # unset -> per-model default; set-but-empty -> all on CPU
-NGL="${NGL:-30}"
+NGL="${NGL:-$_ngl}"
 KVQUANT="${KVQUANT:-q8_0}"
 MTP="${MTP:-0}"
 TEMP="${TEMP:-$_temp}"
 TOP_P="${TOP_P:-0.95}"
 TOP_K="${TOP_K:-20}"
+MIN_P="${MIN_P:-$_minp}"
 PRESENCE_PENALTY="${PRESENCE_PENALTY:-0}"
 NP="${NP:-1}"
 BATCH="${BATCH:-512}"
@@ -102,7 +120,7 @@ UBATCH="${UBATCH:-512}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8080}"
-CUDA_BIN="${CUDA_BIN:-$REPO_ROOT/vendor/llama.cpp/build/bin/llama-server}"
+CUDA_BIN="${CUDA_BIN:-${_bin:-$REPO_ROOT/vendor/llama.cpp/build/bin/llama-server}}"
 CUDA_ENV="${CUDA_ENV:-llamacpp-cuda}"
 
 USE_IMAGE=0
@@ -171,11 +189,11 @@ case "$KVQUANT" in
 esac
 echo ">> KV-cache: ${KVQUANT:-f16}"
 
-SAMPLER_ARGS=(--temp "$TEMP" --top-p "$TOP_P" --top-k "$TOP_K" --min-p 0 --presence-penalty "$PRESENCE_PENALTY")
+SAMPLER_ARGS=(--temp "$TEMP" --top-p "$TOP_P" --top-k "$TOP_K" --min-p "$MIN_P" --presence-penalty "$PRESENCE_PENALTY")
 # shellcheck disable=SC2206  # intentional word-splitting for passthrough flags
 [ -n "$EXTRA_ARGS" ] && SAMPLER_ARGS+=($EXTRA_ARGS)
 
-echo ">> sampling: temp=$TEMP top-p=$TOP_P top-k=$TOP_K presence-penalty=$PRESENCE_PENALTY ${EXTRA_ARGS:+(+ $EXTRA_ARGS)}"
+echo ">> sampling: temp=$TEMP top-p=$TOP_P top-k=$TOP_K min-p=$MIN_P presence-penalty=$PRESENCE_PENALTY ${EXTRA_ARGS:+(+ $EXTRA_ARGS)}"
 echo ">> context: $CTX   listening: http://$HOST:$PORT/v1"
 echo
 

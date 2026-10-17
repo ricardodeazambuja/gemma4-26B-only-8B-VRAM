@@ -11,8 +11,8 @@
 # invoked this is always left alone).
 #
 # Server knobs (forwarded via env to run-qwen.sh — see its -h for all of them):
-#   QMODEL   qwen36 | qwen38 | distill    (default qwen36)
-#   CTX      context window, in tokens    (default: 131072 MoE / 32768 dense qwen38)
+#   QMODEL   qwen36 | qwen38 | distill | bonsai2   (default qwen36)
+#   CTX      context window, in tokens    (default: 131072 MoE / 32768 qwen38 / 16384 bonsai2)
 #   NCMOE    MoE: first N layers' experts on CPU, rest on GPU  (default: qwen36 32, distill 34)
 #   NGL      dense qwen38: layers on GPU  (default 30 of 64; 36 OOMs at 32K)
 #   KVQUANT  KV type both sides           (default q8_0)
@@ -50,7 +50,9 @@ HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8080}"
 QMODEL="${QMODEL:-qwen36}"
 # Effective context, mirroring run-qwen.sh's defaults so pi gets synced to the same value.
-if [ -z "${CTX:-}" ]; then [ "$QMODEL" = qwen38 ] && CTX=32768 || CTX=131072; fi
+if [ -z "${CTX:-}" ]; then
+  case "$QMODEL" in qwen38) CTX=32768 ;; bonsai2) CTX=16384 ;; *) CTX=131072 ;; esac
+fi
 export CTX QMODEL
 SERVER_LOG="${SERVER_LOG:-/tmp/qwen-bakeoff-server.log}"
 STOP_ON_EXIT="${STOP_ON_EXIT:-}"

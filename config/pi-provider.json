@@ -46,6 +46,16 @@
         "image"
       ],
       "reasoning": true
+    },
+    {
+      "contextWindow": 32768,
+      "id": "bonsai2-27b",
+      "name": "Ternary-Bonsai-2-27B (PrismML llama.cpp)",
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoning": true
     }
   ]
 }
