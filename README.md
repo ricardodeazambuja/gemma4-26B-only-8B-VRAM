@@ -128,6 +128,7 @@ for the engineering rationale — which weakness each one targets, and why those
 | **The pi extensions** — what each does, the six design rules, install | [`pi-extensions/README.md`](pi-extensions/README.md) |
 | **The MTP speculative-decoding study** — measured gains + measurement-noise analysis | [`docs/mtp-benchmark.md`](docs/mtp-benchmark.md) |
 | **Inspecting a GGUF** — architecture / modality / tensors | [`utils/README.md`](utils/README.md) |
+| **Qwen3.6 / Qwen3.8 on 8 GB** — run them yourself, measurements, tuning, what didn't work | [`docs/qwen-bakeoff.md`](docs/qwen-bakeoff.md) |
 
 ---
 
@@ -155,6 +156,7 @@ with its own eval/doc. Check them out to dig in:
 | [`feat/test-gemma4-12b-coder-fable5`](../../tree/feat/test-gemma4-12b-coder-fable5) | Evaluating yuxinlu1's **Gemma-4 12B "coder" (fable5)** on the 8 GB card — it's *dense*, so `-ngl 42` (not `--cpu-moe`); Q4_K_M fits at ~17 t/s, Q2_K is broken, tool-calls work via `--jinja`. See `docs/gemma4-12b-coder-eval.md`. |
 | [`feat/test-gemma4-12b-agentic-fable5`](../../tree/feat/test-gemma4-12b-agentic-fable5) | The **v2 "agentic"** successor — same dense Gemma-4 12B, but run through the **TurboQuant** fork (`TheTom/llama-cpp-turboquant`). Its `turbo3` ~3.5-bit V-cache shrinks KV enough to **fully offload (`-ngl 99`) on 8 GB** at ~28 t/s (vs ~17 partial). `TURBO=1 bash scripts/start-turbo.sh` is the zero-config launcher (server + `pi`). See `docs/gemma4-12b-agentic-eval.md`. |
 | [`feat/spec-exec-branch-prediction`](../../tree/feat/spec-exec-branch-prediction) | A speculative-execution **"branch prediction" agent** — a local Gemma draft tier (`/gemma-draft`) with per-session stats. Design in `docs/PRD-speculative-agent.md`. |
+| [`qwen_on_8gb_vram`](../../tree/qwen_on_8gb_vram) | **Qwen3.6-35B-A3B, Qwen3.8-27B and an empero Qwen3.8→3.6 distill on the same 8 GB card.** The two 35B-A3B MoEs run at ~23–26 t/s with **128K context** (Gated-DeltaNet keeps the KV cache small) and clean tool calls; the dense Qwen3.8-27B is stuck at ~2.5 t/s (its i-quants are CPU-compute-bound; ik_llama.cpp and MTP didn't help). `QMODEL=distill bash scripts/start-qwen.sh`. See `docs/qwen-bakeoff.md`. |
 | [`feat/diffusiongemma`](../../tree/feat/diffusiongemma) | Experimental **DiffusionGemma** (diffusion-style generation) integration through `pi`, plus lessons learned. See `docs/DIFFUSION.md`. |
 
 > VibeThinker (1.5B/3B as a tool-using agent) graduated into its own standalone repo.
