@@ -70,8 +70,12 @@ CUDA_VER=12.2 LLAMA_REPO=https://github.com/PrismML-Eng/llama.cpp \
 bash scripts/download-qwen-bakeoff.sh bonsai2
 
 # Serve (all layers on GPU, 16K ctx, f16 KV, card sampling incl. min-p 0.05) and open pi
-QMODEL=bonsai2 bash scripts/start-qwen.sh --thinking medium
+bash scripts/start_bonsai2.sh          # = QMODEL=bonsai2 bash scripts/start-qwen.sh --thinking medium
 ```
+
+`start_bonsai2.sh` needs no environment variables. It checks that the model and the fork are
+in place, refuses if another model is already serving on the port (`scripts/stop-server.sh`
+first), and passes any pi flags through.
 
 `build-llama-cuda.sh` gained `LLAMA_REPO` for this, and now always checks out exactly
 `LLAMA_REF` (tag, branch or commit) or fails — previously a failed `--branch` clone fell back
