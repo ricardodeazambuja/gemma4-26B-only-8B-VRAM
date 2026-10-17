@@ -1,7 +1,7 @@
 # Qwen on 8 GB VRAM — Qwen3.6 / Qwen3.8 bake-off
 
 **Date:** 2026-10-16 · **Branch:** `qwen_on_8gb_vram` · **Status:** smoke tests done; distill
-tried in pi by the user ("not bad"); side-by-side real-task comparison still open
+tried in pi by the author ("not bad"); side-by-side real-task comparison still open
 **Scripts:** [`download-qwen-bakeoff.sh`](../scripts/download-qwen-bakeoff.sh) ·
 [`run-qwen.sh`](../scripts/run-qwen.sh) · [`start-qwen.sh`](../scripts/start-qwen.sh) ·
 [`qwen-bench.py`](../scripts/qwen-bench.py) · [`qwen-codecheck.py`](../scripts/qwen-codecheck.py)
@@ -17,7 +17,8 @@ driven by the [pi](https://github.com/badlogic/pi-mono) coding agent.
 | GPU | NVIDIA RTX 2070 Max-Q, **8 GB** (Turing, sm_75), driver 580.178.04 (reports CUDA 13.0) |
 | CPU / RAM | Intel i7-8750H (6 cores / 12 threads), **32 GB DDR4** |
 | OS | Ubuntu 22.04.5 LTS, kernel 6.8.0-138 |
-| Engine | llama.cpp **`b9606`** (`88a39274ecf88ba11686acd357b59685b1cbf03d`, 2026-06-12), CUDA build with the conda-forge CUDA 12.2 toolkit via [`build-llama-cuda.sh`](../scripts/build-llama-cuda.sh) |
+| Engine | llama.cpp **`b9606`** (`88a39274ecf88ba11686acd357b59685b1cbf03d`, 2026-06-12), CUDA build via [`build-llama-cuda.sh`](../scripts/build-llama-cuda.sh) |
+| Toolchain | conda-forge CUDA toolkit 12.2.2 (nvcc 12.2.140), gcc/g++ 12.4, cmake 4.2.3, ninja 1.13.2 — exact lock: [`envs/llamacpp-cuda.linux-64.lock`](../envs/llamacpp-cuda.linux-64.lock) |
 | Baseline | Gemma4-26B-A4B QAT, ~22–23.5 tok/s ([`mtp-benchmark.md`](mtp-benchmark.md); its ±13 % run-to-run noise floor applies here too) |
 
 ## TL;DR
@@ -57,26 +58,43 @@ driven by the [pi](https://github.com/badlogic/pi-mono) coding agent.
 git clone https://github.com/ricardodeazambuja/gemma4-26B-only-8B-VRAM && cd gemma4-26B-only-8B-VRAM
 git switch qwen_on_8gb_vram
 
-# 1. Build llama.cpp with CUDA, pinned to the tested release (~20 min, creates env llamacpp-cuda).
-#    Without LLAMA_REF it builds the latest release, which should also work but is untested here.
-LLAMA_REF=b9606 BACKEND=cuda bash scripts/setup.sh   # or just: LLAMA_REF=b9606 bash scripts/build-llama-cuda.sh
+# 1. The exact build toolchain: 220 pinned conda-forge packages (CUDA toolkit 12.2.2,
+#    nvcc 12.2.140, gcc/g++ 12.4) — URLs + md5 in envs/llamacpp-cuda.linux-64.lock.
+mamba create -y -n llamacpp-cuda --file envs/llamacpp-cuda.linux-64.lock
 
-# 2. Download + sha256-verify the models (pick any subset: qwen36 qwen38 distill dflash).
+# 2. Build llama.cpp at the tested release b9606 (= 88a39274ecf88ba11686acd357b59685b1cbf03d)
+#    into vendor/llama.cpp (~20 min). CUDA_VER=12.2 matters: without it the script picks
+#    your driver's CUDA version for the toolkit. The env from step 1 is reused as-is.
+CUDA_VER=12.2 LLAMA_REF=b9606 bash scripts/build-llama-cuda.sh
+
+# 3. A small env for the Hugging Face CLI used by the download script.
+mamba create -y -n llamacpp -c conda-forge huggingface_hub
+
+# 4. Download + sha256-verify the models at the pinned repo revisions
+#    (any subset of: qwen36 qwen38 distill dflash).
 bash scripts/download-qwen-bakeoff.sh distill qwen36
 
-# 3. Serve one and open pi on it (pi gets the right model label and context window).
+# 5. Serve one and open pi on it (pi gets the right model label and context window).
 QMODEL=distill bash scripts/start-qwen.sh            # or qwen36 / qwen38
 #    ...or just the server, for any OpenAI-compatible client:
 QMODEL=distill bash scripts/run-qwen.sh
 
-# 4. Smoke-test whatever is being served (speed, tool call, 15.6K-token prefill; code check).
+# 6. Smoke-test whatever is being served (speed, tool call, 15.6K-token prefill; code check).
 python3 scripts/qwen-bench.py
 python3 scripts/qwen-codecheck.py
 ```
 
-`setup.sh` also creates the `llamacpp` env (with the `hf` CLI used by the download
-script) and downloads the Gemma model; skip it and run `build-llama-cuda.sh` +
-`mamba create -n llamacpp -c conda-forge huggingface_hub` if you only want the Qwens.
+Notes:
+- **Driver:** CUDA 12.2 kernels need an NVIDIA driver that supports CUDA ≥ 12.2
+  (`nvidia-smi` → "CUDA Version"; driver ≥ 535). The tested driver reports 13.0, which
+  runs 12.2-built kernels fine. With an older driver, use `CUDA_VER=<your version>` and an
+  unpinned toolchain (`bash scripts/build-llama-cuda.sh` creates one) — untested here.
+- **GPU arch** is auto-detected (`sm_75` here); override with `CUDA_ARCH=86` etc.
+- **Other names / locations:** `ENV_NAME=` and `SRC_DIR=` for the build script,
+  `ENV_NAME=` for the download script, `CUDA_ENV=` / `CUDA_BIN=` for `run-qwen.sh`.
+- **Newer llama.cpp** (`LLAMA_REF` unset = latest release) should work but is untested here.
+- Downloads use the **pinned revisions** in the script, so you get the exact bytes tested
+  here even if a repo is updated later; `FOLLOW_MAIN=1` opts into the latest uploads.
 
 ### Tuning for *your* card — the values above fit *this* laptop
 
@@ -110,10 +128,9 @@ context) were found by trial on a card that also drives a desktop. Your free VRA
 | `mmproj-Qwen3.8-35B-A3B-F16.gguf` (distill) | 0.90 GB | `4381cb5110074396c2c7b39221fffae0c31886aa95b674de8e103d97edf58b94` |
 | `Qwen3.8-27B-DFlash2-Q4_K_M.gguf` (optional drafter) | 1.14 GB | `1a25c56858e1ebe93f2718ac1d49d1151f9323325c1bbfd6209370f4db131ebd` |
 
-Repo revisions at download time: unsloth/Qwen3.6-35B-A3B-GGUF `a483e9e`,
-ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF `d562806`, empero-ai/Qwen3.8-35B-A3B-Distill-GGUF
-`b1f9d1d`, z-lab/Qwen3.8-27B-DFlash2-GGUF `2d9571f`. If a repo later re-uploads a file,
-the script reports a sha256 mismatch against the *new* LFS oid — compare with this table.
+Pinned repo revisions (in `download-qwen-bakeoff.sh`): unsloth/Qwen3.6-35B-A3B-GGUF
+`a483e9e`, ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF `d562806`,
+empero-ai/Qwen3.8-35B-A3B-Distill-GGUF `b1f9d1d`, z-lab/Qwen3.8-27B-DFlash2-GGUF `2d9571f`.
 
 ## Candidates
 
@@ -175,7 +192,7 @@ Single runs unless stated — read against the ±13 % noise floor.
 
 - Thinks a lot: both 1500-token speed runs ended in `finish=length` with no answer yet.
 - `NCMOE=32` leaves ~0.5 GB VRAM headroom; `NCMOE=34` is the fallback if the desktop grabs VRAM.
-- Used interactively through pi by the user: works fine.
+- Used interactively through pi by the author: works fine.
 
 ### Qwen3.8-35B-A3B-Distill (empero-ai) IQ4_XS
 
@@ -285,10 +302,6 @@ Verified against primary sources (HF cards / GitHub) unless marked *unverified*.
 | [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next) [REAP-288](https://huggingface.co/sh0wie/Qwen3.8-Flash-Next-REAP-288-GGUF) / [GSQ-RCO](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF) | Skip. Smallest builds 58–66 GB+ — exceed 32 GB RAM + 8 GB VRAM. |
 | Web search claim: spec decoding gives 2–3× when the target is partly on CPU | *Unverified*, and **contradicted by our MTP measurement** on this file (it assumes a bandwidth-bound CPU). ik_llama.cpp's CPU kernels turned out no faster, so it doesn't apply there either. |
 
-Process note: the Antigravity web searches repeatedly paused to ask to run commands.
-Allowed: URL reads, `mkdir`, `grep`. Declined: Python scripts (one URL-resolver ran
-briefly before the decline arrived; it only fetched URLs).
-
 ## Next steps
 
 1. ~~ik_llama.cpp vs mainline~~ — done, slower (2026-10-16).
@@ -296,7 +309,7 @@ briefly before the decline arrived; it only fetched URLs).
 3. ~~unsloth `UD-Q2_K_XL`~~ — cancelled by decision (keep the current files). Still the
    one untested lever if the 27B speed matters again.
 4. ~~Test the distill~~ — done (above).
-5. **Real-task comparison through pi: Qwen3.6 vs the distill.** 2026-10-16: the user
+5. **Real-task comparison through pi: Qwen3.6 vs the distill.** 2026-10-16: the author
    tried the distill interactively in pi — verdict "not bad". A side-by-side on the same
    tasks against Qwen3.6 is still to do.
    Original note: (the numbers above are

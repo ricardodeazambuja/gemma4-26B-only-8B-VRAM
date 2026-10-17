@@ -10,16 +10,23 @@
 # Optional (not in the default set): dflash — DFlash2 block-diffusion drafter for the
 # 27B (z-lab, Q4_K_M, ~1.1 GB), for speculative decoding on builds that support it.
 #
-# Each file is checked against its Hugging Face LFS sha256 (the API's lfs.oid).
-# A GGUF can have the right size and a valid header and still be corrupt
-# (see docs/TECHNICAL.md), so a mismatch deletes the file and exits non-zero.
-# Re-running skips files that already verify.
+# Reproducible by construction: every file is downloaded at a PINNED Hugging Face repo
+# revision and checked against a PINNED sha256 (the exact bytes tested in
+# docs/qwen-bakeoff.md). A GGUF can have the right size and a valid header and still be
+# corrupt (see docs/TECHNICAL.md), so a mismatch deletes the file and exits non-zero.
+# Re-running skips files that already verify. FOLLOW_MAIN=1 downloads the repos' current
+# main instead and checks against the API's current LFS sha256 (newer, untested bytes).
+#
+# Needs the `hf` CLI (package huggingface_hub) INSIDE the conda env ENV_NAME — the
+# script refuses an `hf` that merely happens to be on PATH, so results don't depend
+# on what else is installed on the machine. Fix with:
+#   mamba install -n llamacpp -c conda-forge huggingface_hub
 #
 # Usage:
 #   bash scripts/download-qwen-bakeoff.sh              # all three
 #   bash scripts/download-qwen-bakeoff.sh qwen38       # just one (qwen36 | qwen38 | distill | dflash)
 #
-# Overrides: ENV_NAME (env with the `hf` CLI, default llamacpp).
+# Overrides: ENV_NAME (env with huggingface_hub, default llamacpp), FOLLOW_MAIN=1.
 #
 set -euo pipefail
 
@@ -30,22 +37,29 @@ esac; done
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_NAME="${ENV_NAME:-llamacpp}"
+FOLLOW_MAIN="${FOLLOW_MAIN:-0}"
 
-# name | HF repo | local dir (under models/) | files (space-separated)
+# name | HF repo | pinned revision | local dir (under models/) | file:sha256 ...
 MODELS=(
-  "qwen36|unsloth/Qwen3.6-35B-A3B-GGUF|qwen36-35b-a3b|Qwen3.6-35B-A3B-UD-IQ4_XS.gguf mmproj-F16.gguf"
-  "qwen38|ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF|qwen38-27b-gsq|Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf mmproj-Qwen3.8-27B-BF16.gguf"
-  "distill|empero-ai/Qwen3.8-35B-A3B-Distill-GGUF|qwen38-35b-a3b-distill|Qwen3.8-35B-A3B-IQ4_XS.gguf mmproj-Qwen3.8-35B-A3B-F16.gguf"
-  "dflash|z-lab/Qwen3.8-27B-DFlash2-GGUF|qwen38-27b-gsq|Qwen3.8-27B-DFlash2-Q4_K_M.gguf"
+  "qwen36|unsloth/Qwen3.6-35B-A3B-GGUF|a483e9e6cbd595906af30beda3187c2663a1118c|qwen36-35b-a3b|Qwen3.6-35B-A3B-UD-IQ4_XS.gguf:649d7508507b84638732c4f52c24c8b15843c6dca2f3ff793ae07c14a67ebbb3 mmproj-F16.gguf:8971ee4f331ff0a4c609374f32984b3d4e6dc086c0aa35f1d637fad1829e887f"
+  "qwen38|ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF|d562806dbafae37109975e970aae91b43e73b440|qwen38-27b-gsq|Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf:63f29a2189a6b4cc31f81e093d3856ad293a5583114439f41ae1ed7af4093262 mmproj-Qwen3.8-27B-BF16.gguf:13cb7bebccbd04afc8f4090cb949ecf8937cdf7377c5799b1a0c594e7c0d3e16"
+  "distill|empero-ai/Qwen3.8-35B-A3B-Distill-GGUF|b1f9d1dcc3de8aa867669b0ab919384aeeb9b8d5|qwen38-35b-a3b-distill|Qwen3.8-35B-A3B-IQ4_XS.gguf:b645af45431ef9b41f43cae51c9323b2d0ca84f23031d483d2105c643ae58d65 mmproj-Qwen3.8-35B-A3B-F16.gguf:4381cb5110074396c2c7b39221fffae0c31886aa95b674de8e103d97edf58b94"
+  "dflash|z-lab/Qwen3.8-27B-DFlash2-GGUF|2d9571f8ce46e151f61c6499c99dee6079e1d610|qwen38-27b-gsq|Qwen3.8-27B-DFlash2-Q4_K_M.gguf:1a25c56858e1ebe93f2718ac1d49d1151f9323325c1bbfd6209370f4db131ebd"
 )
 
 WANT=("$@")
 [ ${#WANT[@]} -eq 0 ] && WANT=(qwen36 qwen38 distill)
 
-command -v mamba >/dev/null 2>&1 || { echo "ERROR: 'mamba' not found on PATH."; exit 1; }
+command -v mamba >/dev/null 2>&1 || { echo "ERROR: 'mamba' not found on PATH (install Miniforge)."; exit 1; }
 
-# Expected sha256 of one file in a repo, from the HF API (LFS oid).
-expected_sha() {
+# The hf CLI must come from ENV_NAME itself, not from some other install on PATH.
+ENV_PREFIX="$(mamba run -n "$ENV_NAME" printenv CONDA_PREFIX 2>/dev/null || true)"
+[ -n "$ENV_PREFIX" ] || { echo "ERROR: conda env '$ENV_NAME' not found. Create it: mamba create -y -n $ENV_NAME -c conda-forge huggingface_hub"; exit 1; }
+HF_BIN="$ENV_PREFIX/bin/hf"
+[ -x "$HF_BIN" ] || { echo "ERROR: no 'hf' CLI in env '$ENV_NAME' ($HF_BIN). Install: mamba install -y -n $ENV_NAME -c conda-forge huggingface_hub"; exit 1; }
+
+# Current-main sha256 of one file (FOLLOW_MAIN=1 only), from the HF API (LFS oid).
+main_sha() {
   local repo="$1" file="$2"
   curl -fsSL "https://huggingface.co/api/models/$repo/paths-info/main" \
        --data-urlencode "paths=$file" \
@@ -56,15 +70,19 @@ FAIL=0
 for want in "${WANT[@]}"; do
   found=0
   for entry in "${MODELS[@]}"; do
-    IFS='|' read -r name repo dir files <<<"$entry"
+    IFS='|' read -r name repo rev dir files <<<"$entry"
     [ "$name" = "$want" ] || continue
     found=1
     dest="$REPO_ROOT/models/$dir"
     mkdir -p "$dest"
-    for f in $files; do
-      want_sha="$(expected_sha "$repo" "$f")"
-      if [ -z "$want_sha" ]; then
-        echo "ERROR: no sha256 from the HF API for $repo/$f"; FAIL=1; continue
+    [ "$FOLLOW_MAIN" = 1 ] && rev=main
+    for spec in $files; do
+      f="${spec%%:*}"
+      if [ "$FOLLOW_MAIN" = 1 ]; then
+        want_sha="$(main_sha "$repo" "$f")"
+        [ -n "$want_sha" ] || { echo "ERROR: no sha256 from the HF API for $repo/$f"; FAIL=1; continue; }
+      else
+        want_sha="${spec#*:}"
       fi
       if [ -f "$dest/$f" ]; then
         echo ">> $name: $f exists, verifying ..."
@@ -74,8 +92,8 @@ for want in "${WANT[@]}"; do
         echo "   sha256 mismatch on existing file, re-downloading"
         rm -f "$dest/$f"
       fi
-      echo ">> $name: downloading $repo/$f -> models/$dir/"
-      mamba run --no-capture-output -n "$ENV_NAME" hf download "$repo" "$f" --local-dir "$dest"
+      echo ">> $name: downloading $repo@${rev:0:7}/$f -> models/$dir/"
+      "$HF_BIN" download "$repo" "$f" --revision "$rev" --local-dir "$dest"
       got_sha="$(sha256sum "$dest/$f" | cut -d' ' -f1)"
       if [ "$got_sha" = "$want_sha" ]; then
         echo "   sha256 OK"
