@@ -1,7 +1,20 @@
 # Bonsai 2 27B on 8 GB VRAM — Qwen3.8-27B in ternary weights
 
-**Date:** 2026-10-16 · **Branch:** `bonsai2_on_8gb_vram` (from `qwen_on_8gb_vram`) · **Status:** in progress
+**Date:** 2026-10-16 · **Branch:** `bonsai2_on_8gb_vram` (from `qwen_on_8gb_vram`) · **Status:** works — 27 tok/s fully on the GPU at 16K context; real-task trial pending
 **Companion:** [`qwen-bakeoff.md`](qwen-bakeoff.md) — same machine, same scripts, same smoke tests.
+
+## TL;DR
+
+- **Qwen3.8-27B becomes usable on 8 GB: ~27 tok/s**, vs **2.5 tok/s** for the GSQ-RCO
+  `IQ3_XXS` build of the same model (≈11×). The whole 5.95 GB model sits on the GPU.
+- Tool calls ✓, 15.6K-token prefill at 269 tok/s, code check correct (0/500 wrong).
+- **Needs the PrismML llama.cpp fork**, built here from source with the same locked CUDA 12.2
+  toolchain as the Qwen work.
+- **Turing gotcha:** the fork's flash-attention kernel for a **q8_0 KV cache has no sm_75
+  code** → the server aborts on the first request. **Use an f16 KV cache** (now the default
+  for `QMODEL=bonsai2`).
+- **Context is capped at ~16K** on 8 GB (7.45 GB used with f16 KV); 32K does not fit.
+  The 35B-A3B MoEs in [`qwen-bakeoff.md`](qwen-bakeoff.md) keep 128K.
 
 ## Why this model
 
@@ -35,8 +48,9 @@ tool-use number.
   Turing and newer (`ggml/src/ggml-cuda/mmvq.cu`: `type == GGML_TYPE_PTQ1_0 && ... cc >= GGML_CUDA_CC_TURING`).
   PrismML's published speed table only covers Ampere and newer.
 - **Context is the trade-off:** it is dense, so weights (5.95 GB) + KV cache + compute buffers
-  must all fit in VRAM. KV at q8_0 is ~0.57 GB at 16K and ~1.14 GB at 32K (same architecture
-  as Qwen3.8-27B: 16 of 64 layers use full attention, 4 KV heads × 256). Default here: **16K**.
+  must all fit in VRAM. KV at f16 is ~1.14 GB at 16K and ~2.3 GB at 32K (same architecture as
+  Qwen3.8-27B: 16 of 64 layers use full attention, 4 KV heads × 256). A q8_0 KV would halve
+  that, but crashes on Turing with this fork (see Measurements). Default here: **16K, f16 KV**.
 
 ## Run it
 
@@ -52,7 +66,7 @@ CUDA_VER=12.2 LLAMA_REPO=https://github.com/PrismML-Eng/llama.cpp \
 # Download + verify at the pinned revision (PTQ1_0 + vision projector, ~6.6 GB)
 bash scripts/download-qwen-bakeoff.sh bonsai2
 
-# Serve (all layers on GPU, 16K ctx, card sampling incl. min-p 0.05) and open pi
+# Serve (all layers on GPU, 16K ctx, f16 KV, card sampling incl. min-p 0.05) and open pi
 QMODEL=bonsai2 bash scripts/start-qwen.sh
 ```
 
@@ -72,7 +86,57 @@ Pinned repo revision: prism-ml/Ternary-Bonsai-2-27B-gguf `b072e1d3b35a0a630cece3
 
 ## Measurements
 
-*(to be filled in)*
+Same machine and smoke tests as [`qwen-bakeoff.md`](qwen-bakeoff.md) (RTX 2070 Max-Q 8 GB,
+i7-8750H, 32 GB DDR4). Fork built from source at `e3de715` with the locked CUDA 12.2.2 /
+gcc 12.4 toolchain (14 min, 525 steps). Single runs unless stated.
+
+### Build note: the post-build smoke test "failed" — VRAM, not the build
+
+`build-llama-cuda.sh` ran its Gemma smoke test while another server held 7.3 GB of VRAM;
+`llama-bench` printed only `failed to load model`. With the GPU free, the same fork binary
+runs that test fine (Gemma4-26B-A4B, `--n-cpu-moe 22`: pp8 42.8, tg8 25.8 tok/s).
+Free the GPU before building.
+
+### `llama-bench` (`-ngl 99 -t 6 -fa 1 -r 2`, default f16 KV)
+
+| test | tok/s |
+|---|---:|
+| pp512 | **322.3 ± 2.9** |
+| tg64 | **28.47 ± 0.08** |
+
+### Server (`QMODEL=bonsai2`: `-ngl 99`, 16K ctx, `-fa on`)
+
+| KV cache | VRAM | Gen tok/s | Tool call | Prefill (15.6K tok) | Notes |
+|---|---:|---:|---|---:|---|
+| q8_0 | 6.97 GB idle | — | — | — | **aborts on first request:** `CUDA kernel flash_attn_ext_f16 has no device code compatible with CUDA arch 750` (`fattn-mma-f16.cuh:1877`, head dim 256, KV type q8_0) |
+| **f16** | **7.45 GB** | **27.0** | ✓ | **269 tok/s** (58 s) | 1,383-token answer, `finish=stop` |
+| f16 (defaults, re-run) | — | 27.1 | ✓ | — | confirms the per-model default |
+
+### Code check ([`qwen-codecheck.py`](../scripts/qwen-codecheck.py))
+
+| | tokens | gen tok/s | own doctests | 500 random vs reference | time |
+|---|---:|---:|---|---|---:|
+| Bonsai 2 27B | 1,597 | 26.5 | pass | **0 wrong** | 60 s |
+
+### Compared with the Qwen bake-off (same rig, same tests)
+
+| Model | Size | Placement | Context | Gen tok/s | Prefill | Code check |
+|---|---:|---|---:|---:|---:|---|
+| Qwen3.8-27B GSQ-RCO IQ3_XXS | 10.4 GB | 30/64 layers GPU | 32K | 2.5 | 167 | — |
+| **Bonsai 2 27B PTQ1_0** | **5.95 GB** | **all GPU** | **16K** | **27.0** | **269** | correct, 1,597 tok |
+| Qwen3.8-35B-A3B distill | 19.6 GB | experts mostly RAM | 128K | 26.2 | 167 | correct, 557–784 tok |
+| Qwen3.6-35B-A3B | 17.7 GB | experts mostly RAM | 128K | 22.8 | 221 | correct, 3,558 tok |
+
+Bonsai is the only way here to run the actual Qwen3.8-27B at a usable speed. The trade is
+context: 16K vs 128K for the MoEs — tight for long agent sessions with a large system
+prompt (pi + extensions).
+
+## Next steps
+
+1. Real-task trial through pi (`QMODEL=bonsai2 bash scripts/start-qwen.sh`), especially how
+   far 16K context goes with pi's system prompt and tools.
+2. Optional: `PQ2_0` (7.21 GB) is not an option on 8 GB with any useful context.
+3. Optional: report the q8_0-KV flash-attention gap on Turing to PrismML.
 
 ## References
 

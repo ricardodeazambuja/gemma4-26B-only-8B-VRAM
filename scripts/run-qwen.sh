@@ -26,7 +26,8 @@
 #              experts are bigger and OOM at 32. See docs/qwen-bakeoff.md)
 #   NGL        dense only: transformer layers on GPU   (default: qwen38 30 of 64 — 36 OOMs
 #              on the first request at 32K ctx, see docs/qwen-bakeoff.md; bonsai2 99 = all)
-#   KVQUANT    KV-cache type, both K and V             (default: q8_0; forces -fa on)
+#   KVQUANT    KV-cache type, both K and V             (default: q8_0; bonsai2 f16 — the fork's
+#              q8_0 flash-attention kernel has no Turing code)
 #   MTP        dense only: 1 = speculative decoding with the GGUF's embedded MTP head
 #              (measured SLOWER here: 2.0 vs 2.5 tok/s)  (default: 0)
 #   TEMP / TOP_P / TOP_K / MIN_P / PRESENCE_PENALTY  sampling  (default: per QMODEL, from the
@@ -95,6 +96,9 @@ case "$QMODEL" in
     _mmproj="$_dir/Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf"
     ALIAS=bonsai2-27b
     _ngl=99; _ctx=16384; _minp=0.05
+    # f16 KV: the fork's flash-attention kernel for a q8_0 KV has no sm_75 (Turing) code and
+    # aborts on the first request ("no device code compatible with CUDA arch 750").
+    _kv=f16
     _bin="$REPO_ROOT/vendor/prism-llama.cpp/build/bin/llama-server"
     _ncmoe=
     _temp=1.0 ;;
@@ -107,7 +111,7 @@ MMPROJ="${MMPROJ:-$_mmproj}"
 if [ "$KIND" = moe ]; then CTX="${CTX:-131072}"; else CTX="${CTX:-${_ctx:-32768}}"; fi
 NCMOE="${NCMOE-$_ncmoe}"   # unset -> per-model default; set-but-empty -> all on CPU
 NGL="${NGL:-$_ngl}"
-KVQUANT="${KVQUANT:-q8_0}"
+KVQUANT="${KVQUANT:-${_kv:-q8_0}}"
 MTP="${MTP:-0}"
 TEMP="${TEMP:-$_temp}"
 TOP_P="${TOP_P:-0.95}"
