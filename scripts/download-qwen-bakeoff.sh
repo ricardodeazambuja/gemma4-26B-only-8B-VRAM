@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # download-qwen-bakeoff.sh — fetch + sha256-verify the GGUFs for the Qwen bake-off
-# (feat/test-qwen-bakeoff). Three candidates, each with its vision projector:
+# (qwen_on_8gb_vram). Three candidates, each with its vision projector:
 #
 #   qwen36   Qwen3.6-35B-A3B          unsloth UD-IQ4_XS        ~17.7 GB  MoE, 3B active
 #   qwen38   Qwen3.8-27B (dense)      ISTA-DASLab GSQ-RCO      ~10.4 GB  IQ3_XXS + MTP head

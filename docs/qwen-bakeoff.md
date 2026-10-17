@@ -1,6 +1,6 @@
 # Qwen bake-off — can a Qwen model replace Gemma 4 on this rig?
 
-**Started:** 2026-10-16 · **Branch:** `feat/test-qwen-bakeoff` · **Status:** smoke tests done; real-task comparison pending
+**Started:** 2026-10-16 · **Branch:** `qwen_on_8gb_vram` · **Status:** smoke tests done; distill tried in pi by the user ("not bad")
 **Scripts:** [`download-qwen-bakeoff.sh`](../scripts/download-qwen-bakeoff.sh) ·
 [`run-qwen.sh`](../scripts/run-qwen.sh) · [`start-qwen.sh`](../scripts/start-qwen.sh) ·
 [`qwen-bench.py`](../scripts/qwen-bench.py)
@@ -195,7 +195,10 @@ briefly before the decline arrived; it only fetched URLs).
 3. ~~unsloth `UD-Q2_K_XL`~~ — cancelled by decision (keep the current files). Still the
    one untested lever if the 27B speed matters again.
 4. ~~Test the distill~~ — done (above).
-5. **Real-task comparison through pi: Qwen3.6 vs the distill** (the numbers above are
+5. **Real-task comparison through pi: Qwen3.6 vs the distill.** 2026-10-16: the user
+   tried the distill interactively in pi — verdict "not bad". A side-by-side on the same
+   tasks against Qwen3.6 is still to do.
+   Original note: (the numbers above are
    smoke tests, not quality). The distill's card only reports MMLU/ARC, and its training
    traces were math/code-weighted — watch tool use and long sessions specifically.
 

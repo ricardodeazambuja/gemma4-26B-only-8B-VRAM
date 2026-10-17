@@ -2,7 +2,7 @@
 #
 # start-qwen.sh — one command to bring up a Qwen bake-off candidate
 # (scripts/run-qwen.sh) and drop you into pi, then offer to stop the server when
-# pi exits. Branch feat/test-qwen-bakeoff; download the models first with
+# pi exits. Branch qwen_on_8gb_vram; download the models first with
 # scripts/download-qwen-bakeoff.sh.
 #
 # Starts the server in the background (if nothing is serving on the port yet), waits

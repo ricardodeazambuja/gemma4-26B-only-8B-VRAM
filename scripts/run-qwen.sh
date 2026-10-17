@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# run-qwen.sh — serve one of the Qwen bake-off candidates (feat/test-qwen-bakeoff)
+# run-qwen.sh — serve one of the Qwen bake-off candidates (qwen_on_8gb_vram)
 # with llama.cpp's OpenAI-compatible server, on the same port pi already uses.
 #
 # Pick the model with QMODEL (download first: scripts/download-qwen-bakeoff.sh):
