@@ -70,12 +70,22 @@ CUDA_VER=12.2 LLAMA_REPO=https://github.com/PrismML-Eng/llama.cpp \
 bash scripts/download-qwen-bakeoff.sh bonsai2
 
 # Serve (all layers on GPU, 16K ctx, f16 KV, card sampling incl. min-p 0.05) and open pi
-bash scripts/start_bonsai2.sh          # = QMODEL=bonsai2 bash scripts/start-qwen.sh --thinking medium
+bash scripts/start_bonsai2.sh          # = QMODEL=bonsai2 bash scripts/start-qwen.sh --thinking medium -xt 'shepherd_*'
 ```
 
 `start_bonsai2.sh` needs no environment variables. It checks that the model and the fork are
 in place, refuses if another model is already serving on the port (`scripts/stop-server.sh`
 first), and passes any pi flags through.
+
+It also hides shepherd-pi's tools. With every extension in `~/.pi/agent/extensions` loaded,
+pi's first request is ~5,400 tokens, a third of the 16K context, and shepherd-pi's 10 tool
+definitions are ~2,000 of them; without them it is ~3,400 (measured by capturing pi's request
+with each extension loaded alone). Your own `-xt`/`-t` replaces that default.
+
+16K fills fast. One `fetch_page` of a JSON API (`pypi.org/pypi/bonsai/json`, 233 KB on one
+line) once returned ~146K tokens because the page cap counted lines only; it now also cuts
+long lines and caps each page at 6,000 characters. A session that overflowed stays broken
+(each request resends the oversized turn): start a new one with `/new`.
 
 `build-llama-cuda.sh` gained `LLAMA_REPO` for this, and now always checks out exactly
 `LLAMA_REF` (tag, branch or commit) or fails — previously a failed `--branch` clone fell back
