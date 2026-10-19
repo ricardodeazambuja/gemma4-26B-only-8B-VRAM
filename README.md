@@ -128,7 +128,7 @@ for the engineering rationale — which weakness each one targets, and why those
 | **The pi extensions** — what each does, the six design rules, install | [`pi-extensions/README.md`](pi-extensions/README.md) |
 | **The MTP speculative-decoding study** — measured gains + measurement-noise analysis | [`docs/mtp-benchmark.md`](docs/mtp-benchmark.md) |
 | **Inspecting a GGUF** — architecture / modality / tensors | [`utils/README.md`](utils/README.md) |
-| **Qwen3.6 / Qwen3.8 on 8 GB** — run them yourself, measurements, tuning, what didn't work | [`docs/qwen-bakeoff.md`](docs/qwen-bakeoff.md) |
+| **Other models on 8 GB** — Gemma-4 12B, Qwen3.6 / Qwen3.8, Bonsai 2, Qwen3-VL, Dory: run them yourself, measurements, what didn't work | [Other models](#other-models-on-the-same-8-gb-card) |
 
 ---
 
@@ -146,20 +146,35 @@ More symptoms and the deeper caveats are in [TECHNICAL.md §11](docs/TECHNICAL.m
 
 ---
 
-## Experimental branches (not merged into `main`)
+## Other models on the same 8 GB card
 
-Some explorations live on their own branches rather than in `main` — each is self-contained
-with its own eval/doc. Check them out to dig in:
+Besides the Gemma 4 26B-A4B default, these run on the same laptop, each with its own
+launcher and write-up. The ones on a llama.cpp fork or patch build it into their own
+`vendor/` directory, so they never overwrite the default `vendor/llama.cpp` build.
+
+| Model | Speed | Launcher | What's notable | Write-up |
+|---|---|---|---|---|
+| **Gemma-4 12B "coder"** (yuxinlu1 fable5, Q4_K_M) | ~17 t/s | `scripts/run-12b-coder.sh` | *Dense*, so partial `-ngl` offload instead of `--cpu-moe`; Q2_K is broken; tool calls work via `--jinja` | [`docs/gemma4-12b-coder-eval.md`](docs/gemma4-12b-coder-eval.md) |
+| **Gemma-4 12B "agentic"** (fable5 v2, Q4_K_M) | ~28 t/s | `scripts/start-turbo.sh` | The **TurboQuant** fork's `turbo3` ~3.5-bit V-cache lets it **fully offload (`-ngl 99`)**; 16K context | [`docs/gemma4-12b-agentic-eval.md`](docs/gemma4-12b-agentic-eval.md) |
+| **Qwen3.6-35B-A3B** | ~23 t/s | `QMODEL=qwen36 bash scripts/start-qwen.sh` | MoE with **128K context** (Gated-DeltaNet keeps the KV cache small), clean tool calls | [`docs/qwen-bakeoff.md`](docs/qwen-bakeoff.md) |
+| **empero-ai's Qwen3.8-35B-A3B-Distill** | ~26 t/s | `QMODEL=distill bash scripts/start-qwen.sh` | Same MoE shape, 128K context, answers in far fewer tokens | [`docs/qwen-bakeoff.md`](docs/qwen-bakeoff.md) |
+| **Bonsai 2 27B** (ternary Qwen3.8-27B) | ~27 t/s | `scripts/start_bonsai2.sh` | PrismML fork, fully on the GPU at 16K; must use f16 KV | [`docs/bonsai2-on-8gb.md`](docs/bonsai2-on-8gb.md) |
+| **Qwen3-VL-8B-Instruct** (vision) | ~38 t/s | `scripts/start_qwen3vl.sh` | Fully on the GPU; vision + tool calls; cap image tokens for large photos | [`docs/qwen3vl-on-8gb.md`](docs/qwen3vl-on-8gb.md) |
+| **Nemotron-Labs Dory1.0-4B** (looped) | ~29 t/s at 2 loops | `scripts/start_dory.sh` | Loop count trades speed for depth; 64K context (128K with `LOOP_KV=last_loop`); llama.cpp PR patch | [`docs/dory-on-8gb.md`](docs/dory-on-8gb.md) |
+
+The dense **Qwen3.8-27B** (GSQ-RCO i-quants, `QMODEL=qwen38`) also loads but runs at only
+~2.5 t/s: half of it sits in system RAM and its i-quants are CPU-compute-bound. Bonsai 2 is
+the usable way to run that model here. Speeds are single runs; the run-to-run noise is about ±13 %.
+
+## Experimental branches (not merged into `main`)
 
 | Branch | What it explores |
 |---|---|
-| [`feat/test-gemma4-12b-coder-fable5`](../../tree/feat/test-gemma4-12b-coder-fable5) | Evaluating yuxinlu1's **Gemma-4 12B "coder" (fable5)** on the 8 GB card — it's *dense*, so `-ngl 42` (not `--cpu-moe`); Q4_K_M fits at ~17 t/s, Q2_K is broken, tool-calls work via `--jinja`. See `docs/gemma4-12b-coder-eval.md`. |
-| [`feat/test-gemma4-12b-agentic-fable5`](../../tree/feat/test-gemma4-12b-agentic-fable5) | The **v2 "agentic"** successor — same dense Gemma-4 12B, but run through the **TurboQuant** fork (`TheTom/llama-cpp-turboquant`). Its `turbo3` ~3.5-bit V-cache shrinks KV enough to **fully offload (`-ngl 99`) on 8 GB** at ~28 t/s (vs ~17 partial). `TURBO=1 bash scripts/start-turbo.sh` is the zero-config launcher (server + `pi`). See `docs/gemma4-12b-agentic-eval.md`. |
 | [`feat/spec-exec-branch-prediction`](../../tree/feat/spec-exec-branch-prediction) | A speculative-execution **"branch prediction" agent** — a local Gemma draft tier (`/gemma-draft`) with per-session stats. Design in `docs/PRD-speculative-agent.md`. |
-| [`qwen_on_8gb_vram`](../../tree/qwen_on_8gb_vram) | **Qwen3.6-35B-A3B, Qwen3.8-27B and empero-ai's Qwen3.8-35B-A3B-Distill on the same 8 GB card.** The two 35B-A3B MoEs run at ~23–26 t/s with **128K context** (Gated-DeltaNet keeps the KV cache small) and clean tool calls; the dense Qwen3.8-27B is stuck at ~2.5 t/s (its i-quants are CPU-compute-bound; ik_llama.cpp and MTP didn't help). `QMODEL=distill bash scripts/start-qwen.sh`. See `docs/qwen-bakeoff.md`. |
 | [`feat/diffusiongemma`](../../tree/feat/diffusiongemma) | Experimental **DiffusionGemma** (diffusion-style generation) integration through `pi`, plus lessons learned. See `docs/DIFFUSION.md`. |
 
-> VibeThinker (1.5B/3B as a tool-using agent) graduated into its own standalone repo.
+> VibeThinker (1.5B/3B as a tool-using agent) graduated into its own standalone repo,
+> [vibethinker_tests](https://github.com/ricardodeazambuja/vibethinker_tests).
 
 ---
 
@@ -188,7 +203,10 @@ with its own eval/doc. Check them out to dig in:
 ├── docs/
 │   ├── TECHNICAL.md          # engineering write-up (architecture, perf, multimodal, harness)
 │   ├── mtp-benchmark.md      # speculative-decoding study
+│   ├── <model>*.md           # one write-up per other model (see "Other models")
 │   └── speed.svg             # backend speed comparison chart (in this README)
+├── envs/                     # pinned conda lock for the CUDA build env
+├── patches/                  # llama.cpp patches applied at build time (build-llama-cuda.sh PATCH=)
 ├── models/                   # downloaded GGUF lives here (gitignored)
 └── vendor/                   # llama.cpp source + CUDA build (gitignored)
 ```
