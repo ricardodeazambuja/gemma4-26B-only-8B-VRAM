@@ -24,3 +24,6 @@ MEMORY.md
 .claude/spec/stats.jsonl
 .claude/spec/stats.archive.jsonl
 .claude/spec/last-session
+
+# Local tool state (Playwright MCP logs). .claude/ is NOT ignored here: it holds committed commands/settings/spec scripts.
+.playwright-mcp/
