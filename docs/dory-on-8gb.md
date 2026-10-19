@@ -23,7 +23,8 @@ layer instead of one per loop, so more loops don't cost more KV memory.
 
 Size is not the problem: the Q5_K_M GGUF is 3.67 GB. The problems are that no released
 llama.cpp can load it yet, and that the obvious launch settings waste most of the card. It
-needs the open llama.cpp PR (ggml-org/llama.cpp#30306), built here with CUDA. The card's
+needs the open llama.cpp PR (ggml-org/llama.cpp#30306), which this repo ships as a patch
+(`patches/llama.cpp-dory-pr30306.patch`) and builds with CUDA. The card's
 example (a Mac) turns flash attention off, which costs a 1.1 GB compute buffer. And this
 build counts every loop as extra layers, so the usual `-ngl 99` silently leaves weights on the
 CPU: 3.8 tok/s at 4 loops instead of 19.
@@ -40,8 +41,8 @@ English-only and text-only, and the llama.cpp support is an unmerged PR. See
 ## TL;DR
 
 - [nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-GGUF](https://huggingface.co/nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-GGUF),
-  `Q5_K_M` (3.67 GB), on the llama.cpp PR build (`brianchmielNV/llama.cpp` @ `43e865e`) in
-  `vendor/dory-llama.cpp`.
+  `Q5_K_M` (3.67 GB), on stock llama.cpp `6e66cb5` + the PR #30306 patch kept in this repo
+  (`patches/`), built into `vendor/dory-llama.cpp`.
 - **2 loops (default): 29.3 tok/s**, 15.8K-token prefill at 852 tok/s, 5.7 GB VRAM at 64K.
   **4 loops: 17.7 tok/s**, 492 tok/s prefill, 5.1 GB.
 - Tool calls ✓ (qwen-bench and pi), thinking on by default (`reasoning_content`).
@@ -55,12 +56,14 @@ English-only and text-only, and the llama.cpp support is an unmerged PR. See
 ## Run it
 
 Same toolchain as the Qwen bake-off (see
-[`qwen-bakeoff.md`](qwen-bakeoff.md#run-these-models-on-your-own-8-gb-machine)), plus the PR build:
+[`qwen-bakeoff.md`](qwen-bakeoff.md#run-these-models-on-your-own-8-gb-machine)), plus a
+patched llama.cpp:
 
 ```bash
-# Build the Dory PR with the same locked CUDA 12.2 toolchain, into vendor/dory-llama.cpp
-CUDA_VER=12.2 LLAMA_REPO=https://github.com/brianchmielNV/llama.cpp \
-  LLAMA_REF=43e865ec059a35d57f1167eaea76ca187077f063 SRC_DIR=$PWD/vendor/dory-llama.cpp \
+# Stock llama.cpp at the PR's base commit + the Dory patch from this repo, built with the
+# same locked CUDA 12.2 toolchain into vendor/dory-llama.cpp (~15 min)
+CUDA_VER=12.2 LLAMA_REF=6e66cb5d4e9a2b4f02820a9f3053422b92ec4d51 \
+  PATCH=patches/llama.cpp-dory-pr30306.patch SRC_DIR=$PWD/vendor/dory-llama.cpp \
   bash scripts/build-llama-cuda.sh
 
 bash scripts/download-qwen-bakeoff.sh dory          # 3.67 GB, pinned revision + sha256
@@ -78,8 +81,51 @@ Knobs (`run-qwen.sh`): `LOOPS` 1–4 (default 2), `LOOP_KV` `per_loop` | `last_l
 per_loop for 1–2 loops, last_loop for 3–4), `FA` on | off, plus the usual `CTX`, `KVQUANT`, `NGL`.
 `CTX=131072 LOOP_KV=last_loop` gives 128K context at 2 loops (6.1 GB, 30.1 tok/s).
 
-The PR head (`43e865e`, 2026-10-15) was chosen over the card's pinned `98a74c9` because it adds
-a CUDA precision fix; the card's revision was validated on macOS only.
+## The llama.cpp patch
+
+No llama.cpp release supports Dory yet. NVIDIA's pull request
+[ggml-org/llama.cpp#30306](https://github.com/ggml-org/llama.cpp/pull/30306) adds it, and this
+repo keeps that PR as one patch file, so the build doesn't depend on the PR or its author's
+fork staying as they are:
+
+- **`patches/llama.cpp-dory-pr30306.patch`** — `git diff` from stock llama.cpp `6e66cb5`
+  (master, 2026-10-15, the commit the PR last merged) to the PR head `43e865e`. 17 files,
+  +507/−9 lines, 48 KB. MIT-licensed like llama.cpp; the file's header carries the notice.
+- `build-llama-cuda.sh` fetches stock llama.cpp at `LLAMA_REF` and `git apply`s `PATCH` on top
+  (skipped if already applied; anything that doesn't apply cleanly stops the build).
+- Checked: applied to `6e66cb5`, the patch gives a source tree identical to `43e865e`, and a
+  from-scratch build this way serves the model at the same speed as the PR build (see
+  "Measurements").
+
+What the patch adds:
+
+- **A `dory` architecture** (`src/models/dory.cpp`, ~200 lines, plus registration in
+  `llama-arch`, `llama-model`, `models.h`). The GGUF stores the 72 *physical* entries of the
+  stack — attention and MLP are separate entries, so 8 + 20 + 8 blocks are 16 + 40 + 16 — and
+  the loader expands them into **16 + 40 × loops + 16 *virtual* layers** that point at the same
+  weights: 72 at 1 loop, 112 at 2, 192 at 4. That expansion is why `-ngl` must cover the
+  virtual count (`999`), not the physical one.
+- **The loop and nGPT math in the graph:** the input of the recurrent block is added back in
+  at the start of every loop, every sublayer output and residual is L2-normalized and mixed by
+  a learned per-channel step (`alpha`), and attention has a learned sigmoid output gate and
+  a learned per-channel query scale. Sliding-window and full-attention layers use different RoPE bases.
+- **Loop count and KV-cache mode as GGUF metadata** (`dory.num_loops`, 1–4;
+  `dory.recurrent_kv_cache_mode`, `per_loop` | `last_loop`), so they can be changed at launch
+  with `--override-kv` — that is what `LOOPS` / `LOOP_KV` do. `last_loop` maps every loop's
+  attention layer to one cache slot, so each loop overwrites the previous one's KV.
+- Small changes elsewhere: a bigger graph-node budget for the expanded layer count
+  (`llama-context.cpp`), context shifting disabled for Dory (`llama-kv-cache.cpp`), the
+  quantizer counting physical rather than virtual FFNs (`llama-quant.cpp`), the HF → GGUF
+  converter (`conversion/dory.py`, `gguf-py`), and tests.
+
+Why the PR head and not the card's `98a74c9`: the head is the version under review, merged
+with current llama.cpp. The card's older revision also changed two CUDA matmul paths to stay
+in full FP32 instead of TF32; the PR later moved that to a separate change. TF32 exists only on
+Ampere and newer, so on this Turing card it makes no difference.
+
+To build from the PR itself instead (same source tree): GitHub serves the PR's commits from
+the main repository, so `LLAMA_REF=43e865ec059a35d57f1167eaea76ca187077f063` with the default
+`LLAMA_REPO` and no `PATCH` works too.
 
 ### Exact files
 
@@ -169,9 +215,14 @@ with KL divergence against the card's settings (2 loops, per_loop, f16, FA off):
   no loop counts above 4, Metal untested, long-context qualification incomplete.
 - `build-llama-cuda.sh` builds `llama-server llama-cli llama-bench`; the quality check also
   needs `cmake --build vendor/dory-llama.cpp/build --target llama-perplexity`.
+- The measurements above were made on the PR build (`brianchmielNV/llama.cpp` @ `43e865e`);
+  the patched build has the identical source tree; re-checked with `qwen-bench.py`: 28.8 tok/s
+  generation (29.3 on the PR build), 852 tok/s prefill (same), tool call ✓.
 
 ## Files
 
+- `patches/llama.cpp-dory-pr30306.patch` — Dory support for llama.cpp (PR #30306), MIT
+- `scripts/build-llama-cuda.sh` — `PATCH=` applies it on top of `LLAMA_REF`
 - `scripts/run-qwen.sh` — `QMODEL=dory`, knobs `LOOPS`, `LOOP_KV`, `FA`
 - `scripts/start_dory.sh` = `QMODEL=dory start-qwen.sh`, with shepherd-pi's tools hidden
 - `scripts/download-qwen-bakeoff.sh dory` — pinned revision + sha256

@@ -41,8 +41,8 @@ SERVER_BIN="$REPO_ROOT/vendor/dory-llama.cpp/build/bin/llama-server"
 if [ ! -x "$SERVER_BIN" ]; then
   echo "ERROR: Dory llama.cpp build not found: $SERVER_BIN"
   echo "       build it (see docs/dory-on-8gb.md):"
-  echo "       CUDA_VER=12.2 LLAMA_REPO=https://github.com/brianchmielNV/llama.cpp \\"
-  echo "         LLAMA_REF=43e865ec059a35d57f1167eaea76ca187077f063 SRC_DIR=\$PWD/vendor/dory-llama.cpp \\"
+  echo "       CUDA_VER=12.2 LLAMA_REF=6e66cb5d4e9a2b4f02820a9f3053422b92ec4d51 \\"
+  echo "         PATCH=patches/llama.cpp-dory-pr30306.patch SRC_DIR=\$PWD/vendor/dory-llama.cpp \\"
   echo "         bash scripts/build-llama-cuda.sh"
   exit 1
 fi
