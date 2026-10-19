@@ -8,6 +8,7 @@
 #   qwen38   Qwen3.8-27B GSQ-RCO IQ3_XXS      DENSE          -> split by layers (-ngl)
 #   distill  Qwen3.8-35B-A3B-Distill IQ4_XS   MoE, 3B active -> experts in RAM (--cpu-moe)
 #   bonsai2  Ternary-Bonsai-2-27B PTQ1_0      DENSE, 5.95 GB -> all on GPU (-ngl 99), PrismML fork
+#   qwen3vl  Qwen3-VL-8B-Instruct Q4_K_M      DENSE, 5.0 GB  -> all on GPU (-ngl 99), vision model
 #
 # Both MoE candidates are Qwen3.6-class hybrids (30 Gated DeltaNet + 10 full-attention
 # layers), so the KV cache is small: 128K ctx at q8_0 is ~1.4 GB. Qwen recommends at
@@ -16,23 +17,28 @@
 # the 8 GB card with its weights, so it defaults to 32K.
 #
 # Config (override via env vars):
-#   QMODEL     qwen36 | qwen38 | distill | bonsai2     (default: qwen36)
+#   QMODEL     qwen36 | qwen38 | distill | bonsai2 | qwen3vl  (default: qwen36)
 #   MODEL      path to the .gguf                       (default: per QMODEL)
 #   MMPROJ     vision projector                        (default: per QMODEL; used with --image)
-#   CTX        context window                          (default: 131072 MoE / 32768 qwen38 / 16384 bonsai2)
+#   MMPROJ_GPU 1 = vision projector on the GPU, 0 = CPU  (default: 0; qwen3vl 1 — its 0.75 GB
+#              projector fits next to the model, and on the CPU a 4K photo takes minutes)
+#   IMAGE_MAX_TOKENS  cap on tokens per image (dynamic-resolution models)  (default: model's own;
+#              qwen3vl 1024 — uncapped, a 4K photo is 4096 tokens and OOMs the GPU encoder)
+#   CTX        context window                          (default: 131072 MoE / 32768 qwen38 / 16384 bonsai2, qwen3vl)
 #   NCMOE      MoE only: keep only the first N layers' experts on CPU, rest on GPU
 #              (faster, more VRAM). NCMOE= (empty) = all experts on CPU.
 #              (default: measured fit at 128K — qwen36 32, distill 34; the distill's
 #              experts are bigger and OOM at 32. See docs/qwen-bakeoff.md)
 #   NGL        dense only: transformer layers on GPU   (default: qwen38 30 of 64 — 36 OOMs
-#              on the first request at 32K ctx, see docs/qwen-bakeoff.md; bonsai2 99 = all)
+#              on the first request at 32K ctx, see docs/qwen-bakeoff.md; bonsai2, qwen3vl 99 = all)
 #   KVQUANT    KV-cache type, both K and V             (default: q8_0; bonsai2 f16 — the fork's
 #              q8_0 flash-attention kernel has no Turing code)
 #   MTP        dense only: 1 = speculative decoding with the GGUF's embedded MTP head
 #              (measured SLOWER here: 2.0 vs 2.5 tok/s)  (default: 0)
 #   TEMP / TOP_P / TOP_K / MIN_P / PRESENCE_PENALTY  sampling  (default: per QMODEL, from the
 #              model cards: qwen38 1.0/0.95/20/0, qwen36 + distill 0.6/0.95/20/0, the
-#              "precise coding" thinking preset; bonsai2 1.0/0.95/20, min-p 0.05 per its card)
+#              "precise coding" thinking preset; bonsai2 1.0/0.95/20, min-p 0.05 per its card;
+#              qwen3vl 0.7/0.8/20/1.5, the card's VL preset)
 #   NP / BATCH / UBATCH  slots / batch sizes           (default: 1 / 512 / 512)
 #   EXTRA_ARGS any extra llama-server flags
 #   HOST/PORT  bind address                            (default: 127.0.0.1 / 8080)
@@ -40,7 +46,7 @@
 #              vendor/prism-llama.cpp — and env llamacpp-cuda)
 #
 # Flags (CLI args, not env vars):
-#   --image    load the vision projector ($MMPROJ) on the CPU. Other args pass through.
+#   --image    load the vision projector ($MMPROJ) (CPU unless MMPROJ_GPU=1). Other args pass through.
 #
 # Examples:
 #   bash scripts/run-qwen.sh                           # Qwen3.6-35B-A3B, 128K ctx
@@ -102,22 +108,39 @@ case "$QMODEL" in
     _bin="$REPO_ROOT/vendor/prism-llama.cpp/build/bin/llama-server"
     _ncmoe=
     _temp=1.0 ;;
+  qwen3vl)
+    # Qwen3-VL-8B-Instruct: dense 36-layer Qwen3 + vision tower, stock llama.cpp. Not a
+    # thinking model. Sampling is the card's VL preset (temp 0.7, top-p 0.8, top-k 20,
+    # presence 1.5). See docs/qwen3vl-on-8gb.md.
+    KIND=dense
+    _dir="$REPO_ROOT/models/qwen3vl-8b"
+    _model="$_dir/Qwen3VL-8B-Instruct-Q4_K_M.gguf"
+    _mmproj="$_dir/mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf"
+    ALIAS=qwen3-vl-8b
+    _ngl=99; _ctx=16384; _minp=0
+    _topp=0.8; _pp=1.5
+    _mmgpu=1; _imgmax=1024
+    _bin=
+    _ncmoe=
+    _temp=0.7 ;;
   *)
-    echo "ERROR: unknown QMODEL='$QMODEL' (use qwen36 | qwen38 | distill | bonsai2)"; exit 1 ;;
+    echo "ERROR: unknown QMODEL='$QMODEL' (use qwen36 | qwen38 | distill | bonsai2 | qwen3vl)"; exit 1 ;;
 esac
 
 MODEL="${MODEL:-$_model}"
 MMPROJ="${MMPROJ:-$_mmproj}"
+MMPROJ_GPU="${MMPROJ_GPU:-${_mmgpu:-0}}"
+IMAGE_MAX_TOKENS="${IMAGE_MAX_TOKENS:-${_imgmax:-}}"
 if [ "$KIND" = moe ]; then CTX="${CTX:-131072}"; else CTX="${CTX:-${_ctx:-32768}}"; fi
 NCMOE="${NCMOE-$_ncmoe}"   # unset -> per-model default; set-but-empty -> all on CPU
 NGL="${NGL:-$_ngl}"
 KVQUANT="${KVQUANT:-${_kv:-q8_0}}"
 MTP="${MTP:-0}"
 TEMP="${TEMP:-$_temp}"
-TOP_P="${TOP_P:-0.95}"
+TOP_P="${TOP_P:-${_topp:-0.95}}"
 TOP_K="${TOP_K:-20}"
 MIN_P="${MIN_P:-$_minp}"
-PRESENCE_PENALTY="${PRESENCE_PENALTY:-0}"
+PRESENCE_PENALTY="${PRESENCE_PENALTY:-${_pp:-0}}"
 NP="${NP:-1}"
 BATCH="${BATCH:-512}"
 UBATCH="${UBATCH:-512}"
@@ -174,9 +197,18 @@ fi
 MMPROJ_ARGS=()
 if [ "$USE_IMAGE" = 1 ]; then
   [ -f "$MMPROJ" ] || { echo "ERROR: --image given but projector not found: $MMPROJ"; exit 1; }
-  # CPU-side: no VRAM to spare for a ~0.9 GB tower on an 8 GB card.
-  MMPROJ_ARGS=(--mmproj "$MMPROJ" --no-mmproj-offload)
-  echo ">> multimodal: ENABLED — vision projector on CPU"
+  if [ "$MMPROJ_GPU" = 1 ]; then
+    MMPROJ_ARGS=(--mmproj "$MMPROJ")
+    echo ">> multimodal: ENABLED — vision projector on GPU"
+  else
+    # CPU-side: the big models have no VRAM to spare for a ~0.9 GB tower on an 8 GB card.
+    MMPROJ_ARGS=(--mmproj "$MMPROJ" --no-mmproj-offload)
+    echo ">> multimodal: ENABLED — vision projector on CPU"
+  fi
+  if [ -n "$IMAGE_MAX_TOKENS" ]; then
+    MMPROJ_ARGS+=(--image-max-tokens "$IMAGE_MAX_TOKENS")
+    echo ">> multimodal: at most $IMAGE_MAX_TOKENS tokens per image"
+  fi
 else
   echo ">> multimodal: off (text only; pass --image to enable vision)"
 fi

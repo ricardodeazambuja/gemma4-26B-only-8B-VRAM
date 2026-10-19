@@ -11,6 +11,8 @@
 #   dflash   DFlash2 block-diffusion drafter for the 27B (z-lab, Q4_K_M, ~1.1 GB)
 #   bonsai2  Ternary-Bonsai-2-27B PTQ1_0 (PrismML, ~5.95 GB + 0.63 GB vision) — Qwen3.8-27B
 #            in ternary weights; needs the PrismML llama.cpp fork (docs/bonsai2-on-8gb.md)
+#   qwen3vl  Qwen3-VL-8B-Instruct Q4_K_M (Qwen, ~5.0 GB + 0.75 GB vision Q8_0) — dense 8B
+#            vision-language model, fits fully on the 8 GB card (docs/qwen3vl-on-8gb.md)
 #
 # Reproducible by construction: every file is downloaded at a PINNED Hugging Face repo
 # revision and checked against a PINNED sha256 (the exact bytes tested in
@@ -26,7 +28,7 @@
 #
 # Usage:
 #   bash scripts/download-qwen-bakeoff.sh              # all three
-#   bash scripts/download-qwen-bakeoff.sh qwen38       # just one (qwen36 | qwen38 | distill | dflash | bonsai2)
+#   bash scripts/download-qwen-bakeoff.sh qwen38       # just one (qwen36 | qwen38 | distill | dflash | bonsai2 | qwen3vl)
 #
 # Overrides: ENV_NAME (env with huggingface_hub, default llamacpp), FOLLOW_MAIN=1.
 #
@@ -47,6 +49,7 @@ MODELS=(
   "qwen38|ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF|d562806dbafae37109975e970aae91b43e73b440|qwen38-27b-gsq|Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf:63f29a2189a6b4cc31f81e093d3856ad293a5583114439f41ae1ed7af4093262 mmproj-Qwen3.8-27B-BF16.gguf:13cb7bebccbd04afc8f4090cb949ecf8937cdf7377c5799b1a0c594e7c0d3e16"
   "distill|empero-ai/Qwen3.8-35B-A3B-Distill-GGUF|b1f9d1dcc3de8aa867669b0ab919384aeeb9b8d5|qwen38-35b-a3b-distill|Qwen3.8-35B-A3B-IQ4_XS.gguf:b645af45431ef9b41f43cae51c9323b2d0ca84f23031d483d2105c643ae58d65 mmproj-Qwen3.8-35B-A3B-F16.gguf:4381cb5110074396c2c7b39221fffae0c31886aa95b674de8e103d97edf58b94"
   "bonsai2|prism-ml/Ternary-Bonsai-2-27B-gguf|b072e1d3b35a0a630cece372c2127528e0994386|bonsai2-27b|Ternary-Bonsai-2-27B-PTQ1_0.gguf:53107f530aa52eb00912263ab1ee29bd199261c87cd7b4ad4ca1318c1fe33ee3 Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf:6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903"
+  "qwen3vl|Qwen/Qwen3-VL-8B-Instruct-GGUF|f982a07559d4a2f6c8744d840bf6fccab30eea96|qwen3vl-8b|Qwen3VL-8B-Instruct-Q4_K_M.gguf:67d1659bfe71b89d50b45a4ad1a9e5b997e5bb16ce5da66a6a6167abd569e9e2 mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf:c6ba85508d82f42590e6eb77d5340369ab6fecf107a7561d809523d8aa5f3bfd"
   "dflash|z-lab/Qwen3.8-27B-DFlash2-GGUF|2d9571f8ce46e151f61c6499c99dee6079e1d610|qwen38-27b-gsq|Qwen3.8-27B-DFlash2-Q4_K_M.gguf:1a25c56858e1ebe93f2718ac1d49d1151f9323325c1bbfd6209370f4db131ebd"
 )
 

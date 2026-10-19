@@ -63,6 +63,16 @@
         "high": "xhigh",
         "xhigh": "xhigh"
       }
+    },
+    {
+      "contextWindow": 16384,
+      "id": "qwen3-vl-8b",
+      "name": "Qwen3-VL-8B-Instruct (llama.cpp, dense)",
+      "input": [
+        "text",
+        "image"
+      ],
+      "reasoning": false
     }
   ]
 }
