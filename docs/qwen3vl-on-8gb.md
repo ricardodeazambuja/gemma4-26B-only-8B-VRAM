@@ -82,8 +82,9 @@ VRAM (nvidia-smi, desktop included): 6.35 GB with the projector on the CPU, **7.
 the GPU (idle and with the context full), 7.54 GB peak during a 2048-token image. 2048 fits, but
 1024 is the default because the remaining headroom depends on what the desktop is using.
 
-KV-cache math (36 layers × 8 KV heads × 128 dims): 16K = 2.25 GB at f16, 1.20 GB at q8_0;
-32K at q8_0 is 2.39 GB, which does not fit next to 4.7 GB of weights and the projector.
+KV-cache math (36 layers × 8 KV heads × 128 dims): 16K = 2.42 GB at f16, 1.28 GB at q8_0;
+32K at q8_0 is 2.57 GB, which does not fit next to 5.03 GB of weights and the 0.75 GB projector
+(8.35 GB total).
 
 ## pi integration
 
