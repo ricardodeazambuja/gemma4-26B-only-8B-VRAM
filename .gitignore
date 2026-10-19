@@ -20,3 +20,7 @@ MEMORY.md
 .gemma4-tuning
 # Interactive --menu remembered answers (prefill defaults; written by start.sh)
 .gemma4-menu
+
+# Local tool state (Claude Code, Playwright MCP logs)
+.claude/
+.playwright-mcp/
