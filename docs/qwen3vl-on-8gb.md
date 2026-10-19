@@ -3,6 +3,36 @@
 **Date:** 2026-10-18 · **Branch:** `qwen3vl_on_8gb_vram` (from `bonsai2_on_8gb_vram`) · **Status:** works — ~38 tok/s, vision + tool calls + pi, 16K context
 **Companion:** [`qwen-bakeoff.md`](qwen-bakeoff.md), [`bonsai2-on-8gb.md`](bonsai2-on-8gb.md) — same machine, same scripts.
 
+## Introduction
+
+Qwen3-VL-8B-Instruct is the 8B member of Alibaba Qwen's Qwen3-VL vision-language family,
+which comes in dense and MoE sizes, each with an Instruct and a reasoning ("Thinking")
+edition; this is the Instruct one, so it does not think before answering. It is a 36-layer
+transformer with standard attention in every layer (8 KV heads × 128), plus a vision encoder
+that Qwen ships as a separate `mmproj` file. Per the card, the architecture adds
+Interleaved-MRoPE positions and DeepStack, which fuses features from several levels of the
+vision transformer, and the native context is 256K.
+
+It was worth trying because it is small enough to keep everything, vision included, on the
+GPU. The card claims OCR in 32 languages, GUI-agent use and code generation from images,
+and Qwen publishes official GGUFs (`Q4_K_M` / `Q8_0` / FP16 weights, `Q8_0` / FP16
+projectors) that run on stock llama.cpp.
+
+The naive setup does not fit. `Q8_0` weights alone are 8.7 GB. With `Q4_K_M` (5.03 GB) and
+the projector (0.75 GB), the KV cache becomes the limit: 2.25 GB at 16K in f16, and even at
+q8_0, 32K (2.39 GB) is too much. The image encoder is the second problem: on the CPU a 4K
+photo took 270 s, and on the GPU an uncapped 4K photo (4,096 tokens) runs it out of memory
+and aborts the server.
+
+What makes it work is plain configuration, with no fork and no rebuild: `Q4_K_M` weights
+with all 36 layers on the GPU, a 16K q8_0 KV cache (1.20 GB), the projector on the GPU
+(`MMPROJ_GPU=1`), and images capped at 1024 tokens (`IMAGE_MAX_TOKENS=1024`). That uses
+~7.4 GB and encodes the same 4K photo in 5.4 s.
+
+The trade-offs are the 16K context, downscaled images (2048 tokens fits but leaves less
+headroom), and no thinking mode. pi also needs an image-capable model entry before it sends
+images. See "Measurements" and "pi integration".
+
 ## TL;DR
 
 - [Qwen/Qwen3-VL-8B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF), `Q4_K_M`

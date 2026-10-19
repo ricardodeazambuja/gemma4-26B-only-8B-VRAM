@@ -21,6 +21,42 @@ driven by the [pi](https://github.com/badlogic/pi-mono) coding agent.
 | Toolchain | conda-forge CUDA toolkit 12.2.2 (nvcc 12.2.140), gcc/g++ 12.4, cmake 4.2.3, ninja 1.13.2 — exact lock: [`envs/llamacpp-cuda.linux-64.lock`](../envs/llamacpp-cuda.linux-64.lock) |
 | Baseline | Gemma4-26B-A4B QAT, ~22–23.5 tok/s ([`mtp-benchmark.md`](mtp-benchmark.md); its ±13 % run-to-run noise floor applies here too) |
 
+## Introduction
+
+All three candidates come from Alibaba Qwen's model line and share one architectural
+feature: a hybrid layout in which three of every four layers are Gated DeltaNet (linear
+attention with a fixed-size recurrent state, no KV cache) and only one in four uses full
+attention. That keeps the KV cache small enough for long contexts on 8 GB. None of the
+three fits on the GPU as a file, though, so llama.cpp (mainline `b9606`, q8_0 KV) splits each
+one between the 8 GB GPU and 32 GB of system RAM. How it splits depends on the shape.
+
+**Qwen3.6-35B-A3B** (Qwen, the first open-weight Qwen3.6 model) is a Mixture-of-Experts
+model: 35B parameters in total, 3B active per token, 40 layers, 256 experts with 8 routed
+plus 1 shared per token, a vision encoder, a native context of 262,144 tokens. It was worth
+trying because Qwen's own card puts it far ahead of Gemma4-26B-A4B on agentic coding (see
+Candidates). The `UD-IQ4_XS` file is 17.7 GB. Since only a few experts run per token, the
+expert weights can stay in system RAM: `NCMOE=32` keeps the experts of 32 of the 40 layers
+there, and the rest of the model goes on the GPU (7.6 GB of VRAM). With KV on only 10 layers,
+128K context costs 1.42 GB. Trade-off: 22.8 tok/s, with very long thinking.
+
+**Qwen3.8-27B GSQ-RCO** is Qwen3.8-27B, Qwen's dense 27B (64 layers, 16 with full attention,
+vision encoder, an MTP head for self-speculative decoding), quantized by ISTA-DASLab. GSQ
+quantizes each tensor; RCO picks each tensor's type under a total size budget. The result is a
+standard GGUF that mainline llama.cpp runs unmodified. The `IQ3_XXS-mtp` file is still
+10.4 GB, and a dense model has no experts to park in RAM, so the split is by whole layers:
+`NGL=30` of 64 on the GPU, 32K context. Trade-off: 2.5 tok/s, because the CPU half is mostly
+i-quants that are costly to decode (see Diagnosis). The follow-up is
+[`bonsai2-on-8gb.md`](bonsai2-on-8gb.md).
+
+**Qwen3.8-35B-A3B-Distill** (empero-ai) keeps the Qwen3.6-35B-A3B architecture, fine-tuned
+on curated chain-of-thought traces from Qwen3.8 teacher models, weighted towards math and
+code, with tool use included. Per its card, the training examples were 8,192 tokens long,
+so its answers are shorter than the base model's. At this speed that matters. The vision
+part is untouched. The `IQ4_XS` file is 19.6 GB, with bigger experts than Qwen3.6, so it
+needs `NCMOE=34` (32 runs out of memory at load) at 128K context. Trade-off: the fastest of
+the three (26.2 tok/s) and the tersest, but its card only reports MMLU/ARC, and it may be
+weaker on long generations.
+
 ## TL;DR
 
 - **Qwen3.6-35B-A3B works and is the practical pick.** Same speed as Gemma (22.8 tok/s,

@@ -3,6 +3,36 @@
 **Date:** 2026-10-16 · **Branch:** `bonsai2_on_8gb_vram` (from `qwen_on_8gb_vram`) · **Status:** works — 27 tok/s fully on the GPU at 16K context; real-task trial pending
 **Companion:** [`qwen-bakeoff.md`](qwen-bakeoff.md) — same machine, same scripts, same smoke tests.
 
+## Introduction
+
+Ternary-Bonsai-2-27B is PrismML's re-encoding of Qwen3.8-27B, Alibaba Qwen's dense 27B
+model, published on 2026-09-16 under Apache-2.0. The architecture is unchanged: 64 layers in
+Qwen's hybrid layout, where three of every four layers are Gated DeltaNet (linear attention
+with a fixed-size recurrent state) and only 16 use full attention with a KV cache, plus a
+vision tower shipped as a separate, optional `mmproj` file.
+
+What is new is the weight format. Every language-model weight (embeddings, attention, MLP and
+LM head) is ternary, −1, 0 or +1, with one FP16 scale per 128 weights, stored in a
+Hadamard-rotated basis; the card puts the whole model at 1.72 bits per weight. PrismML's own
+thinking-mode evaluation keeps it close to FP16, where a conventional `IQ2_XXS` of the same
+model falls far behind (table below). For this project it is a way to run the actual
+Qwen3.8-27B at a usable speed.
+
+As-is, the model is far too big for an 8 GB card: ~54 GB at FP16, 17.6 GB as a 4-bit
+`UD-Q4_K_XL`. The bake-off's GSQ-RCO `IQ3_XXS` build is still 10.4 GB, so about half its
+layers had to sit in system RAM, and because the model is dense every token runs through
+those CPU layers: 2.5 tok/s.
+
+The `PTQ1_0` pack is 5.95 GB, so all layers go on the GPU (`-ngl 99`). It needs PrismML's
+llama.cpp fork, built here from source with the same locked CUDA 12.2 toolchain; stock
+llama.cpp cannot run these files. The KV cache has to be f16, because the fork's
+flash-attention kernel for a q8_0 cache has no sm_75 (Turing) code, and with f16 KV the
+context is capped at 16K (~1.14 GB of KV, 7.45 GB of VRAM in total).
+
+The result is ~27 tok/s, but 16K context fills fast in an agent session, and pi needs a
+thinking-level mapping to talk to the chat template. See "Requirements specific to this
+model" and "Using it from pi".
+
 ## TL;DR
 
 - **Qwen3.8-27B becomes usable on 8 GB: ~27 tok/s**, vs **2.5 tok/s** for the GSQ-RCO
