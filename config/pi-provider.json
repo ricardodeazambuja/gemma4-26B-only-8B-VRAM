@@ -73,6 +73,15 @@
         "image"
       ],
       "reasoning": false
+    },
+    {
+      "contextWindow": 65536,
+      "id": "dory1-4b",
+      "name": "Nemotron-Labs Dory1.0-4B (llama.cpp PR #30306)",
+      "input": [
+        "text"
+      ],
+      "reasoning": true
     }
   ]
 }

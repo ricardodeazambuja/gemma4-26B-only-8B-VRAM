@@ -9,6 +9,7 @@
 #   distill  Qwen3.8-35B-A3B-Distill IQ4_XS   MoE, 3B active -> experts in RAM (--cpu-moe)
 #   bonsai2  Ternary-Bonsai-2-27B PTQ1_0      DENSE, 5.95 GB -> all on GPU (-ngl 99), PrismML fork
 #   qwen3vl  Qwen3-VL-8B-Instruct Q4_K_M      DENSE, 5.0 GB  -> all on GPU (-ngl 99), vision model
+#   dory     Nemotron-Labs-Dory1.0-4B Q5_K_M  LOOPED, 3.7 GB -> all on GPU (-ngl 999), Dory PR build
 #
 # Both MoE candidates are Qwen3.6-class hybrids (30 Gated DeltaNet + 10 full-attention
 # layers), so the KV cache is small: 128K ctx at q8_0 is ~1.4 GB. Qwen recommends at
@@ -17,33 +18,40 @@
 # the 8 GB card with its weights, so it defaults to 32K.
 #
 # Config (override via env vars):
-#   QMODEL     qwen36 | qwen38 | distill | bonsai2 | qwen3vl  (default: qwen36)
+#   QMODEL     qwen36 | qwen38 | distill | bonsai2 | qwen3vl | dory  (default: qwen36)
 #   MODEL      path to the .gguf                       (default: per QMODEL)
 #   MMPROJ     vision projector                        (default: per QMODEL; used with --image)
 #   MMPROJ_GPU 1 = vision projector on the GPU, 0 = CPU  (default: 0; qwen3vl 1 — its 0.75 GB
 #              projector fits next to the model, and on the CPU a 4K photo takes minutes)
 #   IMAGE_MAX_TOKENS  cap on tokens per image (dynamic-resolution models)  (default: model's own;
 #              qwen3vl 1024 — uncapped, a 4K photo is 4096 tokens and OOMs the GPU encoder)
-#   CTX        context window                          (default: 131072 MoE / 32768 qwen38 / 16384 bonsai2, qwen3vl)
+#   CTX        context window                          (default: 131072 MoE / 65536 dory / 32768 qwen38 / 16384 bonsai2, qwen3vl)
 #   NCMOE      MoE only: keep only the first N layers' experts on CPU, rest on GPU
 #              (faster, more VRAM). NCMOE= (empty) = all experts on CPU.
 #              (default: measured fit at 128K — qwen36 32, distill 34; the distill's
 #              experts are bigger and OOM at 32. See docs/qwen-bakeoff.md)
 #   NGL        dense only: transformer layers on GPU   (default: qwen38 30 of 64 — 36 OOMs
-#              on the first request at 32K ctx, see docs/qwen-bakeoff.md; bonsai2, qwen3vl 99 = all)
+#              on the first request at 32K ctx, see docs/qwen-bakeoff.md; bonsai2, qwen3vl 99 = all;
+#              dory 999 — its layer count includes every loop, so 99 leaves layers on the CPU)
 #   KVQUANT    KV-cache type, both K and V             (default: q8_0; bonsai2 f16 — the fork's
 #              q8_0 flash-attention kernel has no Turing code)
+#   LOOPS      dory only: passes through the shared recurrent block, 1-4  (default: 2, the card's
+#              recommendation; measured 43 / 31 / 22 / 19 tok/s for 1-4)
+#   LOOP_KV    dory only: per_loop (one KV cache per loop) | last_loop (one cache, the last
+#              loop's; KV size of 1 loop at any LOOPS)  (default: per_loop for LOOPS 1-2, as on
+#              the card; last_loop for 3-4, whose per-loop caches don't fit 64K on 8 GB)
+#   FA         flash attention on | off | auto        (default: on)
 #   MTP        dense only: 1 = speculative decoding with the GGUF's embedded MTP head
 #              (measured SLOWER here: 2.0 vs 2.5 tok/s)  (default: 0)
 #   TEMP / TOP_P / TOP_K / MIN_P / PRESENCE_PENALTY  sampling  (default: per QMODEL, from the
 #              model cards: qwen38 1.0/0.95/20/0, qwen36 + distill 0.6/0.95/20/0, the
 #              "precise coding" thinking preset; bonsai2 1.0/0.95/20, min-p 0.05 per its card;
-#              qwen3vl 0.7/0.8/20/1.5, the card's VL preset)
+#              qwen3vl 0.7/0.8/20/1.5, the card's VL preset; dory 1.0/0.95/0 (off)/0)
 #   NP / BATCH / UBATCH  slots / batch sizes           (default: 1 / 512 / 512)
 #   EXTRA_ARGS any extra llama-server flags
 #   HOST/PORT  bind address                            (default: 127.0.0.1 / 8080)
 #   CUDA_BIN / CUDA_ENV  CUDA build + its env          (default: vendor/llama.cpp — bonsai2:
-#              vendor/prism-llama.cpp — and env llamacpp-cuda)
+#              vendor/prism-llama.cpp, dory: vendor/dory-llama.cpp — and env llamacpp-cuda)
 #
 # Flags (CLI args, not env vars):
 #   --image    load the vision projector ($MMPROJ) (CPU unless MMPROJ_GPU=1). Other args pass through.
@@ -123,8 +131,28 @@ case "$QMODEL" in
     _bin=
     _ncmoe=
     _temp=0.7 ;;
+  dory)
+    # NVIDIA Nemotron-Labs Dory1.0-4B: a looped model (8 input + 20 recurrent + 8 output
+    # blocks; the recurrent ones run LOOPS times). Text only. Needs the llama.cpp PR build
+    # (ggml-org/llama.cpp#30306). Sampling as on the card (temp 1.0 / top-p 0.95 / top-k off).
+    # Unlike the card's Mac example, flash attention is on and the KV cache is q8_0: measured
+    # here, that cuts the compute buffer from 1.1 GB to ~0.1-0.4 GB and halves the KV, with a
+    # KL divergence of 0.007 vs the card's settings (one loop fewer is 0.094). Every layer
+    # must be on the GPU: llama.cpp counts the loops as layers (-ngl 99 left 2.9 GB of
+    # weights on the CPU at 4 loops: 3.8 tok/s). See docs/dory-on-8gb.md.
+    KIND=dense
+    _dir="$REPO_ROOT/models/dory1-4b"
+    _model="$_dir/NVIDIA-Nemotron-Labs-Dory1.0-4B-Q5_K_M.gguf"
+    _mmproj=
+    ALIAS=dory1-4b
+    _ngl=999; _ctx=65536; _minp=0
+    _topk=0
+    _kv=q8_0
+    _bin="$REPO_ROOT/vendor/dory-llama.cpp/build/bin/llama-server"
+    _ncmoe=
+    _temp=1.0 ;;
   *)
-    echo "ERROR: unknown QMODEL='$QMODEL' (use qwen36 | qwen38 | distill | bonsai2 | qwen3vl)"; exit 1 ;;
+    echo "ERROR: unknown QMODEL='$QMODEL' (use qwen36 | qwen38 | distill | bonsai2 | qwen3vl | dory)"; exit 1 ;;
 esac
 
 MODEL="${MODEL:-$_model}"
@@ -136,9 +164,13 @@ NCMOE="${NCMOE-$_ncmoe}"   # unset -> per-model default; set-but-empty -> all on
 NGL="${NGL:-$_ngl}"
 KVQUANT="${KVQUANT:-${_kv:-q8_0}}"
 MTP="${MTP:-0}"
+FA="${FA:-${_fa:-on}}"
+LOOPS="${LOOPS:-2}"
+if [ "$LOOPS" -ge 3 ] 2>/dev/null; then _loopkv=last_loop; else _loopkv=per_loop; fi
+LOOP_KV="${LOOP_KV:-$_loopkv}"
 TEMP="${TEMP:-$_temp}"
 TOP_P="${TOP_P:-${_topp:-0.95}}"
-TOP_K="${TOP_K:-20}"
+TOP_K="${TOP_K:-${_topk:-20}}"
 MIN_P="${MIN_P:-$_minp}"
 PRESENCE_PENALTY="${PRESENCE_PENALTY:-${_pp:-0}}"
 NP="${NP:-1}"
@@ -225,6 +257,15 @@ case "$KVQUANT" in
 esac
 echo ">> KV-cache: ${KVQUANT:-f16}"
 
+# --- loop count (dory only) --------------------------------------------------
+LOOP_ARGS=()
+if [ "$QMODEL" = dory ]; then
+  case "$LOOPS" in 1|2|3|4) : ;; *) echo "ERROR: LOOPS='$LOOPS' (use 1-4)"; exit 1 ;; esac
+  case "$LOOP_KV" in per_loop|last_loop) : ;; *) echo "ERROR: LOOP_KV='$LOOP_KV' (use per_loop | last_loop)"; exit 1 ;; esac
+  LOOP_ARGS=(--override-kv "dory.num_loops=int:$LOOPS,dory.recurrent_kv_cache_mode=str:$LOOP_KV")
+  echo ">> loops: $LOOPS, KV cache $LOOP_KV"
+fi
+
 SAMPLER_ARGS=(--temp "$TEMP" --top-p "$TOP_P" --top-k "$TOP_K" --min-p "$MIN_P" --presence-penalty "$PRESENCE_PENALTY")
 # shellcheck disable=SC2206  # intentional word-splitting for passthrough flags
 [ -n "$EXTRA_ARGS" ] && SAMPLER_ARGS+=($EXTRA_ARGS)
@@ -241,7 +282,8 @@ exec "${RUN[@]}" "$CUDA_BIN" \
   "${MMPROJ_ARGS[@]}" \
   -c "$CTX" \
   "${KV_ARGS[@]}" \
-  -fa on \
+  -fa "$FA" \
+  "${LOOP_ARGS[@]}" \
   --parallel "$NP" -b "$BATCH" -ub "$UBATCH" \
   --jinja \
   "${SAMPLER_ARGS[@]}" \
