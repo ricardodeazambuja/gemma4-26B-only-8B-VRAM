@@ -1,0 +1,931 @@
+Dory (NVIDIA Nemotron-Labs Dory1.0) support for llama.cpp — ggml-org/llama.cpp PR #30306
+==========================================================================================
+
+What: the complete diff of PR #30306 ("dory support for llama.cpp", Brian Chmiel / NVIDIA),
+as of its head commit 43e865ec059a35d57f1167eaea76ca187077f063 (2026-10-15), against the
+stock llama.cpp commit it was last merged with:
+
+  base  6e66cb5d4e9a2b4f02820a9f3053422b92ec4d51  (ggml-org/llama.cpp master, 2026-10-15)
+  head  43e865ec059a35d57f1167eaea76ca187077f063  (= refs/pull/30306/head)
+
+  git diff 6e66cb5d4e9a2b4f02820a9f3053422b92ec4d51 43e865ec059a35d57f1167eaea76ca187077f063
+
+Kept here so this repo can rebuild the exact engine its Dory measurements were made with,
+even if the PR is rewritten, closed or merged differently. Apply it with
+scripts/build-llama-cuda.sh (LLAMA_REF=<base> PATCH=<this file>); docs/dory-on-8gb.md
+explains what it changes.
+
+License: llama.cpp is MIT-licensed; this patch is a derivative of it and is redistributed
+under the same terms:
+
+  MIT License
+  Copyright (c) 2023-2026 The ggml authors
+  Permission is hereby granted, free of charge, to any person obtaining a copy of this
+  software and associated documentation files (the "Software"), to deal in the Software
+  without restriction, including without limitation the rights to use, copy, modify, merge,
+  publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
+  to whom the Software is furnished to do so, subject to the following conditions:
+  The above copyright notice and this permission notice shall be included in all copies or
+  substantial portions of the Software.
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+  INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+  PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
+  FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+  OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+  DEALINGS IN THE SOFTWARE.
+
+diff --git a/conversion/__init__.py b/conversion/__init__.py
+index d5b480a9..e875d5ec 100644
+--- a/conversion/__init__.py
++++ b/conversion/__init__.py
+@@ -17,6 +17,7 @@ __all__ = [
+ 
+ 
+ TEXT_MODEL_MAP: dict[str, str] = {
++    "DoryForCausalLM": "dory",
+     "AfmoeForCausalLM": "afmoe",
+     "LagunaForCausalLM": "laguna",
+     "ApertusForCausalLM": "llama",
+diff --git a/conversion/base.py b/conversion/base.py
+index efb7ea72..41bcc3df 100644
+--- a/conversion/base.py
++++ b/conversion/base.py
+@@ -1245,7 +1245,18 @@ class ModelBase:
+                 data_qtype: gguf.GGMLQuantizationType | bool = self.tensor_force_quant(name, new_name, bid, n_dims)
+ 
+                 # Most of the codebase that takes in 1D tensors or norms only handles F32 tensors
+-                if n_dims <= 1 or new_name.endswith("_norm.weight"):
++                # These scale roles are cast to F32 by the graph before arithmetic.
++                if n_dims <= 1 and not (
++                    data_qtype in (gguf.GGMLQuantizationType.F16, gguf.GGMLQuantizationType.BF16)
++                    and any(self.match_model_tensor_name(new_name, key, bid) for key in (
++                        gguf.MODEL_TENSOR.RESIDUAL_ALPHA,
++                        gguf.MODEL_TENSOR.ATTN_QK_SCALE,
++                        gguf.MODEL_TENSOR.ATTN_GATE_SCALE,
++                        gguf.MODEL_TENSOR.FFN_GATE_SCALE,
++                        gguf.MODEL_TENSOR.FFN_UP_SCALE,
++                        gguf.MODEL_TENSOR.OUTPUT_SCALE,
++                    ))
++                ) or new_name.endswith("_norm.weight"):
+                     data_qtype = gguf.GGMLQuantizationType.F32
+ 
+                 # Conditions should closely match those in llama_model_quantize_internal in llama.cpp
+diff --git a/conversion/dory.py b/conversion/dory.py
+new file mode 100644
+index 00000000..ebd3d4cc
+--- /dev/null
++++ b/conversion/dory.py
+@@ -0,0 +1,84 @@
++from __future__ import annotations
++
++from .base import ModelBase, TextModel, gguf
++
++
++@ModelBase.register("DoryForCausalLM")
++class DoryModel(TextModel):
++    model_arch = gguf.MODEL_ARCH.DORY
++
++    def tensor_force_quant(self, name, new_name, bid, n_dims):
++        if n_dims == 1 and any(self.match_model_tensor_name(new_name, key, bid) for key in (
++            gguf.MODEL_TENSOR.RESIDUAL_ALPHA,
++            gguf.MODEL_TENSOR.ATTN_QK_SCALE,
++            gguf.MODEL_TENSOR.ATTN_GATE_SCALE,
++            gguf.MODEL_TENSOR.FFN_GATE_SCALE,
++            gguf.MODEL_TENSOR.FFN_UP_SCALE,
++            gguf.MODEL_TENSOR.OUTPUT_SCALE,
++        )):
++            return {
++                gguf.LlamaFileType.MOSTLY_BF16: gguf.GGMLQuantizationType.BF16,
++                gguf.LlamaFileType.MOSTLY_F16: gguf.GGMLQuantizationType.F16,
++            }.get(self.ftype, gguf.GGMLQuantizationType.F32)
++        return super().tensor_force_quant(name, new_name, bid, n_dims)
++
++    def set_vocab(self):
++        self._set_vocab_gpt2()
++
++    def set_gguf_parameters(self):
++        h = self.hparams
++        required = {
++            "dory_format_version": 1,
++            "ngpt": True, "fngpt": True, "ngpt_enable_final_norm": False,
++            "attention_output_gate": True, "mlp_hidden_act": "silu",
++            "attention_bias": False, "mlp_bias": False, "initial_state": "input_copy",
++            "input_transform": "residual", "output_transform": "replace",
++            "partial_rotary_factor": 1.0, "partial_rotary_factor_2": 1.0,
++            "mixer_type": None,
++        }
++        for key, value in required.items():
++            if key not in h or h[key] != value:
++                raise ValueError(f"Dory port requires {key}={value!r}")
++        cache_mode = h.get("recurrent_kv_cache_mode", "per_loop")
++        if cache_mode not in ("per_loop", "last_loop"):
++            raise ValueError("Dory recurrent_kv_cache_mode must be per_loop or last_loop")
++        if h.get("tie_word_embeddings", False):
++            raise ValueError("Dory requires untied embeddings")
++        n = h["num_hidden_layers"]
++        pattern = h["hybrid_layer_pattern"]
++        if len(pattern) != n or set(pattern) - set("S*-"):
++            raise ValueError("Unsupported Dory layer pattern")
++        if sum(h[k] for k in ("n_input_layers", "n_recurrent_layers", "n_output_layers")) != n:
++            raise ValueError("Dory physical layer counts disagree")
++        if h["swa_num_attention_heads"] != h["num_attention_heads"] or h["swa_num_key_value_heads"] != h["num_key_value_heads"] or h["swa_head_dim"] != h["attention_head_dim"]:
++            raise ValueError("Dory port requires equal SWA/global head dimensions")
++        profiles, no_rope = h["rope_profile_layers"], h["no_rope_layers"]
++        if len(profiles) != n or len(no_rope) != n or any(p not in (1, 2) for p in profiles) or any(no_rope):
++            raise ValueError("Invalid Dory RoPE profile")
++        if self.fuse_qkv:
++            raise ValueError("Dory Q4_K_M requires separate Q/K/V tensor roles; omit --fuse-qkv")
++        super().set_gguf_parameters()
++        w = self.gguf_writer
++        w.add_key_length(h["attention_head_dim"])
++        w.add_value_length(h["attention_head_dim"])
++        w.add_rope_dimension_count(h["attention_head_dim"])
++        w.add_rope_freq_base(h["rope_theta"])
++        w.add_sliding_window(h["swa_window_size"])
++        w.add_input_layer_count(h["n_input_layers"])
++        w.add_recurrent_layer_count(h["n_recurrent_layers"])
++        w.add_output_layer_count(h["n_output_layers"])
++        w.add_num_loops(h["n_recurrent_loops"])
++        w.add_layer_pattern(pattern)
++        w.add_recurrent_kv_cache_mode(cache_mode)
++        w.add_rope_profile(profiles)
++        w.add_rope_freq_base_2(h["rope_theta_2"])
++        w.add_init_std(h["init_method_std"])
++        w.add_alpha_init(h["ngpt_alpha_init"])
++        w.add_gate_init(h["attention_output_gate_logit_scale_init"] or h["hidden_size"]**0.5)
++
++    def modify_tensors(self, data_torch, name, bid):
++        # Scale vectors have no suffix in the HF export.
++        mapped = self.map_tensor_name(name)
++        if not mapped.endswith(".weight"):
++            mapped += ".weight"
++        yield mapped, data_torch
+diff --git a/gguf-py/gguf/constants.py b/gguf-py/gguf/constants.py
+index f9baf687..38e02f94 100644
+--- a/gguf-py/gguf/constants.py
++++ b/gguf-py/gguf/constants.py
+@@ -152,6 +152,14 @@ class Keys:
+         INTERLEAVE_MOE_LAYER_STEP         = "{arch}.interleave_moe_layer_step"
+         FULL_ATTENTION_INTERVAL           = "{arch}.full_attention_interval"
+         NUM_LOOPS                         = "{arch}.num_loops"
++        INPUT_LAYER_COUNT                 = "{arch}.input_layer_count"
++        RECURRENT_LAYER_COUNT             = "{arch}.recurrent_layer_count"
++        OUTPUT_LAYER_COUNT                = "{arch}.output_layer_count"
++        RECURRENT_KV_CACHE_MODE            = "{arch}.recurrent_kv_cache_mode"
++        LAYER_PATTERN                     = "{arch}.layer_pattern"
++        INIT_STD                          = "{arch}.init_std"
++        ALPHA_INIT                        = "{arch}.alpha_init"
++        GATE_INIT                         = "{arch}.gate_init"
+         SKIP_LOOP_FINAL_NORM              = "{arch}.skip_loop_final_norm"
+         HASH_LAYER_COUNT                  = "{arch}.hash_layer_count"
+         ACTIVATION_SPARSITY_SCALE         = "{arch}.activation_sparsity_scale"
+@@ -261,6 +269,8 @@ class Keys:
+         DIMENSION_SECTIONS        = "{arch}.rope.dimension_sections"
+         SECTION_ORDER             = "{arch}.rope.section_order"
+         FREQ_BASE                 = "{arch}.rope.freq_base"
++        FREQ_BASE_2               = "{arch}.rope.freq_base_2"
++        PROFILE                   = "{arch}.rope.profile"
+         FREQ_BASE_SWA             = "{arch}.rope.freq_base_swa"
+         SCALING_TYPE              = "{arch}.rope.scaling.type"
+         SCALING_FACTOR            = "{arch}.rope.scaling.factor"
+@@ -535,6 +545,7 @@ class GGUFType:
+ 
+ 
+ class MODEL_ARCH(IntEnum):
++    DORY             = auto()
+     MMPROJ           = auto() # dummy arch for clip.cpp
+     LLAMA            = auto()
+     LLAMA4           = auto()
+@@ -710,6 +721,12 @@ class VISION_PROJECTOR_TYPE(IntEnum):
+ 
+ 
+ class MODEL_TENSOR(IntEnum):
++    RESIDUAL_ALPHA       = auto()
++    ATTN_QK_SCALE        = auto()
++    ATTN_GATE_SCALE      = auto()
++    FFN_GATE_SCALE       = auto()
++    FFN_UP_SCALE         = auto()
++    OUTPUT_SCALE         = auto()
+     TOKEN_EMBD           = auto()
+     TOKEN_EMBD_NORM      = auto()
+     MASKED_EMBD_CENTROIDS= auto()
+@@ -1339,6 +1356,7 @@ class MODEL_TENSOR(IntEnum):
+ 
+ 
+ MODEL_ARCH_NAMES: dict[MODEL_ARCH, str] = {
++    MODEL_ARCH.DORY: "dory",
+     MODEL_ARCH.MMPROJ:           "clip", # dummy arch for clip.cpp
+     MODEL_ARCH.LLAMA:            "llama",
+     MODEL_ARCH.LLAMA4:           "llama4",
+@@ -1512,6 +1530,12 @@ VISION_PROJECTOR_TYPE_NAMES: dict[VISION_PROJECTOR_TYPE, str] = {
+ }
+ 
+ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
++    MODEL_TENSOR.RESIDUAL_ALPHA:            "blk.{bid}.residual_alpha",
++    MODEL_TENSOR.ATTN_QK_SCALE:             "blk.{bid}.attn_qk_scale",
++    MODEL_TENSOR.ATTN_GATE_SCALE:           "blk.{bid}.attn_gate_scale",
++    MODEL_TENSOR.FFN_GATE_SCALE:            "blk.{bid}.ffn_gate_scale",
++    MODEL_TENSOR.FFN_UP_SCALE:              "blk.{bid}.ffn_up_scale",
++    MODEL_TENSOR.OUTPUT_SCALE:              "output_scale",
+     MODEL_TENSOR.TOKEN_EMBD:                "token_embd",
+     MODEL_TENSOR.TOKEN_EMBD_NORM:           "token_embd_norm",
+     MODEL_TENSOR.TOKEN_TYPES:               "token_types",
+@@ -2135,6 +2159,14 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
+ }
+ 
+ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
++    MODEL_ARCH.DORY: [
++        MODEL_TENSOR.TOKEN_EMBD, MODEL_TENSOR.OUTPUT,
++        MODEL_TENSOR.ATTN_Q, MODEL_TENSOR.ATTN_K, MODEL_TENSOR.ATTN_V,
++        MODEL_TENSOR.ATTN_OUT, MODEL_TENSOR.ATTN_GATE,
++        MODEL_TENSOR.FFN_GATE, MODEL_TENSOR.FFN_UP, MODEL_TENSOR.FFN_DOWN,
++        MODEL_TENSOR.RESIDUAL_ALPHA, MODEL_TENSOR.ATTN_QK_SCALE, MODEL_TENSOR.ATTN_GATE_SCALE,
++        MODEL_TENSOR.FFN_GATE_SCALE, MODEL_TENSOR.FFN_UP_SCALE, MODEL_TENSOR.OUTPUT_SCALE,
++    ],
+     MODEL_ARCH.MMPROJ: [
+         MODEL_TENSOR.V_MMPROJ,
+         MODEL_TENSOR.V_MMPROJ_FC,
+diff --git a/gguf-py/gguf/gguf_writer.py b/gguf-py/gguf/gguf_writer.py
+index cc2bd8e7..a1475657 100644
+--- a/gguf-py/gguf/gguf_writer.py
++++ b/gguf-py/gguf/gguf_writer.py
+@@ -981,6 +981,30 @@ class GGUFWriter:
+     def add_num_loops(self, count: int) -> None:
+         self.add_uint32(Keys.LLM.NUM_LOOPS.format(arch=self.arch), count)
+ 
++    def add_input_layer_count(self, count: int) -> None:
++        self.add_uint32(Keys.LLM.INPUT_LAYER_COUNT.format(arch=self.arch), count)
++
++    def add_recurrent_layer_count(self, count: int) -> None:
++        self.add_uint32(Keys.LLM.RECURRENT_LAYER_COUNT.format(arch=self.arch), count)
++
++    def add_output_layer_count(self, count: int) -> None:
++        self.add_uint32(Keys.LLM.OUTPUT_LAYER_COUNT.format(arch=self.arch), count)
++
++    def add_recurrent_kv_cache_mode(self, value: str) -> None:
++        self.add_string(Keys.LLM.RECURRENT_KV_CACHE_MODE.format(arch=self.arch), value)
++
++    def add_layer_pattern(self, value: str) -> None:
++        self.add_string(Keys.LLM.LAYER_PATTERN.format(arch=self.arch), value)
++
++    def add_init_std(self, value: float) -> None:
++        self.add_float32(Keys.LLM.INIT_STD.format(arch=self.arch), value)
++
++    def add_alpha_init(self, value: float) -> None:
++        self.add_float32(Keys.LLM.ALPHA_INIT.format(arch=self.arch), value)
++
++    def add_gate_init(self, value: float) -> None:
++        self.add_float32(Keys.LLM.GATE_INIT.format(arch=self.arch), value)
++
+     def add_skip_loop_final_norm(self, value: bool) -> None:
+         self.add_bool(Keys.LLM.SKIP_LOOP_FINAL_NORM.format(arch=self.arch), value)
+ 
+@@ -1161,6 +1185,12 @@ class GGUFWriter:
+     def add_rope_freq_base(self, value: float) -> None:
+         self.add_float32(Keys.Rope.FREQ_BASE.format(arch=self.arch), value)
+ 
++    def add_rope_freq_base_2(self, value: float) -> None:
++        self.add_float32(Keys.Rope.FREQ_BASE_2.format(arch=self.arch), value)
++
++    def add_rope_profile(self, value: Sequence[int]) -> None:
++        self.add_array(Keys.Rope.PROFILE.format(arch=self.arch), value)
++
+     def add_rope_scaling_type(self, value: RopeScalingType) -> None:
+         self.add_string(Keys.Rope.SCALING_TYPE.format(arch=self.arch), value.value)
+ 
+diff --git a/gguf-py/gguf/tensor_mapping.py b/gguf-py/gguf/tensor_mapping.py
+index 5eab5b1f..f2756d9e 100644
+--- a/gguf-py/gguf/tensor_mapping.py
++++ b/gguf-py/gguf/tensor_mapping.py
+@@ -7,6 +7,7 @@ from .constants import MODEL_ARCH, MODEL_TENSOR, MODEL_TENSORS, TENSOR_NAMES
+ 
+ class TensorNameMap:
+     mappings_cfg: dict[MODEL_TENSOR, tuple[str, ...]] = {
++        MODEL_TENSOR.OUTPUT_SCALE: ("lm_head.logit_scale",),
+         # Token embeddings
+         MODEL_TENSOR.TOKEN_EMBD: (
+             "gpt_neox.embed_in",                         # gptneox
+@@ -221,6 +222,11 @@ class TensorNameMap:
+     }
+ 
+     block_mappings_cfg: dict[MODEL_TENSOR, tuple[str, ...]] = {
++        MODEL_TENSOR.RESIDUAL_ALPHA: ("backbone.layers.{bid}.attn_alpha", "backbone.layers.{bid}.mlp_alpha"),
++        MODEL_TENSOR.ATTN_QK_SCALE: ("backbone.layers.{bid}.mixer.sqk",),
++        MODEL_TENSOR.ATTN_GATE_SCALE: ("backbone.layers.{bid}.mixer.s_gate",),
++        MODEL_TENSOR.FFN_GATE_SCALE: ("backbone.layers.{bid}.mixer.suv_gate",),
++        MODEL_TENSOR.FFN_UP_SCALE: ("backbone.layers.{bid}.mixer.suv_up",),
+         # Attention norm
+         MODEL_TENSOR.ATTN_NORM: (
+             "model.lilicorr.layers.{bid}.attn_norm",                # lilicorr
+@@ -297,6 +303,7 @@ class TensorNameMap:
+ 
+         # Attention query
+         MODEL_TENSOR.ATTN_Q: (
++            "backbone.layers.{bid}.mixer.q_proj",  # dory
+             "model.layers.{bid}.self_attn.q_proj",                       # llama-hf nemotron olmoe olmo2 phimoe
+             "model.layers.{bid}.attention.q_proj",                       # bailingmoe3
+             "layers.{bid}.self_attn.q_proj",                             # embeddinggemma
+@@ -318,6 +325,7 @@ class TensorNameMap:
+ 
+         # Attention key
+         MODEL_TENSOR.ATTN_K: (
++            "backbone.layers.{bid}.mixer.k_proj",  # dory
+             "model.layers.{bid}.self_attn.k_proj",                     # llama-hf nemotron olmoe olmo2 phimoe
+             "model.layers.{bid}.attention.k_proj",                     # bailingmoe3
+             "layers.{bid}.self_attn.k_proj",                           # embeddinggemma
+@@ -340,6 +348,7 @@ class TensorNameMap:
+ 
+         # Attention value
+         MODEL_TENSOR.ATTN_V: (
++            "backbone.layers.{bid}.mixer.v_proj",  # dory
+             "model.layers.{bid}.self_attn.v_proj",                       # llama-hf nemotron olmoe olmo2 phimoe
+             "model.layers.{bid}.attention.v_proj",                       # bailingmoe3
+             "layers.{bid}.self_attn.v_proj",                             # embeddinggemma
+@@ -361,6 +370,7 @@ class TensorNameMap:
+ 
+         # Attention output
+         MODEL_TENSOR.ATTN_OUT: (
++            "backbone.layers.{bid}.mixer.o_proj",  # dory
+             "model.lilicorr.layers.{bid}.attn.out_proj",                    # lilicorr
+             "gpt_neox.layers.{bid}.attention.dense",                        # gptneox
+             "transformer.h.{bid}.attn.c_proj",                              # gpt2 refact qwen jais
+@@ -434,6 +444,7 @@ class TensorNameMap:
+         ),
+ 
+         MODEL_TENSOR.ATTN_GATE: (
++            "backbone.layers.{bid}.mixer.g_proj",  # dory
+             "model.layers.{bid}.self_attn.gate_proj", # afmoe muse-glimmer
+             "model.layers.{bid}.linear_attn.in_proj_z",  # qwen3.5
+             "layers.{bid}.linear_attn.in_proj_z",        # qwen3.5 text
+@@ -544,6 +555,7 @@ class TensorNameMap:
+ 
+         # Feed-forward up
+         MODEL_TENSOR.FFN_UP: (
++            "backbone.layers.{bid}.mixer.up_proj",  # dory
+             "model.lilicorr.layers.{bid}.mlp.up_proj",                # lilicorr
+             "model.lilicorr.feature_mlp.{bid}.up_proj",               # lilicorr
+             "gpt_neox.layers.{bid}.mlp.dense_h_to_4h",                # gptneox
+@@ -623,6 +635,7 @@ class TensorNameMap:
+ 
+         # Feed-forward gate
+         MODEL_TENSOR.FFN_GATE: (
++            "backbone.layers.{bid}.mixer.gate_proj",  # dory
+             "model.layers.{bid}.mlp.gate_proj",               # llama-hf refact olmo2
+             "layers.{bid}.mlp.gate_proj",                     # embeddinggemma
+             "layers.{bid}.feed_forward.w1",                   # llama-pth
+@@ -682,6 +695,7 @@ class TensorNameMap:
+ 
+         # Feed-forward down
+         MODEL_TENSOR.FFN_DOWN: (
++            "backbone.layers.{bid}.mixer.down_proj",  # dory
+             "model.lilicorr.layers.{bid}.mlp.down_proj",              # lilicorr
+             "model.lilicorr.feature_mlp.{bid}.down_proj",             # lilicorr
+             "gpt_neox.layers.{bid}.mlp.dense_4h_to_h",                # gptneox
+diff --git a/src/llama-arch.cpp b/src/llama-arch.cpp
+index 5744c5fb..671df97b 100644
+--- a/src/llama-arch.cpp
++++ b/src/llama-arch.cpp
+@@ -6,6 +6,7 @@
+ #include <vector>
+ 
+ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
++    { LLM_ARCH_DORY,             "dory"             },
+     { LLM_ARCH_CLIP,             "clip"             }, // dummy, only used by llama-quantize
+     { LLM_ARCH_LLAMA,            "llama"            },
+     { LLM_ARCH_LLAMA4,           "llama4"           },
+@@ -253,6 +254,16 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
+     { LLM_KV_INTERLEAVE_MOE_LAYER_STEP,         "%s.interleave_moe_layer_step"         },
+     { LLM_KV_FULL_ATTENTION_INTERVAL,           "%s.full_attention_interval"           },
+     { LLM_KV_NUM_LOOPS,                         "%s.num_loops"                         },
++    { LLM_KV_INPUT_LAYER_COUNT,                 "%s.input_layer_count"                 },
++    { LLM_KV_RECURRENT_LAYER_COUNT,             "%s.recurrent_layer_count"             },
++    { LLM_KV_OUTPUT_LAYER_COUNT,                "%s.output_layer_count"                },
++    { LLM_KV_RECURRENT_KV_CACHE_MODE,            "%s.recurrent_kv_cache_mode"            },
++    { LLM_KV_LAYER_PATTERN,                     "%s.layer_pattern"                     },
++    { LLM_KV_ROPE_PROFILE,                      "%s.rope.profile"                      },
++    { LLM_KV_ROPE_FREQ_BASE_2,                   "%s.rope.freq_base_2"                   },
++    { LLM_KV_INIT_STD,                          "%s.init_std"                          },
++    { LLM_KV_ALPHA_INIT,                        "%s.alpha_init"                        },
++    { LLM_KV_GATE_INIT,                         "%s.gate_init"                         },
+     { LLM_KV_SKIP_LOOP_FINAL_NORM,              "%s.skip_loop_final_norm"              },
+     { LLM_KV_HRM_LAYERS_PER_STACK,              "%s.hrm.layers_per_stack"              },
+     { LLM_KV_HRM_H_CYCLES,                      "%s.hrm.h_cycles"                      },
+@@ -471,6 +482,12 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
+ };
+ 
+ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
++    { LLM_TENSOR_RESIDUAL_ALPHA,                         "blk.%d.residual_alpha" },
++    { LLM_TENSOR_ATTN_QK_SCALE,                          "blk.%d.attn_qk_scale" },
++    { LLM_TENSOR_ATTN_GATE_SCALE,                        "blk.%d.attn_gate_scale" },
++    { LLM_TENSOR_FFN_GATE_SCALE,                         "blk.%d.ffn_gate_scale" },
++    { LLM_TENSOR_FFN_UP_SCALE,                           "blk.%d.ffn_up_scale" },
++    { LLM_TENSOR_OUTPUT_SCALE,                          "output_scale" },
+     { LLM_TENSOR_TOKEN_EMBD,                             "token_embd" },
+     { LLM_TENSOR_OUTPUT_NORM,                            "output_norm" },
+     { LLM_TENSOR_OUTPUT_NORM_LFM2,                       "token_embd_norm" }, // fix for wrong tensor name
+@@ -796,6 +813,12 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
+ // example: https://github.com/ggml-org/llama.cpp/pull/17548
+ //
+ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
++    {LLM_TENSOR_RESIDUAL_ALPHA,             {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
++    {LLM_TENSOR_ATTN_QK_SCALE,              {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
++    {LLM_TENSOR_ATTN_GATE_SCALE,            {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
++    {LLM_TENSOR_FFN_GATE_SCALE,             {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
++    {LLM_TENSOR_FFN_UP_SCALE,               {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
++    {LLM_TENSOR_OUTPUT_SCALE,              {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL}},
+     {LLM_TENSOR_TOKEN_EMBD,                 {LLM_TENSOR_LAYER_INPUT,     GGML_OP_GET_ROWS}},
+     {LLM_TENSOR_POS_EMBD,                   {LLM_TENSOR_LAYER_INPUT,     GGML_OP_GET_ROWS}},
+     {LLM_TENSOR_TOKEN_TYPES,                {LLM_TENSOR_LAYER_INPUT,     GGML_OP_GET_ROWS}},
+diff --git a/src/llama-arch.h b/src/llama-arch.h
+index 94771c2a..d24d0173 100644
+--- a/src/llama-arch.h
++++ b/src/llama-arch.h
+@@ -11,6 +11,7 @@
+ //
+ 
+ enum llm_arch {
++    LLM_ARCH_DORY,
+     LLM_ARCH_CLIP,
+     LLM_ARCH_LLAMA,
+     LLM_ARCH_LLAMA4,
+@@ -258,6 +259,16 @@ enum llm_kv {
+     LLM_KV_INTERLEAVE_MOE_LAYER_STEP,
+     LLM_KV_FULL_ATTENTION_INTERVAL,
+     LLM_KV_NUM_LOOPS,
++    LLM_KV_INPUT_LAYER_COUNT,
++    LLM_KV_RECURRENT_LAYER_COUNT,
++    LLM_KV_OUTPUT_LAYER_COUNT,
++    LLM_KV_RECURRENT_KV_CACHE_MODE,
++    LLM_KV_LAYER_PATTERN,
++    LLM_KV_ROPE_PROFILE,
++    LLM_KV_ROPE_FREQ_BASE_2,
++    LLM_KV_INIT_STD,
++    LLM_KV_ALPHA_INIT,
++    LLM_KV_GATE_INIT,
+     LLM_KV_SKIP_LOOP_FINAL_NORM,
+     LLM_KV_HRM_LAYERS_PER_STACK,
+     LLM_KV_HRM_H_CYCLES,
+@@ -475,6 +486,12 @@ enum llm_kv {
+ };
+ 
+ enum llm_tensor {
++    LLM_TENSOR_RESIDUAL_ALPHA,
++    LLM_TENSOR_ATTN_QK_SCALE,
++    LLM_TENSOR_ATTN_GATE_SCALE,
++    LLM_TENSOR_FFN_GATE_SCALE,
++    LLM_TENSOR_FFN_UP_SCALE,
++    LLM_TENSOR_OUTPUT_SCALE,
+     LLM_TENSOR_TOKEN_EMBD,
+     LLM_TENSOR_TOKEN_EMBD_NORM,
+     LLM_TENSOR_TOKEN_TYPES,
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 9ee64b56..2e50230e 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -2506,7 +2506,10 @@ void llama_context::output_reorder() {
+ 
+ uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
+     uint32_t res;
+-    if (model.arch == LLM_ARCH_KIMI_K3 || model.arch == LLM_ARCH_GLM5_NEXT) {
++    if (model.arch == LLM_ARCH_DORY) {
++        // Shared weights do not reflect the expanded recurrent graph size.
++        res = std::max<uint32_t>(1024u, 128u * model.hparams.n_layer());
++    } else if (model.arch == LLM_ARCH_KIMI_K3 || model.arch == LLM_ARCH_GLM5_NEXT) {
+         // the n_tokens*40 budget below is exhausted at ubatch 3840
+         res = std::max<uint32_t>(n_tokens * 160, 64u * model.n_tensors());
+     } else if (model.arch == LLM_ARCH_HRM_TEXT) {
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index 60a7e855..396c2976 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -1208,6 +1208,10 @@ void llama_kv_cache::apply_ubatch(const slot_info & sinfo, const llama_ubatch &
+ }
+ 
+ bool llama_kv_cache::get_can_shift() const {
++    // Dory uses physical-layer RoPE profiles and post-RoPE normalization.
++    if (model.arch == LLM_ARCH_DORY) {
++        return false;
++    }
+     // Step35 uses per-layer RoPE dims; K-shift assumes a single global n_rot.
+     if (model.arch == LLM_ARCH_STEP35) {
+         return false;
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index bc93c6f9..30c3873d 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -414,6 +414,7 @@ namespace GGUFMeta {
+     template bool llama_model_loader::get_arr<std::vector<int32_t>>(enum llm_kv kid, std::vector<int32_t> & result, bool required);
+     template bool llama_model_loader::get_arr<std::array<uint32_t, LLAMA_MAX_LAYERS>>(enum llm_kv kid, std::array<uint32_t, LLAMA_MAX_LAYERS> & result, bool required);
+     template bool llama_model_loader::get_arr<std::vector<uint32_t>>(enum llm_kv kid, std::vector<uint32_t> & result, bool required);
++    template bool llama_model_loader::get_arr<uint32_t>(const std::string & key, std::vector<uint32_t> & result, bool required);
+     template bool llama_model_loader::get_arr<std::array<uint64_t, LLAMA_MAX_PLE_NGRAM>>(enum llm_kv kid, std::array<uint64_t, LLAMA_MAX_PLE_NGRAM> & result, bool required);
+     template bool llama_model_loader::get_arr<std::array<uint64_t, LLAMA_MAX_PLE_HEADS>>(enum llm_kv kid, std::array<uint64_t, LLAMA_MAX_PLE_HEADS> & result, bool required);
+ 
+diff --git a/src/llama-model-saver.cpp b/src/llama-model-saver.cpp
+index 47e36d37..03aeaf26 100644
+--- a/src/llama-model-saver.cpp
++++ b/src/llama-model-saver.cpp
+@@ -15,6 +15,7 @@
+ 
+ bool llama_model_saver_supports_arch(llm_arch arch) {
+     switch (arch) {
++        case LLM_ARCH_DORY: // physical weights and virtual cache slots use different counts
+         case LLM_ARCH_GEMMA3N:
+         case LLM_ARCH_BITNET:
+         case LLM_ARCH_T5:
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index 923c2c0a..85bc3bf1 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -44,6 +44,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
+     switch (arch) {
+         case LLM_ARCH_CLIP:
+             return new llama_model_clip(params);
++        case LLM_ARCH_DORY:
++            return new llama_model_dory(params);
+         case LLM_ARCH_LLAMA:
+             return new llama_model_llama(params);
+         case LLM_ARCH_LLAMA4:
+@@ -3195,6 +3197,13 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
+                     llama_memory_i::layer_reuse_cb reuse = nullptr;
+                     llama_kv_cache::layer_share_cb share = nullptr;
+ 
++                    if (arch == LLM_ARCH_DORY) {
++                        filter = [&](uint32_t il) {
++                            const auto & dory = static_cast<const llama_model_dory &>(*this);
++                            return hparams.n_head_kv(il) > 0 && dory.cache_layer[il] == (int) il;
++                        };
++                    }
++
+                     if (arch == LLM_ARCH_GEMMA3N || arch == LLM_ARCH_GEMMA4) {
+                         reuse = [&](uint32_t il) {
+                             GGML_ASSERT(hparams.n_layer_kv_from_start >= 2);
+@@ -3522,6 +3531,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
+             return LLAMA_ROPE_TYPE_NORM;
+ 
+         // the pairs of head values are offset by n_rot/2
++        case LLM_ARCH_DORY:
+         case LLM_ARCH_FALCON:
+         case LLM_ARCH_FALCON_H1:
+         case LLM_ARCH_GROK:
+diff --git a/src/llama-quant.cpp b/src/llama-quant.cpp
+index 9c606679..20f0d63e 100644
+--- a/src/llama-quant.cpp
++++ b/src/llama-quant.cpp
+@@ -943,6 +943,15 @@ static void init_quantize_state_counters(quantize_state_impl & qs, std::vector<t
+         }
+     }
+     qs.n_ffn_down = qs.n_ffn_gate = qs.n_ffn_up = (int)qs.model.hparams.n_layer_all;
++    if (qs.model.arch == LLM_ARCH_DORY) {
++        // The mixed recipe counts physical FFNs, not recurrent cache slots.
++        qs.n_ffn_down = qs.n_ffn_gate = qs.n_ffn_up = 0;
++        for (const auto & tm : metadata) {
++            if (tm.category == tensor_category::FFN_DOWN) { ++qs.n_ffn_down; }
++            if (tm.category == tensor_category::FFN_GATE) { ++qs.n_ffn_gate; }
++            if (tm.category == tensor_category::FFN_UP)   { ++qs.n_ffn_up; }
++        }
++    }
+ }
+ 
+ //
+diff --git a/src/models/dory.cpp b/src/models/dory.cpp
+new file mode 100644
+index 00000000..878d1bf8
+--- /dev/null
++++ b/src/models/dory.cpp
+@@ -0,0 +1,200 @@
++#include "models.h"
++
++#include <stdexcept>
++
++void llama_model_dory::load_arch_hparams(llama_model_loader & ml) {
++    ml.get_key(LLM_KV_INPUT_LAYER_COUNT, n_input);
++    ml.get_key(LLM_KV_RECURRENT_LAYER_COUNT, n_recurrent);
++    ml.get_key(LLM_KV_OUTPUT_LAYER_COUNT, n_output);
++    ml.get_key(LLM_KV_NUM_LOOPS, n_loops);
++    ml.get_key(LLM_KV_RECURRENT_KV_CACHE_MODE, recurrent_kv_cache_mode, false);
++    if (recurrent_kv_cache_mode != "per_loop" && recurrent_kv_cache_mode != "last_loop") {
++        throw std::runtime_error("Dory recurrent_kv_cache_mode must be per_loop or last_loop");
++    }
++    ml.get_key(LLM_KV_LAYER_PATTERN, pattern);
++    uint32_t n_profile = 0;
++    ml.get_arr_n(LLM_KV_ROPE_PROFILE, n_profile);
++    if (n_profile > LLAMA_MAX_LAYERS) {
++        throw std::runtime_error("Dory RoPE profile is too large");
++    }
++    ml.get_arr(LLM_KV_ROPE_PROFILE, profile);
++    ml.get_key(LLM_KV_INIT_STD, init_std);
++    ml.get_key(LLM_KV_ALPHA_INIT, alpha_init);
++    ml.get_key(LLM_KV_GATE_INIT, gate_init);
++    ml.get_key(LLM_KV_ROPE_FREQ_BASE, theta_1);
++    ml.get_key(LLM_KV_ROPE_FREQ_BASE_2, theta_2);
++    ml.get_key(LLM_KV_ATTENTION_SLIDING_WINDOW, hparams.n_swa);
++
++    const uint64_t n_physical = uint64_t(n_input) + n_recurrent + n_output;
++    const uint64_t n_virtual = uint64_t(n_input) + uint64_t(n_recurrent)*n_loops + n_output;
++    if (!n_input || !n_recurrent || !n_output || !n_loops || n_loops > 4 ||
++            n_virtual > LLAMA_MAX_LAYERS || n_physical != hparams.n_layer_all ||
++            pattern.size() != n_physical || profile.size() != n_physical ||
++            pattern.find_first_not_of("S*-") != std::string::npos ||
++            !(init_std > 0 && std::isfinite(init_std)) ||
++            !(alpha_init > 0 && std::isfinite(alpha_init)) ||
++            !(gate_init > 0 && std::isfinite(gate_init)) ||
++            !(theta_1 > 0 && std::isfinite(theta_1)) || !(theta_2 > 0 && std::isfinite(theta_2)) ||
++            !hparams.n_swa || pattern.find('S') == std::string::npos || pattern.find('*') == std::string::npos) {
++        throw std::runtime_error("unsupported or invalid Dory recurrence metadata");
++    }
++    const auto nh = hparams.n_head(0);
++    const auto nk = hparams.n_head_kv(0);
++    if (!nh || !nk || nh % nk || !hparams.n_embd_head_k() ||
++            hparams.n_embd_head_k() != hparams.n_embd_head_v() || hparams.n_rot() != hparams.n_embd_head_k()) {
++        throw std::runtime_error("invalid Dory attention dimensions");
++    }
++    const auto nf = hparams.n_ff(0);
++    if (!nf) {
++        throw std::runtime_error("invalid Dory feed-forward dimension");
++    }
++    for (auto p : profile) {
++        if (p < 1 || p > 2) {
++            throw std::runtime_error("invalid Dory RoPE profile");
++        }
++    }
++    for (uint32_t i = 0; i < n_input; ++i) {
++        physical.push_back(i);
++    }
++    for (uint32_t k = 0; k < n_loops; ++k) {
++        for (uint32_t i = 0; i < n_recurrent; ++i) {
++            physical.push_back(n_input + i);
++        }
++    }
++    for (uint32_t i = 0; i < n_output; ++i) {
++        physical.push_back(n_input + n_recurrent + i);
++    }
++    hparams.n_layer_all = n_virtual;
++    hparams.swa_type = LLAMA_SWA_TYPE_STANDARD;
++    hparams.rope_freq_base_train_swa = theta_2;
++    for (uint32_t il = 0; il < n_virtual; ++il) {
++        const uint32_t p = physical[il];
++        const bool recurrent = p >= n_input && p < n_input + n_recurrent;
++        cache_layer.push_back(recurrent && recurrent_kv_cache_mode == "last_loop" ? p : il);
++        hparams.n_head_arr[il] = nh;
++        hparams.n_head_kv_arr[il] = pattern[p] == '-' ? 0 : nk;
++        hparams.n_ff_arr[il] = nf;
++        hparams.is_swa_impl[il] = pattern[p] == 'S';
++        hparams.rope_pattern[il] = profile[p] != 0 && pattern[p] != '-';
++    }
++    type = LLM_TYPE_UNKNOWN;
++}
++
++void llama_model_dory::load_arch_tensors(llama_model_loader &) {
++    LLAMA_LOAD_LOCALS;
++    tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, 0);
++    output = create_tensor(tn(LLM_TENSOR_OUTPUT, "weight"), {n_embd, n_vocab}, 0);
++    logit_scale = create_tensor(tn(LLM_TENSOR_OUTPUT_SCALE, "weight"), {n_vocab}, 0);
++    scale.resize(n_layer);
++    std::vector<int> first(pattern.size(), -1);
++    for (int il = 0; il < n_layer; ++il) {
++        const int p = physical[il];
++        if (first[p] >= 0) {
++            layers[il] = layers[first[p]];
++            scale[il] = scale[first[p]];
++            continue;
++        }
++        first[p] = il;
++        auto & l = layers[il];
++        auto & s = scale[il];
++        s.alpha = create_tensor(tn(LLM_TENSOR_RESIDUAL_ALPHA, "weight", p), {n_embd}, 0);
++        if (pattern[p] == '-') {
++            l.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", p), {n_embd, n_ff}, 0);
++            l.ffn_up = create_tensor(tn(LLM_TENSOR_FFN_UP, "weight", p), {n_embd, n_ff}, 0);
++            l.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", p), {n_ff, n_embd}, 0);
++            s.suv_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE_SCALE, "weight", p), {n_ff}, 0);
++            s.suv_up = create_tensor(tn(LLM_TENSOR_FFN_UP_SCALE, "weight", p), {n_ff}, 0);
++        } else {
++            const int64_t nq = n_head * n_embd_head_k;
++            const int64_t nkv = hparams.n_head_kv(il) * n_embd_head_k;
++            l.wq = create_tensor(tn(LLM_TENSOR_ATTN_Q, "weight", p), {n_embd, nq}, 0);
++            l.wk = create_tensor(tn(LLM_TENSOR_ATTN_K, "weight", p), {n_embd, nkv}, 0);
++            l.wv = create_tensor(tn(LLM_TENSOR_ATTN_V, "weight", p), {n_embd, nkv}, 0);
++            l.wo = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "weight", p), {nq, n_embd}, 0);
++            l.wqkv_gate = create_tensor(tn(LLM_TENSOR_ATTN_GATE, "weight", p), {n_embd, nq}, 0);
++            s.sqk = create_tensor(tn(LLM_TENSOR_ATTN_QK_SCALE, "weight", p), {nq}, 0);
++            s.gate = create_tensor(tn(LLM_TENSOR_ATTN_GATE_SCALE, "weight", p), {nq}, 0);
++        }
++    }
++}
++
++std::unique_ptr<llm_graph_context> llama_model_dory::build_arch_graph(const llm_graph_params & params) const {
++    return std::make_unique<graph>(*this, params);
++}
++
++llama_model_dory::graph::graph(const llama_model_dory & model, const llm_graph_params & params) : llm_graph_context(params) {
++    ggml_tensor * cur = build_inp_embd(model.tok_embd);
++    ggml_tensor * pos = build_inp_pos();
++    ggml_tensor * out_ids = build_inp_out_ids();
++    auto * attn = build_attn_inp_kv_iswa();
++    ggml_tensor * input_h = nullptr;
++    const int recurrent_end = model.n_input + model.n_recurrent * model.n_loops;
++    const auto norm = [&](ggml_tensor * x) { return build_gdn_l2_norm(ctx0, x, 1e-6f); };
++    const auto f32 = [&](ggml_tensor * x) { return x->type == GGML_TYPE_F32 ? x : ggml_cast(ctx0, x, GGML_TYPE_F32); };
++
++    for (int il = 0; il < n_layer; ++il) {
++        const int p = model.physical[il];
++        const auto & l = model.layers[il];
++        const auto & s = model.scale[il];
++        if (il == (int) model.n_input) {
++            input_h = cur;
++        }
++        if (il >= (int) model.n_input && il < recurrent_end && (il - model.n_input) % model.n_recurrent == 0) {
++            cur = norm(ggml_add(ctx0, cur, input_h));
++        }
++        ggml_tensor * residual = cur;
++        if (model.pattern[p] == '-') {
++            auto * g = build_lora_mm(l.ffn_gate, cur);
++            auto * u = build_lora_mm(l.ffn_up, cur);
++            g = ggml_mul(ctx0, g, ggml_scale(ctx0, f32(s.suv_gate), sqrtf(n_embd)));
++            u = ggml_mul(ctx0, u, ggml_scale(ctx0, f32(s.suv_up), sqrtf(n_embd)));
++            cur = norm(ggml_mul(ctx0, ggml_silu(ctx0, g), u));
++            cur = build_lora_mm(l.ffn_down, cur);
++        } else {
++            const auto hd = hparams.n_embd_head_k(il);
++            const auto nh = hparams.n_head(il);
++            const auto nk = hparams.n_head_kv(il);
++            auto [q, k, v] = build_qkv(l, cur, hd, nh, nk, il);
++            if (model.profile[p] != 0) {
++                const float theta = model.profile[p] == 2 ? model.theta_2 : model.theta_1;
++                q = ggml_rope_ext(ctx0, q, pos, nullptr, hd, rope_type, n_ctx_orig, theta, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
++                k = ggml_rope_ext(ctx0, k, pos, nullptr, hd, rope_type, n_ctx_orig, theta, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
++            }
++            auto * sq = ggml_sqr(ctx0, ggml_scale(ctx0, f32(s.sqk), sqrtf(hd) / model.init_std));
++            q = ggml_mul(ctx0, norm(q), ggml_reshape_3d(ctx0, sq, hd, nh, 1));
++            k = norm(k);
++            auto * gate = build_lora_mm(l.wqkv_gate, cur);
++            auto * sg = ggml_sqr(ctx0, ggml_scale(ctx0, f32(s.gate), sqrtf(model.gate_init) / model.init_std));
++            gate = ggml_sigmoid(ctx0, ggml_mul(ctx0, gate, sg));
++            // Repeated writes replace only the current chunk; older tokens retain final-loop KV.
++            cur = build_attn(attn, nullptr, nullptr, nullptr, q, k, v, nullptr, nullptr, nullptr, 1.0f / sqrtf(hd), model.cache_layer[il]);
++            cur = norm(ggml_mul(ctx0, cur, gate));
++            cur = build_lora_mm(l.wo, cur);
++        }
++        auto * a = norm(residual);
++        auto * b = norm(cur);
++        auto * alpha = ggml_abs(ctx0, ggml_scale(ctx0, f32(s.alpha), model.alpha_init / model.init_std));
++        cur = norm(ggml_add(ctx0, a, ggml_mul(ctx0, ggml_sub(ctx0, b, a), alpha)));
++        if (il >= (int) model.n_input && il < recurrent_end && (il + 1 - model.n_input) % model.n_recurrent == 0) {
++            cur = norm(cur);
++        }
++        cb(cur, "l_out", il);
++    }
++    if (out_ids) {
++        cur = ggml_get_rows(ctx0, cur, out_ids);
++    }
++    res->t_embd = cur;
++    cb(cur, "result_norm", -1);
++    cur = build_lora_mm(model.output, cur);
++    cur = ggml_mul(ctx0, cur, ggml_scale(ctx0, f32(model.logit_scale), 1.0f / model.init_std));
++    cb(cur, "result_output", -1);
++    res->t_logits = cur;
++    ggml_build_forward_expand(gf, cur);
++    // Preserve F32 inputs through recurrent normalization; BF16 and quantized weights keep their normal kernels.
++    for (int i = 0; i < ggml_graph_n_nodes(gf); ++i) {
++        auto * node = ggml_graph_node(gf, i);
++        if (node->op == GGML_OP_MUL_MAT && node->src[0]->type == GGML_TYPE_F32) {
++            ggml_prec_set_src(node, GGML_PREC_F32, 1);
++        }
++    }
++}
+diff --git a/src/models/models.h b/src/models/models.h
+index a55983cf..1da98e19 100644
+--- a/src/models/models.h
++++ b/src/models/models.h
+@@ -144,6 +144,33 @@ struct llm_build_rwkv7_base : public llm_graph_context {
+ // models
+ //
+ 
++struct llama_model_dory : public llama_model_base {
++    llama_model_dory(const llama_model_params & params) : llama_model_base(params) {}
++    uint32_t n_input = 0, n_recurrent = 0, n_output = 0, n_loops = 0;
++    float init_std = 0.0f, alpha_init = 0.0f, gate_init = 0.0f;
++    float theta_1 = 0.0f, theta_2 = 0.0f;
++    std::string pattern;
++    std::string recurrent_kv_cache_mode = "per_loop";
++    std::vector<uint32_t> profile;
++    std::vector<int> physical;
++    std::vector<int> cache_layer;
++    struct scales {
++        ggml_tensor * alpha = nullptr;
++        ggml_tensor * sqk = nullptr;
++        ggml_tensor * gate = nullptr;
++        ggml_tensor * suv_gate = nullptr;
++        ggml_tensor * suv_up = nullptr;
++    };
++    std::vector<scales> scale;
++    ggml_tensor * logit_scale = nullptr;
++    void load_arch_hparams(llama_model_loader & ml) override;
++    void load_arch_tensors(llama_model_loader & ml) override;
++    struct graph : public llm_graph_context {
++        graph(const llama_model_dory & model, const llm_graph_params & params);
++    };
++    std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
++};
++
+ struct llama_model_llama : public llama_model_base {
+     llama_model_llama(const struct llama_model_params & params) : llama_model_base(params) {}
+     void load_arch_hparams(llama_model_loader & ml) override;
+diff --git a/tests/test-llama-archs.cpp b/tests/test-llama-archs.cpp
+index 1e8e915b..1de86439 100644
+--- a/tests/test-llama-archs.cpp
++++ b/tests/test-llama-archs.cpp
+@@ -123,7 +123,7 @@ static bool host_experts_test(const llm_arch arch) {
+     }
+ }
+ 
+-static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
++static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe, const float stdev) {
+     gguf_context_ptr ret(gguf_init_empty());
+     llama_model_saver ms(arch, ret.get());
+     const uint32_t n_ctx = 256;
+@@ -133,7 +133,10 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
+     uint32_t n_head  = 2;
+     uint32_t n_ff    = 384;
+     uint32_t n_layer = 2;
+-    if (arch == LLM_ARCH_LLAMA4) {
++    if (arch == LLM_ARCH_DORY) {
++        n_layer = 6;
++        n_head = 4;
++    } else if (arch == LLM_ARCH_LLAMA4) {
+         n_layer = 4; // hparams.n_no_rope_layer_step is hard-coded to 4
+     } else if (arch == LLM_ARCH_GEMMA4) {
+         n_embd = 128;
+@@ -471,6 +474,24 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
+     ms.add_kv(LLM_KV_ACTIVATION_SITU_LINEAR_BETA, 25.0f);
+     ms.add_kv(LLM_KV_KDA_GATE_LOWER_BOUND,        -5.0f);
+ 
++    if (arch == LLM_ARCH_DORY) {
++        ms.add_kv(LLM_KV_INPUT_LAYER_COUNT, uint32_t(2));
++        ms.add_kv(LLM_KV_RECURRENT_LAYER_COUNT, uint32_t(2));
++        ms.add_kv(LLM_KV_OUTPUT_LAYER_COUNT, uint32_t(2));
++        ms.add_kv(LLM_KV_NUM_LOOPS, uint32_t(4));
++        ms.add_kv(LLM_KV_LAYER_PATTERN, "*-S-*-");
++        ms.add_kv(LLM_KV_RECURRENT_KV_CACHE_MODE, "per_loop");
++        ms.add_kv(LLM_KV_ROPE_PROFILE, std::vector<uint32_t>({1, 1, 2, 1, 1, 1}));
++        ms.add_kv(LLM_KV_INIT_STD, stdev);
++        ms.add_kv(LLM_KV_ALPHA_INIT, 0.05f);
++        ms.add_kv(LLM_KV_GATE_INIT, sqrtf(n_embd));
++        ms.add_kv(LLM_KV_ROPE_FREQ_BASE, 10000000.0f);
++        ms.add_kv(LLM_KV_ROPE_FREQ_BASE_2, 10000.0f);
++        ms.add_kv(LLM_KV_ATTENTION_KEY_LENGTH, n_embd_head);
++        ms.add_kv(LLM_KV_ATTENTION_VALUE_LENGTH, n_embd_head);
++        ms.add_kv(LLM_KV_ROPE_DIMENSION_COUNT, n_embd_head);
++    }
++
+     for (uint32_t il = 0; il < n_layer; il++) {
+         ggml_tensor t;
+         memset(&t, 0, sizeof(ggml_tensor));
+@@ -829,7 +850,7 @@ static int save_models(const std::string & arch_filter, const size_t seed, const
+                 LOG_INF("%s: %s model (%s) is unsupported, skipping\n", __func__, llm_arch_name(arch), moe ? "MoE" : "dense");
+                 continue;
+             }
+-            gguf_context_ptr gguf_ctx = get_gguf_ctx(arch, moe);
++            gguf_context_ptr gguf_ctx = get_gguf_ctx(arch, moe, stdev);
+             auto model_and_ctx = get_model_and_ctx(gguf_ctx.get(), nullptr, seed, stdev, {});
+             const std::string path = dir + "/" + llm_arch_name(arch) + (moe ? "-moe.gguf" : "-dense.gguf");
+             LOG_INF("%s: Saving %s model (%s) to %s...\n", __func__, llm_arch_name(arch), moe ? "MoE" : "dense", path.c_str());
+@@ -966,15 +987,21 @@ static int test_backends(const std::string & arch_filter, const size_t seed, con
+         }
+ 
+         const bool encode = arch == LLM_ARCH_T5 || arch == LLM_ARCH_DREAM || arch == LLM_ARCH_LLADA || arch == LLM_ARCH_LLADA_MOE || arch == LLM_ARCH_RND1;
+-        for (bool moe : {false, true}) {
++        for (int config = 0; config < (arch == LLM_ARCH_DORY ? 8 : 2); ++config) {
++            const bool moe = arch != LLM_ARCH_DORY && config != 0;
+             if (moe && !moe_implemented(arch)) {
+                 continue;
+             }
+             if (!moe && moe_mandatory(arch)) {
+                 continue;
+             }
+-            const std::string config_name = moe ? "MoE" : "Dense";
+-            gguf_context_ptr gguf_ctx = get_gguf_ctx(arch, moe);
++            const std::string config_name = arch == LLM_ARCH_DORY ? "K" + std::to_string(config % 4 + 1) + (config < 4 ? "/P" : "/L") : moe ? "MoE" : "Dense";
++            gguf_context_ptr gguf_ctx = get_gguf_ctx(arch, moe, stdev);
++            if (arch == LLM_ARCH_DORY) {
++                llama_model_saver ms(arch, gguf_ctx.get());
++                ms.add_kv(LLM_KV_NUM_LOOPS, uint32_t(config % 4 + 1));
++                ms.add_kv(LLM_KV_RECURRENT_KV_CACHE_MODE, config < 4 ? "per_loop" : "last_loop");
++            }
+             if (arch == LLM_ARCH_BAILINGMOE3) {
+                 GGML_ASSERT(gguf_remove_key(gguf_ctx.get(), "bailingmoe3.kda.safe_gate") >= 0);
+             }
+@@ -1030,7 +1057,11 @@ static int test_backends(const std::string & arch_filter, const size_t seed, con
+                             std::vector<float> logits_mixed;
+                             std::vector<float> logits_chunks;
+                             if (llm_arch_supports_mixed_batch(arch)) {
+-                                if (get_logits_mixed(model_and_ctx_dev.first.get(), lctx_dev, tokens, embd_mixed, false, logits_chunks) != 0 ||
++                                // Shared final-loop KV depends on chunk boundaries; compare the same mixed batch across backends.
++                                const bool shared_kv = arch == LLM_ARCH_DORY && config >= 4;
++                                llama_model * reference_model = shared_kv ? model_and_ctx_cpu.first.get() : model_and_ctx_dev.first.get();
++                                llama_context * reference_ctx = shared_kv ? model_and_ctx_cpu.second.get() : lctx_dev;
++                                if (get_logits_mixed(reference_model, reference_ctx, tokens, embd_mixed, shared_kv, logits_chunks) != 0 ||
+                                     get_logits_mixed(model_and_ctx_dev.first.get(), lctx_dev, tokens, embd_mixed, true,  logits_mixed)  != 0) {
+                                     throw std::runtime_error("failed to decode mixed batch");
+                                 }

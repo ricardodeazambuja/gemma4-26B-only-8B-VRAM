@@ -22,6 +22,17 @@ ok("offset page slices correctly", p.body.startsWith("line 100"));
 ok("last page has no nextOffset", p.nextOffset === null);
 ok("offset past end → empty, no more", paginate(text, 999, 50).shownLines === 0);
 
+console.log("long lines (one-line JSON):");
+const json = JSON.stringify({ releases: Array.from({ length: 3000 }, (_, i) => ({ v: `1.${i}`, sha: "a".repeat(40) })) });
+ok("fixture is one huge line", !json.includes("\n") && json.length > 100000);
+p = paginate(json, 0, 50);
+ok("page stays under the char cap", p.body.length <= 6000);
+ok("long line is cut, not dropped", p.shownLines > 1 && p.nextOffset === p.shownLines);
+let all = "", off = 0, pages = 0;
+while (off !== null && pages < 1000) { const q = paginate(json, off, 50); all += q.body.split("\n").join(""); off = q.nextOffset; pages++; }
+ok("paging through returns the whole text", all === json);
+ok("many lines of normal length still cap at maxLines", paginate(text, 0, 50).shownLines === 50);
+
 console.log("formatPage:");
 const out = formatPage("https://x.com", "Title", paginate(text, 0, 50));
 ok("includes title + url", out.includes("# Title") && out.includes("https://x.com"));

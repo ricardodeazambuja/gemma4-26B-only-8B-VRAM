@@ -7,8 +7,11 @@ This closes the search→read loop.
 ## Tool
 
 - **`fetch_page(url, offset=0)`** — fetch an http(s) URL, strip page chrome, return
-  readable text. Long pages are capped at 50 lines with a `call again with
-  offset=N` hint (rule R3), so a big article can't blow the context window.
+  readable text. Each page is capped at 50 lines and 6,000 characters with a `call
+  again with offset=N` hint (rule R3), so a big article can't blow the context window.
+  Lines over 200 characters are cut first: a JSON API response or a minified page is
+  one huge line, and a line cap alone once let a 233 KB PyPI JSON (~146K tokens) fill
+  a 16K context in one call.
 
 ## How it works
 

@@ -20,7 +20,12 @@
 #   CUDA_VER   CUDA toolkit version to build against   (default: driver's max)
 #   CUDA_ARCH  CMAKE_CUDA_ARCHITECTURES                (default: detected, e.g. 75)
 #   ENV_NAME   conda env for toolchain + runtime       (default: llamacpp-cuda)
-#   LLAMA_REF  llama.cpp git ref/tag to build          (default: latest b* release)
+#   LLAMA_REF  llama.cpp git ref/tag/commit to build   (default: latest b* release)
+#   LLAMA_REPO git URL to build from                    (default: ggml-org/llama.cpp;
+#              e.g. a fork such as https://github.com/PrismML-Eng/llama.cpp)
+#   PATCH      a patch file to `git apply` on top of LLAMA_REF before building
+#              (default: none; e.g. patches/llama.cpp-dory-pr30306.patch with its base
+#              commit as LLAMA_REF — see docs/dory-on-8gb.md)
 #   SRC_DIR    clone/build location                    (default: ./vendor/llama.cpp)
 #   MODEL      gguf used for the post-build smoke test  (default: the project model)
 #   JOBS       parallel build jobs                      (default: nproc)
@@ -46,6 +51,12 @@ CUDA_VER="${CUDA_VER:-$DRIVER_CUDA}"
 CUDA_ARCH="${CUDA_ARCH:-$DET_ARCH}"
 ENV_NAME="${ENV_NAME:-llamacpp-cuda}"
 SRC_DIR="${SRC_DIR:-$REPO_ROOT/vendor/llama.cpp}"
+LLAMA_REPO="${LLAMA_REPO:-https://github.com/ggml-org/llama.cpp}"
+PATCH="${PATCH:-}"
+if [ -n "$PATCH" ]; then
+  PATCH="$(cd "$(dirname "$PATCH")" && pwd)/$(basename "$PATCH")"
+  [ -f "$PATCH" ] || { echo "ERROR: PATCH file not found: $PATCH"; exit 1; }
+fi
 MODEL="${MODEL:-$REPO_ROOT/models/gemma4-26b-a4b-qat/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf}"
 JOBS="${JOBS:-$(nproc)}"
 
@@ -54,7 +65,7 @@ JOBS="${JOBS:-$(nproc)}"
 
 # Default to the latest release tag (tested), not master. sort -V handles bNNNN numerically.
 if [ -z "${LLAMA_REF:-}" ]; then
-  LLAMA_REF="$(git ls-remote --tags --refs https://github.com/ggml-org/llama.cpp 'refs/tags/b[0-9]*' 2>/dev/null \
+  LLAMA_REF="$(git ls-remote --tags --refs "$LLAMA_REPO" 'refs/tags/b[0-9]*' 2>/dev/null \
                 | sed 's#.*/##' | sort -V | tail -1)"
   LLAMA_REF="${LLAMA_REF:-master}"
 fi
@@ -66,7 +77,8 @@ if [ "${CUDA_MAJOR:-12}" -ge 12 ]; then GCCV=12; else GCCV=11; fi
 echo ">> driver supports CUDA up to : $DRIVER_CUDA"
 echo ">> building against CUDA       : $CUDA_VER (conda-forge toolkit, host gcc $GCCV)"
 echo ">> target GPU arch             : sm_$CUDA_ARCH"
-echo ">> llama.cpp ref               : $LLAMA_REF"
+echo ">> llama.cpp ref               : $LLAMA_REF  ($LLAMA_REPO)"
+[ -n "$PATCH" ] && echo ">> patch                       : $PATCH"
 echo ">> env / src / jobs            : $ENV_NAME / $SRC_DIR / $JOBS"
 echo
 
@@ -92,14 +104,33 @@ echo ">> env prefix     : $ENV_PREFIX"
 echo ">> nvcc host c++   : $HOST_CXX"
 
 # --- 2. fetch source --------------------------------------------------------
-if [ -d "$SRC_DIR/.git" ]; then
-  echo ">> updating source in $SRC_DIR ($LLAMA_REF)"
-  git -C "$SRC_DIR" fetch --depth 1 origin "$LLAMA_REF" && git -C "$SRC_DIR" checkout -q FETCH_HEAD || true
-else
-  echo ">> cloning llama.cpp ($LLAMA_REF) into $SRC_DIR"
+# Always end up on exactly LLAMA_REF (tag, branch or commit) — fail loudly rather than
+# silently building whatever was already checked out or the default branch's HEAD.
+if [ ! -d "$SRC_DIR/.git" ]; then
+  echo ">> cloning $LLAMA_REPO into $SRC_DIR"
   mkdir -p "$(dirname "$SRC_DIR")"
-  git clone --depth 1 --branch "$LLAMA_REF" https://github.com/ggml-org/llama.cpp "$SRC_DIR" 2>/dev/null \
-    || git clone --depth 1 https://github.com/ggml-org/llama.cpp "$SRC_DIR"
+  git init -q "$SRC_DIR"
+  git -C "$SRC_DIR" remote add origin "$LLAMA_REPO"
+fi
+echo ">> fetching $LLAMA_REF into $SRC_DIR"
+git -C "$SRC_DIR" remote set-url origin "$LLAMA_REPO"
+git -C "$SRC_DIR" fetch --depth 1 origin "$LLAMA_REF" \
+  || { echo "ERROR: could not fetch '$LLAMA_REF' from $LLAMA_REPO"; exit 1; }
+git -C "$SRC_DIR" checkout -q FETCH_HEAD
+echo ">> source at $(git -C "$SRC_DIR" rev-parse HEAD)"
+
+# Optional patch on top of LLAMA_REF. A re-run finds it already applied (the checkout above
+# keeps working-tree changes) and skips it; anything else that doesn't apply cleanly fails.
+if [ -n "$PATCH" ]; then
+  if git -C "$SRC_DIR" apply --reverse --check "$PATCH" 2>/dev/null; then
+    echo ">> patch already applied: $(basename "$PATCH")"
+  elif git -C "$SRC_DIR" apply --check "$PATCH"; then
+    git -C "$SRC_DIR" apply "$PATCH"
+    echo ">> applied patch: $(basename "$PATCH")"
+  else
+    echo "ERROR: $PATCH does not apply to $LLAMA_REF (wrong LLAMA_REF, or $SRC_DIR has local changes)"
+    exit 1
+  fi
 fi
 
 # --- 3. configure (cheap — fails fast if the toolchain is wrong) ------------

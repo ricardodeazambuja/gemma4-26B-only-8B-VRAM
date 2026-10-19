@@ -50,7 +50,7 @@ for the full write-up; test counts are the standalone `test.mjs` assertions.
 | Extension | What it does | Tests |
 |-----------|--------------|------:|
 | [`web-search`](web-search/) | Google search via stealth Playwright (bot-detection bypass) | live |
-| [`fetch-page`](fetch-page/) | Readable-text page fetcher — closes the search→read loop | 18 |
+| [`fetch-page`](fetch-page/) | Readable-text page fetcher — closes the search→read loop | 23 |
 | [`verified-edits`](verified-edits/) | Auto-runs the cheapest checker after every edit; appends errors in-band | 11 |
 | [`symbols`](symbols/) | `get_symbols`/`find_symbol` outlines instead of whole-file reads | 30 |
 | [`loop-breaker`](loop-breaker/) | Nudge after 3 identical failing tool calls | 15 |
@@ -67,8 +67,8 @@ for the full write-up; test counts are the standalone `test.mjs` assertions.
 | [`thinking-router`](thinking-router/) | Routes the per-turn thinking budget by input difficulty (engine-level energy lever) | 14 |
 | [`advisor`](advisor/) | On-demand review by a stronger external agent that sees the whole session | 45 |
 
-All complete and green via **`./run-tests.sh` — 519 checks** (the per-extension counts above
-sum to 500; the rest are install-flow checks, and `web-search` uses a live test). `goal` is the only
+All complete and green via **`./run-tests.sh` — 524 checks** (the per-extension counts above
+sum to 505; the rest are install-flow checks, and `web-search` uses a live test). `goal` is the only
 one that *drives* the agent (`sendUserMessage` from `agent_end`) — validate that
 re-engagement in a real pi run before relying on unattended loops.
 
