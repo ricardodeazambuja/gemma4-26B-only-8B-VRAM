@@ -19,3 +19,7 @@ MEMORY.md
 
 # Auto-tuning cache (machine-specific NCMOE/CTX results; written by start.sh / benchmark-config.sh)
 .gemma4-tuning
+
+# Local tool state (Claude Code, Playwright MCP logs)
+.claude/
+.playwright-mcp/
