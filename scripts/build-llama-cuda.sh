@@ -29,6 +29,8 @@
 #   SRC_DIR    clone/build location                    (default: ./vendor/llama.cpp)
 #   MODEL      gguf used for the post-build smoke test  (default: the project model)
 #   JOBS       parallel build jobs                      (default: nproc)
+#   TARGETS    cmake targets to build                   (default: llama-server llama-cli
+#              llama-bench; add llama-diffusion-cli for diffusion models)
 #
 set -euo pipefail
 
@@ -59,6 +61,7 @@ if [ -n "$PATCH" ]; then
 fi
 MODEL="${MODEL:-$REPO_ROOT/models/gemma4-26b-a4b-qat/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf}"
 JOBS="${JOBS:-$(nproc)}"
+TARGETS="${TARGETS:-llama-server llama-cli llama-bench}"
 
 [ -n "$CUDA_VER" ]  || { echo "ERROR: couldn't detect driver CUDA version; set CUDA_VER=X.Y."; exit 1; }
 [ -n "$CUDA_ARCH" ] || { echo "ERROR: couldn't detect GPU arch; set CUDA_ARCH (e.g. 75 for Turing)."; exit 1; }
@@ -149,7 +152,7 @@ echo ">> (full configure output in $SRC_DIR/configure.log)"
 # --- 4. build ---------------------------------------------------------------
 echo ">> building (10-20 min) ..."
 mamba run --no-capture-output -n "$ENV_NAME" cmake --build "$BUILD_DIR" -j "$JOBS" \
-  --target llama-server llama-cli llama-bench
+  --target $TARGETS
 
 BIN="$BUILD_DIR/bin/llama-server"
 [ -x "$BIN" ] || { echo "ERROR: build did not produce $BIN"; exit 1; }

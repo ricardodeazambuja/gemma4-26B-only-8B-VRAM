@@ -1,0 +1,15 @@
+diff --git a/ggml/src/ggml-cuda/moe-cpu-share.cu b/ggml/src/ggml-cuda/moe-cpu-share.cu
+index 022dad3..c5dd56a 100644
+--- a/ggml/src/ggml-cuda/moe-cpu-share.cu
++++ b/ggml/src/ggml-cuda/moe-cpu-share.cu
+@@ -41,8 +41,8 @@ ggml_moe_cpu_share_args ggml_moe_cpu_share_merge(const ggml_tensor *) {
+ #include <vector>
+ 
+ #if defined(__x86_64__) || defined(_M_X64)
+-#include <immintrin.h>
+-#define SHARE_PAUSE() _mm_pause()
++// <immintrin.h> is avoided: nvcc 12.2 cannot parse gcc 12.4's AVX-512-BF16/AMX headers.
++#define SHARE_PAUSE() __asm__ __volatile__("pause")
+ #else
+ #define SHARE_PAUSE() std::this_thread::yield()
+ #endif
