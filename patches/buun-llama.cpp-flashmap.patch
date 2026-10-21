@@ -1,0 +1,554 @@
+diff --git a/common/speculative.cpp b/common/speculative.cpp
+index 08c93ae..d5d6ee9 100644
+--- a/common/speculative.cpp
++++ b/common/speculative.cpp
+@@ -5393,8 +5393,10 @@ std::vector<common_speculative_type> common_speculative_types_from_model(const s
+         return {};
+     }
+ 
+-    // the Markov head distinguishes draft-dspark from draft-dflash
+-    const auto type = gguf_find_tensor(gguf_ctx.get(), "markov_w1.weight") >= 0
++    // the Markov head distinguishes draft-dspark from draft-dflash; FlashMap drafts
++    // follow the same anchor-first block contract
++    const auto type = gguf_find_tensor(gguf_ctx.get(), "markov_w1.weight") >= 0 ||
++                      gguf_find_tensor(gguf_ctx.get(), "flashmap.head.weight") >= 0
+                     ? COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK
+                     : COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH;
+ 
+diff --git a/src/llama-arch.cpp b/src/llama-arch.cpp
+index 1a0034e..9a45c40 100644
+--- a/src/llama-arch.cpp
++++ b/src/llama-arch.cpp
+@@ -765,6 +765,26 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
+     { LLM_TENSOR_DFLASH_SELECTOR_HIDDEN,                 "selector_hidden" },
+     { LLM_TENSOR_ATTN_V_GATE,                            "blk.%d.attn_v_gate" },
+     { LLM_TENSOR_ATTN_V_EXPS,                            "blk.%d.attn_v_exps" },
++    { LLM_TENSOR_FLASHMAP_ANCHOR_PROJ,                   "flashmap.anchor_proj" },
++    { LLM_TENSOR_FLASHMAP_ANCHOR_NORM,                   "flashmap.anchor_norm" },
++    { LLM_TENSOR_FLASHMAP_STATE_CONST,                   "flashmap.state_const" },
++    { LLM_TENSOR_FLASHMAP_NOISE_NORM,                    "flashmap.noise_norm" },
++    { LLM_TENSOR_FLASHMAP_NOISE_FACTOR,                  "flashmap.noise_factor" },
++    { LLM_TENSOR_FLASHMAP_X_EMBED,                       "flashmap.x_embed" },
++    { LLM_TENSOR_FLASHMAP_FINAL_MOD,                     "flashmap.final_mod" },
++    { LLM_TENSOR_FLASHMAP_HEAD,                          "flashmap.head" },
++    { LLM_TENSOR_FLASHMAP_SA_Q,                          "blk.%d.fm_sa_q" },
++    { LLM_TENSOR_FLASHMAP_SA_K,                          "blk.%d.fm_sa_k" },
++    { LLM_TENSOR_FLASHMAP_SA_V,                          "blk.%d.fm_sa_v" },
++    { LLM_TENSOR_FLASHMAP_SA_OUT,                        "blk.%d.fm_sa_out" },
++    { LLM_TENSOR_FLASHMAP_SA_Q_NORM,                     "blk.%d.fm_sa_q_norm" },
++    { LLM_TENSOR_FLASHMAP_SA_K_NORM,                     "blk.%d.fm_sa_k_norm" },
++    { LLM_TENSOR_FLASHMAP_SA_MOD,                        "blk.%d.fm_sa_mod" },
++    { LLM_TENSOR_FLASHMAP_SA_GATE,                       "blk.%d.fm_sa_gate" },
++    { LLM_TENSOR_FLASHMAP_CA_MOD,                        "blk.%d.fm_ca_mod" },
++    { LLM_TENSOR_FLASHMAP_CA_GATE,                       "blk.%d.fm_ca_gate" },
++    { LLM_TENSOR_FLASHMAP_MLP_MOD,                       "blk.%d.fm_mlp_mod" },
++    { LLM_TENSOR_FLASHMAP_MLP_GATE,                      "blk.%d.fm_mlp_gate" },
+ };
+ 
+ // declare information about the model weight tensors:
+@@ -1094,6 +1114,27 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
+     {LLM_TENSOR_DFLASH_SELECTOR_HIDDEN,     {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
+     {LLM_TENSOR_ATTN_V_GATE,                {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+     {LLM_TENSOR_ATTN_V_EXPS,                {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT_ID}},
++    // flashmap
++    {LLM_TENSOR_FLASHMAP_ANCHOR_PROJ,       {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
++    {LLM_TENSOR_FLASHMAP_ANCHOR_NORM,       {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL}},
++    {LLM_TENSOR_FLASHMAP_STATE_CONST,       {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_ADD}},
++    {LLM_TENSOR_FLASHMAP_NOISE_NORM,        {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL}},
++    {LLM_TENSOR_FLASHMAP_NOISE_FACTOR,      {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
++    {LLM_TENSOR_FLASHMAP_X_EMBED,           {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
++    {LLM_TENSOR_FLASHMAP_FINAL_MOD,         {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL}},
++    {LLM_TENSOR_FLASHMAP_HEAD,              {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
++    {LLM_TENSOR_FLASHMAP_SA_Q,              {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
++    {LLM_TENSOR_FLASHMAP_SA_K,              {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
++    {LLM_TENSOR_FLASHMAP_SA_V,              {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
++    {LLM_TENSOR_FLASHMAP_SA_OUT,            {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
++    {LLM_TENSOR_FLASHMAP_SA_Q_NORM,         {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
++    {LLM_TENSOR_FLASHMAP_SA_K_NORM,         {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
++    {LLM_TENSOR_FLASHMAP_SA_MOD,            {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
++    {LLM_TENSOR_FLASHMAP_SA_GATE,           {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
++    {LLM_TENSOR_FLASHMAP_CA_MOD,            {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
++    {LLM_TENSOR_FLASHMAP_CA_GATE,           {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
++    {LLM_TENSOR_FLASHMAP_MLP_MOD,           {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
++    {LLM_TENSOR_FLASHMAP_MLP_GATE,          {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+ };
+ 
+ LLM_KV::LLM_KV(llm_arch arch, const char * suffix) : arch(arch), suffix(suffix) {}
+diff --git a/src/llama-arch.h b/src/llama-arch.h
+index 9b30e8f..1edfd3f 100644
+--- a/src/llama-arch.h
++++ b/src/llama-arch.h
+@@ -778,6 +778,26 @@ enum llm_tensor {
+     LLM_TENSOR_INDEXER_KPOOL_APE,
+     LLM_TENSOR_ATTN_V_GATE,
+     LLM_TENSOR_ATTN_V_EXPS,
++    LLM_TENSOR_FLASHMAP_ANCHOR_PROJ,
++    LLM_TENSOR_FLASHMAP_ANCHOR_NORM,
++    LLM_TENSOR_FLASHMAP_STATE_CONST,
++    LLM_TENSOR_FLASHMAP_NOISE_NORM,
++    LLM_TENSOR_FLASHMAP_NOISE_FACTOR,
++    LLM_TENSOR_FLASHMAP_X_EMBED,
++    LLM_TENSOR_FLASHMAP_FINAL_MOD,
++    LLM_TENSOR_FLASHMAP_HEAD,
++    LLM_TENSOR_FLASHMAP_SA_Q,
++    LLM_TENSOR_FLASHMAP_SA_K,
++    LLM_TENSOR_FLASHMAP_SA_V,
++    LLM_TENSOR_FLASHMAP_SA_OUT,
++    LLM_TENSOR_FLASHMAP_SA_Q_NORM,
++    LLM_TENSOR_FLASHMAP_SA_K_NORM,
++    LLM_TENSOR_FLASHMAP_SA_MOD,
++    LLM_TENSOR_FLASHMAP_SA_GATE,
++    LLM_TENSOR_FLASHMAP_CA_MOD,
++    LLM_TENSOR_FLASHMAP_CA_GATE,
++    LLM_TENSOR_FLASHMAP_MLP_MOD,
++    LLM_TENSOR_FLASHMAP_MLP_GATE,
+ };
+ 
+ static_assert(LLM_TENSOR_DFLASH2_FFN_CONV_PROJ < LLM_TENSOR_DFLASH_ATTN_CONV_BASE,
+diff --git a/src/llama-hparams.h b/src/llama-hparams.h
+index e407ebf..e6ff2a2 100644
+--- a/src/llama-hparams.h
++++ b/src/llama-hparams.h
+@@ -234,6 +234,10 @@ struct llama_hparams {
+     uint32_t dflash_mask_token_id     = 0;
+     uint32_t dflash_n_target_features = 25600;
+     uint32_t dflash_n_target_layers   = 0;
++    // FlashMap flow-map drafter (a DFlash-arch variant): target hidden size (the drafter's
++    // n_embd is its own DiT width) and the q/k RMSNorm eps; 0 = not a FlashMap drafter
++    uint32_t flashmap_n_embd_tgt      = 0;
++    float    flashmap_qk_norm_eps     = 1e-5f;
+     uint32_t dflash_target_layer_ids[8] = {};
+     uint32_t dflash2_conv_kernel_size = 0;
+     uint32_t dflash2_conv_group_size  = 0;
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index 9935cae..908d0fe 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -4367,8 +4367,10 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
+             if (const auto & s = model->hparams.rope_sections; s[0] || s[1] || s[2] || s[3]) {
+                 return LLAMA_ROPE_TYPE_MROPE;
+             }
+-            // DSV4 DSpark drafters use DeepSeek-V4's normal RoPE; legacy DFlash backbones are NeoX
+-            return model->hparams.dsv4_hc_mult > 0 ? LLAMA_ROPE_TYPE_NORM : LLAMA_ROPE_TYPE_NEOX;
++            // DSV4 DSpark drafters use DeepSeek-V4's normal RoPE, FlashMap rotates interleaved
++            // channel pairs too; legacy DFlash backbones are NeoX
++            return model->hparams.dsv4_hc_mult > 0 || model->hparams.flashmap_n_embd_tgt > 0
++                ? LLAMA_ROPE_TYPE_NORM : LLAMA_ROPE_TYPE_NEOX;
+ 
+         case LLM_ARCH_QWEN2VL:
+         case LLM_ARCH_PADDLEOCR:
+diff --git a/src/llama-model.h b/src/llama-model.h
+index 8646df3..612ce0c 100644
+--- a/src/llama-model.h
++++ b/src/llama-model.h
+@@ -296,6 +296,24 @@ struct llama_layer {
+     struct ggml_tensor * dflash2_ffn_conv_base  = nullptr;
+     struct ggml_tensor * dflash2_ffn_conv_proj  = nullptr;
+ 
++    // FlashMap: slot self-attention and the baked AdaLN modulations of the one-step jump
++    // (mod = 1 + scale, mod_b = shift, gate = residual gate)
++    struct ggml_tensor * fm_sa_q      = nullptr;
++    struct ggml_tensor * fm_sa_k      = nullptr;
++    struct ggml_tensor * fm_sa_v      = nullptr;
++    struct ggml_tensor * fm_sa_out    = nullptr;
++    struct ggml_tensor * fm_sa_q_norm = nullptr;
++    struct ggml_tensor * fm_sa_k_norm = nullptr;
++    struct ggml_tensor * fm_sa_mod    = nullptr;
++    struct ggml_tensor * fm_sa_mod_b  = nullptr;
++    struct ggml_tensor * fm_sa_gate   = nullptr;
++    struct ggml_tensor * fm_ca_mod    = nullptr;
++    struct ggml_tensor * fm_ca_mod_b  = nullptr;
++    struct ggml_tensor * fm_ca_gate   = nullptr;
++    struct ggml_tensor * fm_mlp_mod   = nullptr;
++    struct ggml_tensor * fm_mlp_mod_b = nullptr;
++    struct ggml_tensor * fm_mlp_gate  = nullptr;
++
+     // attention
+     struct ggml_tensor * wq        = nullptr;
+     struct ggml_tensor * wk        = nullptr;
+@@ -772,6 +790,22 @@ struct llama_model {
+     struct ggml_tensor * dflash_selector_next   = nullptr;
+     struct ggml_tensor * dflash_selector_hidden = nullptr;
+ 
++    // FlashMap flow-map drafter (DFlash variant). The context path reuses fc + output_norm_enc,
++    // the per-layer cross-attention reuses wq/wk/wv/wo + attn_q_norm/attn_k_norm (its K/V live
++    // in the drafter KV cache) and the MLP reuses ffn_up/ffn_down (+ biases).
++    struct ggml_tensor * flashmap_anchor_proj   = nullptr;
++    struct ggml_tensor * flashmap_anchor_proj_b = nullptr;
++    struct ggml_tensor * flashmap_anchor_norm   = nullptr;
++    struct ggml_tensor * flashmap_state_const   = nullptr; // embedded uniform posterior, state-normed
++    struct ggml_tensor * flashmap_noise_norm    = nullptr; // noise RMSNorm weight x jump-scaled noise gate
++    struct ggml_tensor * flashmap_noise_factor  = nullptr; // L with L L^T = E^T E (E = target embedding)
++    struct ggml_tensor * flashmap_x_embed       = nullptr;
++    struct ggml_tensor * flashmap_x_embed_b     = nullptr;
++    struct ggml_tensor * flashmap_final_mod     = nullptr; // 1 + scale of the final AdaLN
++    struct ggml_tensor * flashmap_final_mod_b   = nullptr; // shift of the final AdaLN
++    struct ggml_tensor * flashmap_head          = nullptr;
++    struct ggml_tensor * flashmap_head_b        = nullptr;
++
+     // unified vector to store target-model extracted layer ids in eagle3, dflash, etc.
+     std::vector<int32_t> target_layer_ids;
+ 
+diff --git a/src/models/dflash.cpp b/src/models/dflash.cpp
+index 25e6011..579eef1 100644
+--- a/src/models/dflash.cpp
++++ b/src/models/dflash.cpp
+@@ -7,6 +7,8 @@
+ 
+ #include <atomic>
+ #include <cstdlib>
++#include <random>
++#include <vector>
+ 
+ // GPU top-K/argmax draft sampling tail (opt-in via llama_set_dflash_argmax): computes
+ // K ids + log-probs per draft position in-graph so the draft loop skips the full-vocab
+@@ -383,7 +385,16 @@ void llama_model_dflash::load_arch_hparams(llama_model_loader & ml) {
+         throw std::runtime_error("DFlash model requires 'target_layers' in GGUF metadata");
+     }
+ 
+-    hparams.n_embd_inp_enc_impl = (uint32_t) target_layer_ids.size() * hparams.n_embd;
++    // FlashMap: the drafter's DiT width differs from the target's hidden size, so the
++    // concatenated target features are n_target_layers x the target's n_embd
++    ml.get_key("dflash.flashmap.target_hidden_size", hparams.flashmap_n_embd_tgt, false);
++    if (hparams.flashmap_n_embd_tgt > 0) {
++        ml.get_key("dflash.flashmap.qk_norm_eps",  hparams.flashmap_qk_norm_eps, false);
++        ml.get_key(LLM_KV_ATTENTION_LAYERNORM_EPS, hparams.f_norm_eps);
++    }
++    const uint32_t n_embd_feat = hparams.flashmap_n_embd_tgt > 0 ? hparams.flashmap_n_embd_tgt : hparams.n_embd;
++
++    hparams.n_embd_inp_enc_impl = (uint32_t) target_layer_ids.size() * n_embd_feat;
+ 
+     if (target_layer_ids.size() > std::size(hparams.dflash_target_layer_ids)) {
+         throw std::runtime_error("DFlash supports at most 8 target layers");
+@@ -511,7 +522,8 @@ void llama_model_dflash::load_arch_tensors(llama_model_loader &) {
+ 
+     fc              = create_tensor(tn(LLM_TENSOR_FC,              "weight"), { n_embd_inp, n_embd }, 0);
+     output_norm_enc = create_tensor(tn(LLM_TENSOR_ENC_OUTPUT_NORM, "weight"), { n_embd }, 0); // encoder hidden_norm (after fc)
+-    output_norm     = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM,    "weight"), { n_embd }, 0); // decoder final norm
++    output_norm     = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM,    "weight"), { n_embd }, // decoder final norm
++            hparams.flashmap_n_embd_tgt > 0 ? TENSOR_NOT_REQUIRED : 0);
+ 
+     // optional: reduced-vocab drafts ship their own lm head, full-vocab drafts can share the target's via ctx_other
+     // a draft with its own embeddings + head references no target tensors and can run on devices the target does not use (e.g. -devd with a tensor-split target)
+@@ -523,6 +535,60 @@ void llama_model_dflash::load_arch_tensors(llama_model_loader &) {
+         output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab_draft }, TENSOR_DUPLICATED);
+     }
+ 
++    if (hparams.flashmap_n_embd_tgt > 0) {
++        const int64_t n_embd_tgt = hparams.flashmap_n_embd_tgt;
++
++        flashmap_anchor_proj   = create_tensor(tn(LLM_TENSOR_FLASHMAP_ANCHOR_PROJ,  "weight"), { n_embd_tgt, n_embd }, 0);
++        flashmap_anchor_proj_b = create_tensor(tn(LLM_TENSOR_FLASHMAP_ANCHOR_PROJ,  "bias"),   { n_embd }, 0);
++        flashmap_anchor_norm   = create_tensor(tn(LLM_TENSOR_FLASHMAP_ANCHOR_NORM,  "weight"), { n_embd }, 0);
++        flashmap_state_const   = create_tensor(tn(LLM_TENSOR_FLASHMAP_STATE_CONST), { n_embd_tgt }, 0);
++        flashmap_noise_norm    = create_tensor(tn(LLM_TENSOR_FLASHMAP_NOISE_NORM,   "weight"), { n_embd_tgt }, 0);
++        flashmap_noise_factor  = create_tensor(tn(LLM_TENSOR_FLASHMAP_NOISE_FACTOR), { n_embd_tgt, n_embd_tgt }, 0);
++        flashmap_x_embed       = create_tensor(tn(LLM_TENSOR_FLASHMAP_X_EMBED,      "weight"), { n_embd_tgt, n_embd }, 0);
++        flashmap_x_embed_b     = create_tensor(tn(LLM_TENSOR_FLASHMAP_X_EMBED,      "bias"),   { n_embd }, 0);
++        flashmap_final_mod     = create_tensor(tn(LLM_TENSOR_FLASHMAP_FINAL_MOD,    "weight"), { n_embd }, 0);
++        flashmap_final_mod_b   = create_tensor(tn(LLM_TENSOR_FLASHMAP_FINAL_MOD,    "bias"),   { n_embd }, 0);
++        flashmap_head          = create_tensor(tn(LLM_TENSOR_FLASHMAP_HEAD,         "weight"), { n_embd, n_embd_tgt }, 0);
++        flashmap_head_b        = create_tensor(tn(LLM_TENSOR_FLASHMAP_HEAD,         "bias"),   { n_embd_tgt }, 0);
++
++        for (int i = 0; i < n_layer; ++i) {
++            auto & layer = layers[i];
++
++            // cross-attention to the context: its K/V are what the drafter KV cache holds
++            layer.wq          = create_tensor(tn(LLM_TENSOR_ATTN_Q,      "weight", i), { n_embd, n_embd_head_k * n_head }, 0);
++            layer.wk          = create_tensor(tn(LLM_TENSOR_ATTN_K,      "weight", i), { n_embd, n_embd_k_gqa }, 0);
++            layer.wv          = create_tensor(tn(LLM_TENSOR_ATTN_V,      "weight", i), { n_embd, n_embd_v_gqa }, 0);
++            layer.wo          = create_tensor(tn(LLM_TENSOR_ATTN_OUT,    "weight", i), { n_embd_head_k * n_head, n_embd }, 0);
++            layer.attn_q_norm = create_tensor(tn(LLM_TENSOR_ATTN_Q_NORM, "weight", i), { n_embd_head_k }, 0);
++            layer.attn_k_norm = create_tensor(tn(LLM_TENSOR_ATTN_K_NORM, "weight", i), { n_embd_head_k }, 0);
++
++            // self-attention across the block's slots
++            layer.fm_sa_q      = create_tensor(tn(LLM_TENSOR_FLASHMAP_SA_Q,      "weight", i), { n_embd, n_embd_head_k * n_head }, 0);
++            layer.fm_sa_k      = create_tensor(tn(LLM_TENSOR_FLASHMAP_SA_K,      "weight", i), { n_embd, n_embd_head_k * n_head }, 0);
++            layer.fm_sa_v      = create_tensor(tn(LLM_TENSOR_FLASHMAP_SA_V,      "weight", i), { n_embd, n_embd_head_k * n_head }, 0);
++            layer.fm_sa_out    = create_tensor(tn(LLM_TENSOR_FLASHMAP_SA_OUT,    "weight", i), { n_embd_head_k * n_head, n_embd }, 0);
++            layer.fm_sa_q_norm = create_tensor(tn(LLM_TENSOR_FLASHMAP_SA_Q_NORM, "weight", i), { n_embd_head_k }, 0);
++            layer.fm_sa_k_norm = create_tensor(tn(LLM_TENSOR_FLASHMAP_SA_K_NORM, "weight", i), { n_embd_head_k }, 0);
++
++            layer.fm_sa_mod    = create_tensor(tn(LLM_TENSOR_FLASHMAP_SA_MOD,    "weight", i), { n_embd }, 0);
++            layer.fm_sa_mod_b  = create_tensor(tn(LLM_TENSOR_FLASHMAP_SA_MOD,    "bias",   i), { n_embd }, 0);
++            layer.fm_sa_gate   = create_tensor(tn(LLM_TENSOR_FLASHMAP_SA_GATE,   "weight", i), { n_embd }, 0);
++            layer.fm_ca_mod    = create_tensor(tn(LLM_TENSOR_FLASHMAP_CA_MOD,    "weight", i), { n_embd }, 0);
++            layer.fm_ca_mod_b  = create_tensor(tn(LLM_TENSOR_FLASHMAP_CA_MOD,    "bias",   i), { n_embd }, 0);
++            layer.fm_ca_gate   = create_tensor(tn(LLM_TENSOR_FLASHMAP_CA_GATE,   "weight", i), { n_embd }, 0);
++            layer.fm_mlp_mod   = create_tensor(tn(LLM_TENSOR_FLASHMAP_MLP_MOD,   "weight", i), { n_embd }, 0);
++            layer.fm_mlp_mod_b = create_tensor(tn(LLM_TENSOR_FLASHMAP_MLP_MOD,   "bias",   i), { n_embd }, 0);
++            layer.fm_mlp_gate  = create_tensor(tn(LLM_TENSOR_FLASHMAP_MLP_GATE,  "weight", i), { n_embd }, 0);
++
++            layer.ffn_up     = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", i), { n_embd, n_ff }, 0);
++            layer.ffn_up_b   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "bias",   i), { n_ff }, 0);
++            layer.ffn_down   = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", i), { n_ff, n_embd }, 0);
++            layer.ffn_down_b = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "bias",   i), { n_embd }, 0);
++        }
++        LLAMA_LOG_INFO("%s: FlashMap flow-map drafter (target hidden = %lld)\n", __func__, (long long) n_embd_tgt);
++        return;
++    }
++
+     if (hparams.dsv4_hc_mult > 0) {
+         const int64_t q_lora_rank     = hparams.n_lora_q;
+         const int64_t n_ff_exp        = hparams.n_ff_exp();
+@@ -927,6 +993,219 @@ static void build_dspark_markov_head(llm_graph_context & g, const llama_model &
+ // DFlash decoder, dual-mode by batch type:
+ //   * embd batch  -> fused target features: project + inject K/V into the cache.
+ //   * token batch -> noise-block diffusion: attend over [committed, MASK...] to generate draft tokens
++// FlashMap per-draft inputs: the positions of the block's slots (anchor + 1, ...) and the
++// Gaussian noise the one-step flow-map jump starts from (z ~ N(0, I) in the target's hidden
++// size; the graph maps it through L, L L^T = E^T E, which is distributed as x0 @ E for
++// vocabulary-sized x0 ~ N(0, I)).
++class llm_graph_input_flashmap final : public llm_graph_input_i {
++public:
++    llm_graph_input_flashmap(int64_t n_slot, int64_t n_inj) : n_slot(n_slot), n_inj(n_inj) {}
++
++    void set_input(const llama_ubatch * ubatch) override {
++        GGML_ASSERT(ubatch && ubatch->pos && (int64_t) ubatch->n_tokens > n_inj);
++        // the anchor is the first block row, after any fused-inject rows
++        const llama_pos anchor = ubatch->pos[n_inj];
++        std::vector<int32_t> pos(n_slot);
++        for (int64_t i = 0; i < n_slot; ++i) {
++            pos[i] = anchor + 1 + (int32_t) i;
++        }
++        ggml_backend_tensor_set(slot_pos, pos.data(), 0, pos.size() * sizeof(int32_t));
++
++        static thread_local std::mt19937 rng([] {
++            const char * e = getenv("GGML_FLASHMAP_SEED");
++            return e ? (uint32_t) atoi(e) : 0x5eedu;
++        }());
++        std::normal_distribution<float> normal;
++        z.resize(ggml_nelements(noise));
++        for (auto & v : z) {
++            v = normal(rng);
++        }
++        ggml_backend_tensor_set(noise, z.data(), 0, z.size() * sizeof(float));
++    }
++
++    bool can_reuse(const llm_graph_params & params) override {
++        const int64_t n_inj_now = params.cparams.dflash_oneg_stage ? params.cparams.dflash_oneg_n_inject : 0;
++        return n_inj_now == n_inj;
++    }
++
++    ggml_tensor * slot_pos = nullptr; // I32 [n_slot]
++    ggml_tensor * noise    = nullptr; // F32 [n_embd_tgt, n_slot]
++
++    const int64_t n_slot;
++    const int64_t n_inj;
++    std::vector<float> z;
++};
++
++// FlashMap draft decode: a DiT that jumps from noise to the whole block in one step.
++// Ubatch layout: [fused-inject rows,] anchor, placeholders. The context rows (inject
++// rows + the anchor's embedding) go to the drafter KV cache as cross-attention K/V; the
++// block's slots sit at anchor + 1 .. anchor + n_slot and output row i is slot i, the
++// draft for position anchor + 1 + i (the DSpark anchor-first contract).
++static void build_flashmap_draft(llm_graph_context & g, const llama_model & model,
++        ggml_tensor * inp_pos, llm_graph_input_attn_kv * inp_attn) {
++    ggml_context * ctx0 = g.ctx0;
++    const auto & hparams = g.hparams;
++    const auto & cparams = g.cparams;
++
++    const int64_t n_embd_tgt = hparams.flashmap_n_embd_tgt;
++    const int64_t n_head     = hparams.n_head();
++    const int64_t n_head_kv  = hparams.n_head_kv();
++    const int64_t n_hd       = hparams.n_embd_head_k();
++    const int64_t n_tok      = g.n_tokens;
++    const int64_t n_inj      = cparams.dflash_oneg_stage ? cparams.dflash_oneg_n_inject : 0;
++    const int64_t n_out      = n_tok - n_inj;
++    GGML_ASSERT(n_out > 0);
++    // a draft is one trained block; only worst-case graph reservation builds a wider ubatch
++    const int64_t n_slot     = std::max<int64_t>(hparams.dflash_block_size, n_out);
++    GGML_ASSERT(!inp_attn->self_k_rot && !inp_attn->self_v_rot && "FlashMap drafter KV cache must not be rotated");
++
++    const float eps_rms  = hparams.f_norm_rms_eps;
++    const float eps_qk   = hparams.flashmap_qk_norm_eps;
++    const float kq_scale = 1.0f / sqrtf(float(n_hd));
++
++    auto rms = [&](ggml_tensor * x, ggml_tensor * w, float eps) {
++        return ggml_mul(ctx0, ggml_rms_norm(ctx0, x, eps), w);
++    };
++    auto linear = [&](ggml_tensor * w, ggml_tensor * b, ggml_tensor * x) {
++        ggml_tensor * y = g.build_lora_mm(w, x);
++        return b ? ggml_add(ctx0, y, b) : y;
++    };
++    auto rope = [&](ggml_tensor * x, ggml_tensor * pos) {
++        return ggml_rope_ext(ctx0, x, pos, nullptr, g.n_rot, g.rope_type, g.n_ctx_orig,
++                g.freq_base, g.freq_scale, g.ext_factor, g.attn_factor, g.beta_fast, g.beta_slow);
++    };
++    // AdaLN with the jump's baked modulation: LayerNorm(x) * (1 + scale) + shift
++    auto adaln = [&](ggml_tensor * x, ggml_tensor * mod, ggml_tensor * mod_b, int il) {
++        return g.build_norm(x, mod, mod_b, LLM_NORM, il);
++    };
++
++    const llama_model * model_tgt = cparams.ctx_other ? llama_get_model(cparams.ctx_other) : nullptr;
++    ggml_tensor * tok_embd = model.tok_embd ? model.tok_embd : model_tgt ? model_tgt->tok_embd : nullptr;
++    GGML_ASSERT(tok_embd && "FlashMap drafter requires the target model's token embeddings");
++
++    auto inp = std::make_unique<llm_graph_input_embd>(hparams.n_embd);
++    inp->tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tok);
++    ggml_set_input(inp->tokens);
++    g.res->t_inp_tokens = inp->tokens;
++    ggml_tensor * block_tokens = n_inj > 0
++        ? ggml_view_1d(ctx0, inp->tokens, n_out, size_t(n_inj) * inp->tokens->nb[0])
++        : inp->tokens;
++    g.res->add_input(std::move(inp));
++
++    // context rows of this decode. Only the anchor's (the first block row's) is ever
++    // attended: every slot uses the anchor row's mask, which hides the placeholder rows.
++    ggml_tensor * ctx_rows = g.build_get_rows_embd(tok_embd, block_tokens);
++    ctx_rows = linear(model.flashmap_anchor_proj, model.flashmap_anchor_proj_b, ctx_rows);
++    ctx_rows = rms(ctx_rows, model.flashmap_anchor_norm, eps_rms);
++    g.cb(ctx_rows, "fm_anchor_ctx", -1);
++    if (n_inj > 0) {
++        ctx_rows = ggml_concat(ctx0, build_dflash_staged_enc(g, model, cparams.dflash_oneg_stage, n_inj), ctx_rows, 1);
++    }
++
++    auto inp_fm = std::make_unique<llm_graph_input_flashmap>(n_slot, n_inj);
++    inp_fm->slot_pos = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_slot);
++    ggml_set_input(inp_fm->slot_pos);
++    inp_fm->noise = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_embd_tgt, n_slot);
++    ggml_set_input(inp_fm->noise);
++    ggml_tensor * slot_pos = inp_fm->slot_pos;
++    ggml_tensor * noise    = inp_fm->noise;
++    g.res->add_input(std::move(inp_fm));
++
++    // one-step state: the embedded uniform posterior plus the gated, normed noise
++    ggml_tensor * x = ggml_mul_mat(ctx0, model.flashmap_noise_factor, noise);
++    x = rms(x, model.flashmap_noise_norm, eps_rms);
++    x = ggml_add(ctx0, x, model.flashmap_state_const);
++    ggml_tensor * h = linear(model.flashmap_x_embed, model.flashmap_x_embed_b, x);
++    g.cb(h, "fm_x_embed", -1);
++
++    // cross-attention mask: the anchor row's KV mask (context cells at or before the anchor
++    // in its sequence) for every slot
++    ggml_tensor * kq_mask = inp_attn->get_kq_mask();
++    GGML_ASSERT(kq_mask->ne[2] == 1 && kq_mask->ne[3] == 1);
++    ggml_tensor * ca_mask = ggml_view_2d(ctx0, kq_mask, kq_mask->ne[0], 1, kq_mask->nb[1], size_t(n_inj) * kq_mask->nb[1]);
++    ca_mask = ggml_cast(ctx0, ca_mask, GGML_TYPE_F32);
++    ca_mask = ggml_repeat(ctx0, ca_mask, ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, kq_mask->ne[0], n_slot));
++    if (kq_mask->type != GGML_TYPE_F32) {
++        ca_mask = ggml_cast(ctx0, ca_mask, kq_mask->type);
++    }
++
++    for (int il = 0; il < g.n_layer; ++il) {
++        const auto & layer = model.layers[il];
++
++        // this decode's context rows -> drafter KV cache
++        {
++            ggml_tensor * Kc = g.build_lora_mm(layer.wk, ctx_rows);
++            ggml_tensor * Vc = g.build_lora_mm(layer.wv, ctx_rows);
++            Kc = ggml_reshape_3d(ctx0, Kc, n_hd, n_head_kv, n_tok);
++            Vc = ggml_reshape_3d(ctx0, Vc, n_hd, n_head_kv, n_tok);
++            Kc = rope(rms(Kc, layer.attn_k_norm, eps_qk), inp_pos);
++            g.build_attn(inp_attn, nullptr, nullptr, nullptr, nullptr, Kc, Vc, nullptr, nullptr, nullptr,
++                    kq_scale, il, nullptr, /*kv_only=*/ true);
++        }
++
++        // self-attention across the slots (non-causal)
++        {
++            ggml_tensor * cur = adaln(h, layer.fm_sa_mod, layer.fm_sa_mod_b, il);
++            ggml_tensor * Q = ggml_reshape_3d(ctx0, g.build_lora_mm(layer.fm_sa_q, cur), n_hd, n_head, n_slot);
++            ggml_tensor * K = ggml_reshape_3d(ctx0, g.build_lora_mm(layer.fm_sa_k, cur), n_hd, n_head, n_slot);
++            ggml_tensor * V = ggml_reshape_3d(ctx0, g.build_lora_mm(layer.fm_sa_v, cur), n_hd, n_head, n_slot);
++            Q = rope(rms(Q, layer.fm_sa_q_norm, eps_qk), slot_pos);
++            K = rope(rms(K, layer.fm_sa_k_norm, eps_qk), slot_pos);
++            cur = g.build_attn_mha(Q, K, V, nullptr, nullptr, nullptr, nullptr, 0, kq_scale, il);
++            cur = g.build_lora_mm(layer.fm_sa_out, cur);
++            h = ggml_add(ctx0, h, ggml_mul(ctx0, cur, layer.fm_sa_gate));
++            g.cb(h, "fm_self_out", il);
++        }
++
++        // cross-attention to the cached context
++        {
++            ggml_tensor * cur = adaln(h, layer.fm_ca_mod, layer.fm_ca_mod_b, il);
++            ggml_tensor * Q = ggml_reshape_3d(ctx0, g.build_lora_mm(layer.wq, cur), n_hd, n_head, n_slot);
++            Q = rope(rms(Q, layer.attn_q_norm, eps_qk), slot_pos);
++            ggml_tensor * K = inp_attn->mctx->get_k(ctx0, il);
++            ggml_tensor * V = inp_attn->mctx->get_v(ctx0, il);
++            cur = g.build_attn_mha(Q, K, V, nullptr, ca_mask, nullptr, nullptr, 0, kq_scale, il);
++            cur = g.build_lora_mm(layer.wo, cur);
++            h = ggml_add(ctx0, h, ggml_mul(ctx0, cur, layer.fm_ca_gate));
++            g.cb(h, "fm_cross_out", il);
++        }
++
++        // MLP (exact GELU)
++        {
++            ggml_tensor * cur = adaln(h, layer.fm_mlp_mod, layer.fm_mlp_mod_b, il);
++            cur = ggml_gelu_erf(ctx0, linear(layer.ffn_up, layer.ffn_up_b, cur));
++            cur = linear(layer.ffn_down, layer.ffn_down_b, cur);
++            h = ggml_add(ctx0, h, ggml_mul(ctx0, cur, layer.fm_mlp_gate));
++            g.cb(h, "l_out", il);
++        }
++    }
++
++    h = adaln(h, model.flashmap_final_mod, model.flashmap_final_mod_b, -1);
++    h = linear(model.flashmap_head, model.flashmap_head_b, h); // into the target's hidden space
++    if (n_out < n_slot) {
++        h = ggml_view_2d(ctx0, h, n_embd_tgt, n_out, h->nb[1], 0);
++    }
++    g.cb(h, "result_norm", -1);
++    g.res->t_embd = h;
++
++    // the target's lm_head
++    ggml_tensor * output      = model.output;
++    ggml_tensor * output_s    = model.output_s;
++    ggml_tensor * output_in_s = model.output_in_s;
++    if (output == nullptr) {
++        GGML_ASSERT(model_tgt && model_tgt->output != nullptr && "FlashMap drafter requires the target model's output projection");
++        output      = model_tgt->output;
++        output_s    = model_tgt->output_s;
++        output_in_s = model_tgt->output_in_s;
++    }
++    ggml_tensor * cur = g.build_lora_mm(output, h, output_s, output_in_s);
++    g.cb(cur, "result_output", -1);
++    g.res->t_logits = cur;
++    ggml_build_forward_expand(g.gf, cur);
++
++    build_dflash_draft_argmax(g);
++}
++
+ template <>
+ llama_model_dflash::graph<false>::graph(const llama_model & model, const llm_graph_params & params) : llm_graph_context(params) {
+     const int64_t n_embd_head = hparams.n_embd_head_v();
+@@ -977,7 +1256,9 @@ llama_model_dflash::graph<false>::graph(const llama_model & model, const llm_gra
+             Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens);
+             Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens);
+ 
+-            Kcur = build_norm(Kcur, layer.attn_k_norm, NULL, LLM_NORM_RMS, il);
++            Kcur = hparams.flashmap_n_embd_tgt > 0
++                ? ggml_mul(ctx0, ggml_rms_norm(ctx0, Kcur, hparams.flashmap_qk_norm_eps), layer.attn_k_norm)
++                : build_norm(Kcur, layer.attn_k_norm, NULL, LLM_NORM_RMS, il);
+             if (shared_kv) {
+                 Vcur = ggml_rms_norm(ctx0, Vcur, hparams.f_norm_rms_eps);
+             }
+@@ -1021,6 +1302,12 @@ llama_model_dflash::graph<false>::graph(const llama_model & model, const llm_gra
+         return;
+     }
+ 
++    if (hparams.flashmap_n_embd_tgt > 0) {
++        GGML_ASSERT(!use_iswa && "FlashMap drafter has no sliding-window layers");
++        build_flashmap_draft(*this, model, inp_pos, inp_attn);
++        return;
++    }
++
+     // tok_embd from the target model — llama_model_share_tensors fills model.tok_embd
+     // with a drafter-schedulable pointer/copy; the raw ctx_other fallback references the
+     // target tensor directly and aborts at sched split when it lives on a device this
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index dd06670..7d2bd3d 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -10237,6 +10237,12 @@ private:
+                     params_base.speculative.set_type(COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK);
+                     SRV_INF("auto-detected upstream DSpark drafter (block_size=%d)\n",
+                             llama_model_dflash_block_size(model_dft.get()));
++                } else if (char fm_buf[16] = {}; llama_model_meta_val_str(model_dft.get(),
++                            "dflash.flashmap.target_hidden_size", fm_buf, sizeof(fm_buf)) >= 0) {
++                    // FlashMap drafts a whole block from the anchor: the DSpark anchor-first protocol
++                    params_base.speculative.set_type(COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK);
++                    SRV_INF("auto-detected FlashMap drafter (block_size=%d)\n",
++                            llama_model_dflash_block_size(model_dft.get()));
+                 } else {
+                     params_base.speculative.set_type(COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH);
+                     SRV_INF("auto-detected block-diffusion DFlash drafter (block_size=%d)\n",
