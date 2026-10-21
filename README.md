@@ -128,7 +128,7 @@ for the engineering rationale — which weakness each one targets, and why those
 | **The pi extensions** — what each does, the six design rules, install | [`pi-extensions/README.md`](pi-extensions/README.md) |
 | **The MTP speculative-decoding study** — measured gains + measurement-noise analysis | [`docs/mtp-benchmark.md`](docs/mtp-benchmark.md) |
 | **Inspecting a GGUF** — architecture / modality / tensors | [`utils/README.md`](utils/README.md) |
-| **Other models on 8 GB** — Gemma-4 12B, Qwen3.6 / Qwen3.8, Bonsai 2, Qwen3-VL, Dory: run them yourself, measurements, what didn't work | [Other models](#other-models-on-the-same-8-gb-card) |
+| **Other models on 8 GB** — Gemma-4 12B, Qwen3.6 / Qwen3.8, Bonsai 2, Qwen3-VL, Dory, FlashMap: run them yourself, measurements, what didn't work | [Other models](#other-models-on-the-same-8-gb-card) |
 
 ---
 
@@ -161,6 +161,7 @@ launcher and write-up. The ones on a llama.cpp fork or patch build it into their
 | **Bonsai 2 27B** (ternary Qwen3.8-27B) | ~27 t/s | `scripts/start_bonsai2.sh` | PrismML fork, fully on the GPU at 16K; must use f16 KV | [`docs/bonsai2-on-8gb.md`](docs/bonsai2-on-8gb.md) |
 | **Qwen3-VL-8B-Instruct** (vision) | ~38 t/s | `scripts/start_qwen3vl.sh` | Fully on the GPU; vision + tool calls; cap image tokens for large photos | [`docs/qwen3vl-on-8gb.md`](docs/qwen3vl-on-8gb.md) |
 | **Nemotron-Labs Dory1.0-4B** (looped) | ~29 t/s at 2 loops | `scripts/start_dory.sh` | Loop count trades speed for depth; 64K context (128K with `LOOP_KV=last_loop`); llama.cpp PR patch | [`docs/dory-on-8gb.md`](docs/dory-on-8gb.md) |
+| **Qwen3-8B + FlashMap drafter** (Q4_K_M, *experimental*) | ~39 t/s (59–63 on math) | `scripts/run-flashmap.sh` | Our own port of the FlashMap flow-map drafter to the buun fork (patch); fits in 7.65 GB, but acceptance is ~half the paper's (suspected port bug), so no net gain yet: +50 % on math, slower on prose | [`docs/flashmap.md`](docs/flashmap.md) |
 
 The dense **Qwen3.8-27B** (GSQ-RCO i-quants, `QMODEL=qwen38`) also loads but runs at only
 ~2.5 t/s: half of it sits in system RAM and its i-quants are CPU-compute-bound. Bonsai 2 is
