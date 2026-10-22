@@ -15,6 +15,8 @@
 #            vision-language model, fits fully on the 8 GB card (docs/qwen3vl-on-8gb.md)
 #   dory     NVIDIA-Nemotron-Labs-Dory1.0-4B Q5_K_M (NVIDIA, ~3.67 GB) — looped 4B text model;
 #            needs the Dory llama.cpp PR build (docs/dory-on-8gb.md)
+#   spark    Spark-X2.6-4B Q8_0 (XHToken, ~4.4 GB) — dense 4B agentic text model; upstream
+#            llama.cpp since 2026-09 (the Dory build has it; docs/spark-on-8gb.md)
 #
 # Reproducible by construction: every file is downloaded at a PINNED Hugging Face repo
 # revision and checked against a PINNED sha256 (the exact bytes tested in
@@ -30,7 +32,7 @@
 #
 # Usage:
 #   bash scripts/download-qwen-bakeoff.sh              # all three
-#   bash scripts/download-qwen-bakeoff.sh qwen38       # just one (qwen36 | qwen38 | distill | dflash | bonsai2 | qwen3vl | dory)
+#   bash scripts/download-qwen-bakeoff.sh qwen38       # just one (qwen36 | qwen38 | distill | dflash | bonsai2 | qwen3vl | dory | spark)
 #
 # Overrides: ENV_NAME (env with huggingface_hub, default llamacpp), FOLLOW_MAIN=1.
 #
@@ -53,6 +55,7 @@ MODELS=(
   "bonsai2|prism-ml/Ternary-Bonsai-2-27B-gguf|b072e1d3b35a0a630cece372c2127528e0994386|bonsai2-27b|Ternary-Bonsai-2-27B-PTQ1_0.gguf:53107f530aa52eb00912263ab1ee29bd199261c87cd7b4ad4ca1318c1fe33ee3 Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf:6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903"
   "qwen3vl|Qwen/Qwen3-VL-8B-Instruct-GGUF|f982a07559d4a2f6c8744d840bf6fccab30eea96|qwen3vl-8b|Qwen3VL-8B-Instruct-Q4_K_M.gguf:67d1659bfe71b89d50b45a4ad1a9e5b997e5bb16ce5da66a6a6167abd569e9e2 mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf:c6ba85508d82f42590e6eb77d5340369ab6fecf107a7561d809523d8aa5f3bfd"
   "dory|nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-GGUF|0963c8000791e77b2b1b49aa387d92a6da9988d6|dory1-4b|NVIDIA-Nemotron-Labs-Dory1.0-4B-Q5_K_M.gguf:96080be49ffd67b916018b7bdef8c484762576fb52780e10ab98ac4978a660e0"
+  "spark|XHToken/Spark-X2.6-4B-GGUF|fe31f8d64890302cc3a1d365d700357b4b75ba77|spark-x2.6-4b|Spark-X2.6-4B-Q8_0.gguf:145c2aa606820663f26ad530b8fc141ed885e2e9ca29f9be7c3bfe8931d58b81"
   "dflash|z-lab/Qwen3.8-27B-DFlash2-GGUF|2d9571f8ce46e151f61c6499c99dee6079e1d610|qwen38-27b-gsq|Qwen3.8-27B-DFlash2-Q4_K_M.gguf:1a25c56858e1ebe93f2718ac1d49d1151f9323325c1bbfd6209370f4db131ebd"
 )
 
@@ -115,7 +118,7 @@ for want in "${WANT[@]}"; do
       fi
     done
   done
-  [ "$found" = 1 ] || { echo "ERROR: unknown model '$want' (use qwen36 | qwen38 | distill | dflash | bonsai2 | qwen3vl | dory)"; FAIL=1; }
+  [ "$found" = 1 ] || { echo "ERROR: unknown model '$want' (use qwen36 | qwen38 | distill | dflash | bonsai2 | qwen3vl | dory | spark)"; FAIL=1; }
 done
 
 exit "$FAIL"

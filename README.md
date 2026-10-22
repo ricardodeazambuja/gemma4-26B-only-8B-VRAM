@@ -161,6 +161,7 @@ launcher and write-up. The ones on a llama.cpp fork or patch build it into their
 | **Bonsai 2 27B** (ternary Qwen3.8-27B) | ~27 t/s | `scripts/start_bonsai2.sh` | PrismML fork, fully on the GPU at 16K; must use f16 KV | [`docs/bonsai2-on-8gb.md`](docs/bonsai2-on-8gb.md) |
 | **Qwen3-VL-8B-Instruct** (vision) | ~38 t/s | `scripts/start_qwen3vl.sh` | Fully on the GPU; vision + tool calls; cap image tokens for large photos | [`docs/qwen3vl-on-8gb.md`](docs/qwen3vl-on-8gb.md) |
 | **Nemotron-Labs Dory1.0-4B** (looped) | ~29 t/s at 2 loops | `scripts/start_dory.sh` | Loop count trades speed for depth; 64K context (128K with `LOOP_KV=last_loop`); llama.cpp PR patch | [`docs/dory-on-8gb.md`](docs/dory-on-8gb.md) |
+| **Spark-X2.6-4B** (XHToken, Q8_0) | ~50 t/s | `scripts/start_spark.sh` | Dense 4B agentic model; only 9 of 36 layers keep a long KV, so **108K context** fits next to Q8_0 weights; upstream llama.cpp | [`docs/spark-on-8gb.md`](docs/spark-on-8gb.md) |
 
 The dense **Qwen3.8-27B** (GSQ-RCO i-quants, `QMODEL=qwen38`) also loads but runs at only
 ~2.5 t/s: half of it sits in system RAM and its i-quants are CPU-compute-bound. Bonsai 2 is

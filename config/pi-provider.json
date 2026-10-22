@@ -82,6 +82,15 @@
         "text"
       ],
       "reasoning": true
+    },
+    {
+      "contextWindow": 110592,
+      "id": "spark-x2.6-4b",
+      "name": "Spark-X2.6-4B Q8_0 (llama.cpp)",
+      "input": [
+        "text"
+      ],
+      "reasoning": true
     }
   ]
 }

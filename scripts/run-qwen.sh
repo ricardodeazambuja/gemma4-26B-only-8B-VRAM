@@ -10,6 +10,7 @@
 #   bonsai2  Ternary-Bonsai-2-27B PTQ1_0      DENSE, 5.95 GB -> all on GPU (-ngl 99), PrismML fork
 #   qwen3vl  Qwen3-VL-8B-Instruct Q4_K_M      DENSE, 5.0 GB  -> all on GPU (-ngl 99), vision model
 #   dory     Nemotron-Labs-Dory1.0-4B Q5_K_M  LOOPED, 3.7 GB -> all on GPU (-ngl 999), Dory PR build
+#   spark    XHToken Spark-X2.6-4B Q8_0       DENSE, 4.4 GB -> all on GPU (-ngl 99), upstream llama.cpp
 #
 # Both MoE candidates are Qwen3.6-class hybrids (30 Gated DeltaNet + 10 full-attention
 # layers), so the KV cache is small: 128K ctx at q8_0 is ~1.4 GB. Qwen recommends at
@@ -18,14 +19,14 @@
 # the 8 GB card with its weights, so it defaults to 32K.
 #
 # Config (override via env vars):
-#   QMODEL     qwen36 | qwen38 | distill | bonsai2 | qwen3vl | dory  (default: qwen36)
+#   QMODEL     qwen36 | qwen38 | distill | bonsai2 | qwen3vl | dory | spark  (default: qwen36)
 #   MODEL      path to the .gguf                       (default: per QMODEL)
 #   MMPROJ     vision projector                        (default: per QMODEL; used with --image)
 #   MMPROJ_GPU 1 = vision projector on the GPU, 0 = CPU  (default: 0; qwen3vl 1 — its 0.75 GB
 #              projector fits next to the model, and on the CPU a 4K photo takes minutes)
 #   IMAGE_MAX_TOKENS  cap on tokens per image (dynamic-resolution models)  (default: model's own;
 #              qwen3vl 1024 — uncapped, a 4K photo is 4096 tokens and OOMs the GPU encoder)
-#   CTX        context window                          (default: 131072 MoE / 65536 dory / 32768 qwen38 / 16384 bonsai2, qwen3vl)
+#   CTX        context window                          (default: 131072 MoE / 110592 spark / 65536 dory / 32768 qwen38 / 16384 bonsai2, qwen3vl)
 #   NCMOE      MoE only: keep only the first N layers' experts on CPU, rest on GPU
 #              (faster, more VRAM). NCMOE= (empty) = all experts on CPU.
 #              (default: measured fit at 128K — qwen36 32, distill 34; the distill's
@@ -46,12 +47,12 @@
 #   TEMP / TOP_P / TOP_K / MIN_P / PRESENCE_PENALTY  sampling  (default: per QMODEL, from the
 #              model cards: qwen38 1.0/0.95/20/0, qwen36 + distill 0.6/0.95/20/0, the
 #              "precise coding" thinking preset; bonsai2 1.0/0.95/20, min-p 0.05 per its card;
-#              qwen3vl 0.7/0.8/20/1.5, the card's VL preset; dory 1.0/0.95/0 (off)/0)
+#              qwen3vl 0.7/0.8/20/1.5, the card's VL preset; dory, spark 1.0/0.95/0 (off)/0)
 #   NP / BATCH / UBATCH  slots / batch sizes           (default: 1 / 512 / 512)
 #   EXTRA_ARGS any extra llama-server flags
 #   HOST/PORT  bind address                            (default: 127.0.0.1 / 8080)
 #   CUDA_BIN / CUDA_ENV  CUDA build + its env          (default: vendor/llama.cpp — bonsai2:
-#              vendor/prism-llama.cpp, dory: vendor/dory-llama.cpp — and env llamacpp-cuda)
+#              vendor/prism-llama.cpp, dory + spark: vendor/dory-llama.cpp — and env llamacpp-cuda)
 #
 # Flags (CLI args, not env vars):
 #   --image    load the vision projector ($MMPROJ) (CPU unless MMPROJ_GPU=1). Other args pass through.
@@ -151,8 +152,29 @@ case "$QMODEL" in
     _bin="$REPO_ROOT/vendor/dory-llama.cpp/build/bin/llama-server"
     _ncmoe=
     _temp=1.0 ;;
+  spark)
+    # XHToken Spark-X2.6-4B: dense 36-layer model, 3 sliding-window (512) layers per
+    # full-attention layer, so only 9 layers keep a long KV cache (q8_0: ~19 KiB/token). With
+    # a quantized KV, flash attention also reserves an f16 copy of one layer's K+V in the
+    # compute buffer (~4 KiB/token), so 128K needs ~7.4 GB and OOMs next to the desktop;
+    # 108K (110592) is the measured fit with ~0.3 GB to spare. Text only, thinking on by
+    # default (chat template). Architecture spark2_5 is in upstream
+    # llama.cpp since PR #27868 (2026-09-06); vendor/dory-llama.cpp is upstream master of
+    # 2026-10-15 plus the Dory patch, so it has it. Sampling as on the card (temp 1.0 /
+    # top-p 0.95 / top-k off). See docs/spark-on-8gb.md.
+    KIND=dense
+    _dir="$REPO_ROOT/models/spark-x2.6-4b"
+    _model="$_dir/Spark-X2.6-4B-Q8_0.gguf"
+    _mmproj=
+    ALIAS=spark-x2.6-4b
+    _ngl=99; _ctx=110592; _minp=0
+    _topk=0
+    _kv=q8_0
+    _bin="$REPO_ROOT/vendor/dory-llama.cpp/build/bin/llama-server"
+    _ncmoe=
+    _temp=1.0 ;;
   *)
-    echo "ERROR: unknown QMODEL='$QMODEL' (use qwen36 | qwen38 | distill | bonsai2 | qwen3vl | dory)"; exit 1 ;;
+    echo "ERROR: unknown QMODEL='$QMODEL' (use qwen36 | qwen38 | distill | bonsai2 | qwen3vl | dory | spark)"; exit 1 ;;
 esac
 
 MODEL="${MODEL:-$_model}"
